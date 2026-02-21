@@ -1,0 +1,38 @@
+# =============================================================================
+# Docker Compose - Dress Rental Business Management
+#
+# Purpose: Run the full application (frontend + backend) in a single container
+# with persistent data stored in ./local_data (volume mount).
+#
+# How it works:
+#   - Builds from the local Dockerfile
+#   - Uses host networking (simplifies Tailscale Funnel integration)
+#   - Mounts ./local_data for persistence (DB, uploads, logs, .env)
+#   - Auto-restarts on crash or reboot
+#
+# Usage:
+#   docker compose up -d --build    # Build and start
+#   docker compose logs -f          # View logs
+#   docker compose down             # Stop
+#   docker compose up -d --build --force-recreate  # Rebuild after code change
+# =============================================================================
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: business-mgmt-app
+    # Host networking: container shares the host's network stack.
+    # This means ports 3000 (frontend) and 3001 (backend) are directly
+    # accessible on the host, making Tailscale Funnel setup trivial.
+    network_mode: host
+    restart: always
+    volumes:
+      # Persistent data: database, uploads, logs, .env, CSV imports
+      # This is the ONLY directory that holds state. Everything else
+      # is ephemeral code that can be rebuilt from Git.
+      - ./local_data:/app/local_data
+    environment:
+      - NODE_ENV=production
+      - CHROME_BIN=/usr/bin/chromium

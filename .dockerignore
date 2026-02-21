@@ -1,0 +1,58 @@
+# =============================================================================
+# .dockerignore - Exclude files from Docker build context
+#
+# Purpose: Speed up Docker builds by excluding unnecessary files from the
+# build context. The local_data directory is especially important to exclude
+# since it's mounted as a volume at runtime (not baked into the image).
+# =============================================================================
+
+# Persistent data (mounted as volume, never baked into image)
+local_data/
+
+# Dependencies (rebuilt inside container)
+node_modules/
+backend/node_modules/
+frontend/node_modules/
+
+# Next.js build output (rebuilt inside container)
+frontend/.next/
+frontend/out/
+
+# Version control
+.git/
+.gitignore
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker files (prevent recursive build)
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Development tools and docs
+dev_tools/
+docs/
+temp_cache/
+*.md
+!frontend/README.md
+
+# Logs
+*.log
+logs/
+
+# Environment files (secrets - mounted via volume)
+.env
+*.env.local
+
+# Python cache
+__pycache__/
+.venv/

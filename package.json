@@ -1,0 +1,37 @@
+{
+  "name": "dress-rental-business-management",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Business management system for dress rental and sewing business",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "build": "npm run build:backend && npm run build:frontend",
+    "build:backend": "cd backend && npm run build",
+    "build:frontend": "cd frontend && npm run build",
+    "start": "concurrently \"npm run start:backend\" \"npm run start:frontend\"",
+    "start:backend": "cd backend && npm run start",
+    "start:frontend": "cd frontend && npm run start",
+    "db:migrate": "cd backend && npm run db:migrate",
+    "db:seed": "cd backend && npm run db:seed",
+    "import:dresses": "cd backend && npm run import:dresses",
+    "create-admin": "cd backend && npm run create-admin",
+    "install:all": "npm install && cd backend && npm install && cd ../frontend && npm install",
+    "lint": "cd frontend && npm run lint",
+    "backup": "node scripts/backup.js"
+  },
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.6.2"
+  }
+}
