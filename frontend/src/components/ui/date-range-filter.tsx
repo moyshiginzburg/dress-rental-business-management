@@ -14,6 +14,7 @@ import { useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Calendar, X } from "lucide-react";
+import { formatDateInput } from "@/lib/utils";
 
 interface DateRangeFilterProps {
     onDateChange: (dateFrom: string | null, dateTo: string | null) => void;
@@ -31,7 +32,7 @@ const presets = [
 
 // Helper functions to calculate date ranges
 function getToday(): { from: string; to: string } {
-    const today = new Date().toISOString().split("T")[0];
+    const today = formatDateInput(new Date());
     return { from: today, to: today };
 }
 
@@ -45,8 +46,8 @@ function getThisWeek(): { from: string; to: string } {
     endOfWeek.setDate(startOfWeek.getDate() + 6);
 
     return {
-        from: startOfWeek.toISOString().split("T")[0],
-        to: endOfWeek.toISOString().split("T")[0],
+        from: formatDateInput(startOfWeek),
+        to: formatDateInput(endOfWeek),
     };
 }
 
@@ -56,8 +57,8 @@ function getThisMonth(): { from: string; to: string } {
     const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
 
     return {
-        from: startOfMonth.toISOString().split("T")[0],
-        to: endOfMonth.toISOString().split("T")[0],
+        from: formatDateInput(startOfMonth),
+        to: formatDateInput(endOfMonth),
     };
 }
 
@@ -67,8 +68,8 @@ function getLastMonth(): { from: string; to: string } {
     const endOfLastMonth = new Date(today.getFullYear(), today.getMonth(), 0);
 
     return {
-        from: startOfLastMonth.toISOString().split("T")[0],
-        to: endOfLastMonth.toISOString().split("T")[0],
+        from: formatDateInput(startOfLastMonth),
+        to: formatDateInput(endOfLastMonth),
     };
 }
 

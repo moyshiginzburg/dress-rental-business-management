@@ -10,7 +10,9 @@
 
 import express from 'express';
 import cors from 'cors';
-import { serverConfig, uploadConfig, localStorageConfig } from './config/index.js';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
+import { serverConfig, uploadConfig } from './config/index.js';
 import { notFoundHandler, errorHandler } from './middleware/errorHandler.js';
 import { requestLogger, errorLogger } from './middleware/activityLogger.js';
 import { mkdirSync, existsSync } from 'fs';
@@ -31,10 +33,9 @@ import appsScriptLogsRoutes from './routes/apps-script-logs.js';
 
 // Ensure upload directories exist
 const uploadDirs = [
-  uploadConfig.uploadsDir, 
-  uploadConfig.signaturesDir, 
+  uploadConfig.uploadsDir,
+  uploadConfig.signaturesDir,
   uploadConfig.agreementsDir,
-  uploadConfig.receiptsDir,
   uploadConfig.dressesDir
 ];
 for (const dir of uploadDirs) {
@@ -46,6 +47,9 @@ for (const dir of uploadDirs) {
 
 // Create Express app
 const app = express();
+
+// Trust the first proxy (e.g., Tailscale Funnel) to accurately get client IPs for rate-limiting
+app.set('trust proxy', 1);
 
 // ===================
 // Middleware
@@ -65,10 +69,11 @@ app.use(cors({
   origin: (origin, callback) => {
     // Allow requests with no origin (like mobile apps or curl)
     if (!origin) return callback(null, true);
-    
-    // Check if origin is in allowed list
+
+    // Check if origin is in allowed list or is a Vercel subdomain
     const isAllowed = allowedOrigins.includes(origin) ||
-                     serverConfig.isDevelopment;
+      (origin && origin.endsWith('.vercel.app')) ||
+      serverConfig.isDevelopment;
 
     if (isAllowed) {
       callback(null, true);
@@ -80,6 +85,11 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
+
+// Security headers — adds standard HTTP security headers
+// (X-Content-Type-Options, X-Frame-Options, etc.)
+// Does NOT affect JWT tokens, cookies, or existing sessions.
+app.use(helmet());
 
 // Body parsing
 app.use(express.json({ limit: '10mb' }));
@@ -127,8 +137,22 @@ app.get(frontendRoutes, (req, res) => {
   res.redirect(302, `${frontendUrl}${req.path}`);
 });
 
+// Rate limiter for login endpoint only.
+// Allows 15 login attempts per 15-minute window per IP.
+// Does NOT affect any other API endpoints or authenticated requests.
+const loginRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,  // 15 minutes
+  max: 15,                    // max 15 attempts per window
+  standardHeaders: true,      // return rate limit info in RateLimit-* headers
+  legacyHeaders: false,       // disable X-RateLimit-* headers
+  message: {
+    success: false,
+    message: 'יותר מדי ניסיונות התחברות. נסה שוב בעוד 15 דקות.',
+  },
+});
+
 // Mount route modules
-app.use('/api/auth', authRoutes);
+app.use('/api/auth', loginRateLimiter, authRoutes);
 app.use('/api/customers', customersRoutes);
 app.use('/api/dresses', dressesRoutes);
 app.use('/api/transactions', transactionsRoutes);
@@ -160,7 +184,7 @@ const PORT = serverConfig.port;
 app.listen(PORT, async () => {
   console.log('');
   console.log('╔════════════════════════════════════════════════════════════╗');
-  console.log('║         Dress Rental Business Management - Backend            ║');
+  console.log('║       Dress Rental Business Management - Backend           ║');
   console.log('╠════════════════════════════════════════════════════════════╣');
   console.log(`║  Server running on: http://localhost:${PORT}                   ║`);
   console.log(`║  Environment: ${serverConfig.nodeEnv.padEnd(43)}║`);

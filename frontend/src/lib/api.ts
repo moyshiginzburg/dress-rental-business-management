@@ -149,9 +149,11 @@ export const authApi = {
 
 // Customers API
 export const customersApi = {
-  list: (params?: { search?: string; page?: number; limit?: number }) => {
+  list: (params?: { search?: string; sortBy?: string; sortOrder?: string; page?: number; limit?: number }) => {
     const searchParams = new URLSearchParams();
     if (params?.search) searchParams.set('search', params.search);
+    if (params?.sortBy) searchParams.set('sortBy', params.sortBy);
+    if (params?.sortOrder) searchParams.set('sortOrder', params.sortOrder);
     if (params?.page) searchParams.set('page', params.page.toString());
     if (params?.limit) searchParams.set('limit', params.limit.toString());
     return api.get(`/customers?${searchParams.toString()}`);
@@ -296,12 +298,14 @@ export const agreementsApi = {
 
 // Orders API
 export const ordersApi = {
-  list: (params?: { status?: string; customer_id?: number; startDate?: string; endDate?: string; page?: number; limit?: number }) => {
+  list: (params?: { status?: string; customer_id?: number; startDate?: string; endDate?: string; sortBy?: string; sortOrder?: string; page?: number; limit?: number }) => {
     const searchParams = new URLSearchParams();
     if (params?.status) searchParams.set('status', params.status);
     if (params?.customer_id) searchParams.set('customer_id', params.customer_id.toString());
     if (params?.startDate) searchParams.set('startDate', params.startDate);
     if (params?.endDate) searchParams.set('endDate', params.endDate);
+    if (params?.sortBy) searchParams.set('sortBy', params.sortBy);
+    if (params?.sortOrder) searchParams.set('sortOrder', params.sortOrder);
     if (params?.page) searchParams.set('page', params.page.toString());
     if (params?.limit) searchParams.set('limit', params.limit.toString());
     return api.get(`/orders?${searchParams.toString()}`);
@@ -314,7 +318,7 @@ export const ordersApi = {
   addPayment: (id: number, data: { amount: number; payment_method?: string; payment_date?: string; notes?: string }) =>
     api.post(`/orders/${id}/payment`, data),
   delete: (id: number) => api.delete(`/orders/${id}`),
-  
+
   merge: (targetOrderId: number, sourceOrderId: number, updatedOrderData?: any) =>
     api.post('/orders/merge', { targetOrderId, sourceOrderId, updatedOrderData }),
 };

@@ -82,7 +82,9 @@ export default function OrdersPage() {
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [dateFrom, setDateFrom] = useState<string | null>(null);
   const [dateTo, setDateTo] = useState<string | null>(null);
-  
+  const [sortBy, setSortBy] = useState("event_date");
+  const [sortOrder, setSortOrder] = useState("desc");
+
   const [viewingOrderData, setViewingOrderData] = useState<OrderDetailData | null>(null);
   const [loadingOrderDetails, setLoadingOrderDetails] = useState(false);
   const [creatingSignLinkForOrderId, setCreatingSignLinkForOrderId] = useState<number | null>(null);
@@ -108,7 +110,7 @@ export default function OrdersPage() {
   }, [searchParams]);
 
   const toggleSelection = (id: number) => {
-    setSelectedIds(prev => 
+    setSelectedIds(prev =>
       prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
     );
   };
@@ -151,12 +153,14 @@ export default function OrdersPage() {
     }
   };
 
-  const fetchOrders = useCallback(async () => {
+  const fetchOrders = useCallback(async (sortCol: string = "event_date", sortDir: string = "desc") => {
     try {
       const response = await ordersApi.list({
         status: statusFilter || undefined,
         startDate: dateFrom || undefined,
         endDate: dateTo || undefined,
+        sortBy: sortCol,
+        sortOrder: sortDir,
         page: 1,
         limit: 1000,
       });
@@ -172,8 +176,8 @@ export default function OrdersPage() {
   }, [statusFilter, dateFrom, dateTo, toast]);
 
   useEffect(() => {
-    fetchOrders();
-  }, [fetchOrders]);
+    fetchOrders(sortBy, sortOrder);
+  }, [fetchOrders, sortBy, sortOrder]);
 
   const handleStatusUpdate = async (orderId: number, status: string) => {
     try {
@@ -247,17 +251,17 @@ export default function OrdersPage() {
   };
 
   const activeOrdersCount = orders.filter((o) => o.status === "active").length;
-  
+
   // Financial Summary Calculations
   const ordersSummary = orders.filter(o => o.status !== 'cancelled').reduce((acc, o) => {
     const totalWithCharges = o.total_price + (o.total_customer_charge || 0);
     const balance = totalWithCharges - o.paid_amount;
-    
+
     acc.totalAmount += totalWithCharges;
     acc.totalPaid += o.paid_amount;
     if (balance > 0) acc.totalDebt += balance;
     if (balance < 0) acc.totalCredit += Math.abs(balance);
-    
+
     return acc;
   }, { totalAmount: 0, totalPaid: 0, totalDebt: 0, totalCredit: 0 });
 
@@ -282,7 +286,7 @@ export default function OrdersPage() {
           <p className="text-muted-foreground font-medium mt-1">מרכז הבקרה על כל ההשכרות והתפירות</p>
         </div>
         <div className="flex gap-2">
-          <Button 
+          <Button
             variant={isSelectionMode ? "secondary" : "outline"}
             onClick={() => {
               setIsSelectionMode(!isSelectionMode);
@@ -292,8 +296,8 @@ export default function OrdersPage() {
           >
             {isSelectionMode ? "ביטול בחירה" : "בחירה מרובה"}
           </Button>
-          <Button 
-            onClick={() => router.push('/dashboard/orders/new')} 
+          <Button
+            onClick={() => router.push('/dashboard/orders/new')}
             className="h-14 px-8 rounded-2xl shadow-xl shadow-green-500/20 bg-green-600 hover:bg-green-700 text-lg font-bold gap-2"
           >
             <Plus className="h-6 w-6" />
@@ -344,22 +348,40 @@ export default function OrdersPage() {
       <div className="bg-white p-4 rounded-[2rem] shadow-sm space-y-4">
         <div className="flex flex-col md:flex-row gap-4">
           <div className="flex-1">
-            <DateRangeFilter 
-              dateFrom={dateFrom} 
-              dateTo={dateTo} 
-              onDateChange={(from, to) => { setDateFrom(from); setDateTo(to); }} 
+            <DateRangeFilter
+              dateFrom={dateFrom}
+              dateTo={dateTo}
+              onDateChange={(from, to) => { setDateFrom(from); setDateTo(to); }}
             />
           </div>
-          <div className="w-full md:w-48">
-            <select 
-              value={statusFilter} 
-              onChange={(e) => setStatusFilter(e.target.value)} 
-              className="w-full h-12 px-4 rounded-xl border-2 bg-background font-bold text-sm"
-            >
-              <option value="">כל הסטטוסים</option>
-              <option value="active">פעילה</option>
-              <option value="cancelled">בוטלה</option>
-            </select>
+          <div className="flex gap-4 w-full md:w-auto overflow-x-auto pb-2 md:pb-0">
+            <div className="w-48 shrink-0">
+              <select
+                value={`${sortBy}-${sortOrder}`}
+                onChange={(e) => {
+                  const [col, dir] = e.target.value.split('-');
+                  setSortBy(col);
+                  setSortOrder(dir);
+                }}
+                className="w-full h-12 px-4 rounded-xl border-2 bg-background font-bold text-sm"
+              >
+                <option value="event_date-desc">תאריך אירוע (קרובים תחילה)</option>
+                <option value="event_date-asc">תאריך אירוע (רחוקים תחילה)</option>
+                <option value="customer_name-asc">שם הלקוחה (א' - ת')</option>
+                <option value="last_active_date-desc">פעילות אחרונה</option>
+              </select>
+            </div>
+            <div className="w-48 shrink-0">
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="w-full h-12 px-4 rounded-xl border-2 bg-background font-bold text-sm"
+              >
+                <option value="">כל הסטטוסים</option>
+                <option value="active">פעילה</option>
+                <option value="cancelled">בוטלה</option>
+              </select>
+            </div>
           </div>
         </div>
       </div>
@@ -382,7 +404,7 @@ export default function OrdersPage() {
             return (
               <div key={order.id} className="relative group">
                 {isSelectionMode && (
-                  <div 
+                  <div
                     className={cn(
                       "absolute top-4 right-4 z-10 h-6 w-6 rounded-full border-2 cursor-pointer flex items-center justify-center transition-all bg-white",
                       selectedIds.includes(order.id) ? "border-green-600 bg-green-600 text-white" : "border-muted-foreground/30"
@@ -392,7 +414,7 @@ export default function OrdersPage() {
                     {selectedIds.includes(order.id) && <Check className="h-4 w-4" />}
                   </div>
                 )}
-                <Card 
+                <Card
                   onClick={() => isSelectionMode && toggleSelection(order.id)}
                   className={cn(
                     "rounded-[2rem] border-none shadow-sm overflow-hidden transition-all hover:shadow-md",
@@ -415,7 +437,7 @@ export default function OrdersPage() {
                           <h3 className="text-2xl font-black mb-1">{order.customer_name}</h3>
                           <p className="text-sm font-medium text-muted-foreground mb-4">{formatPhoneNumber(order.customer_phone)}</p>
                         </div>
-                        
+
                         <div className="flex items-center gap-2 mt-auto pt-4 border-t border-muted">
                           {order.event_date && (
                             <div className="flex items-center gap-1.5 text-xs font-bold text-muted-foreground">
@@ -457,8 +479,8 @@ export default function OrdersPage() {
                         <div className={cn(
                           "p-4 rounded-2xl flex items-center justify-between",
                           isFullyPaid ? "bg-green-50 border border-green-100" :
-                          hasDebt ? "bg-orange-50 border border-orange-100" :
-                          "bg-blue-50 border border-blue-100"
+                            hasDebt ? "bg-orange-50 border border-orange-100" :
+                              "bg-blue-50 border border-blue-100"
                         )}>
                           <div>
                             <p className="text-[10px] font-black uppercase opacity-60">
@@ -474,8 +496,8 @@ export default function OrdersPage() {
                           <div className={cn(
                             "h-10 w-10 rounded-full flex items-center justify-center",
                             isFullyPaid ? "bg-green-200/50 text-green-700" :
-                            hasDebt ? "bg-orange-200/50 text-orange-700" :
-                            "bg-blue-200/50 text-blue-700"
+                              hasDebt ? "bg-orange-200/50 text-orange-700" :
+                                "bg-blue-200/50 text-blue-700"
                           )}>
                             <CreditCard className="h-5 w-5" />
                           </div>
@@ -485,38 +507,38 @@ export default function OrdersPage() {
                       {/* Action Buttons */}
                       {!isSelectionMode && (
                         <div className="p-6 lg:w-1/4 flex flex-row lg:flex-col justify-center items-center gap-3 bg-muted/5">
-                          <Button 
-                            variant="outline" 
-                            size="lg" 
-                            onClick={() => viewOrder(order.id)} 
+                          <Button
+                            variant="outline"
+                            size="lg"
+                            onClick={() => viewOrder(order.id)}
                             className="flex-1 lg:w-full rounded-2xl font-bold h-12 border-2 hover:bg-white"
                           >
                             <Eye className="h-5 w-5 ml-2" /> צפייה
                           </Button>
-                          <Button 
-                            variant="outline" 
-                            size="lg" 
-                            onClick={() => router.push(`/dashboard/orders/${order.id}/edit`)} 
+                          <Button
+                            variant="outline"
+                            size="lg"
+                            onClick={() => router.push(`/dashboard/orders/${order.id}/edit`)}
                             className="flex-1 lg:w-full rounded-2xl font-bold h-12 border-2 border-primary/20 text-primary hover:bg-primary/5"
                           >
                             <Edit className="h-5 w-5 ml-2" /> עריכה
                           </Button>
                           <div className="flex gap-2 w-full">
                             {order.customer_phone && (
-                              <a 
-                                href={createWhatsAppLink(order.customer_phone)} 
-                                target="_blank" 
-                                rel="noopener noreferrer" 
+                              <a
+                                href={createWhatsAppLink(order.customer_phone)}
+                                target="_blank"
+                                rel="noopener noreferrer"
                                 className="flex-1 lg:w-auto h-12 bg-green-500 hover:bg-green-600 text-white rounded-2xl flex items-center justify-center transition-colors shadow-lg shadow-green-500/20"
                               >
                                 <MessageCircle className="h-6 w-6" />
                               </a>
                             )}
                             {order.status !== "cancelled" && (
-                              <Button 
-                                variant="ghost" 
-                                size="icon" 
-                                onClick={() => handleDelete(order)} 
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => handleDelete(order)}
                                 className="h-12 w-12 rounded-2xl text-destructive hover:bg-destructive/5"
                               >
                                 <Trash2 className="h-5 w-5" />
@@ -537,7 +559,7 @@ export default function OrdersPage() {
       {/* Floating Merge Button */}
       {isSelectionMode && selectedIds.length === 2 && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 animate-in slide-in-from-bottom-4 fade-in">
-          <Button 
+          <Button
             onClick={handleMergeClick}
             className="h-14 px-8 rounded-full shadow-2xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-lg gap-2"
           >
@@ -568,8 +590,8 @@ export default function OrdersPage() {
                   if (!o) return null;
                   const isTarget = mergeTargetId === id;
                   return (
-                    <div 
-                      key={id} 
+                    <div
+                      key={id}
                       onClick={() => {
                         setMergeTargetId(id);
                         setMergeFormData({
@@ -602,11 +624,11 @@ export default function OrdersPage() {
                 <div className="space-y-4">
                   <div className="space-y-2">
                     <label className="text-sm font-bold">תאריך אירוע</label>
-                    <input 
+                    <input
                       type="date"
                       className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                      value={mergeFormData.event_date} 
-                      onChange={e => setMergeFormData({...mergeFormData, event_date: e.target.value})} 
+                      value={mergeFormData.event_date}
+                      onChange={e => setMergeFormData({ ...mergeFormData, event_date: e.target.value })}
                     />
                   </div>
                   <div className="space-y-2">
@@ -614,7 +636,7 @@ export default function OrdersPage() {
                     <select
                       className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                       value={mergeFormData.status}
-                      onChange={e => setMergeFormData({...mergeFormData, status: e.target.value})}
+                      onChange={e => setMergeFormData({ ...mergeFormData, status: e.target.value })}
                     >
                       <option value="active">פעילה</option>
                       <option value="cancelled">בוטלה</option>
@@ -622,10 +644,10 @@ export default function OrdersPage() {
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-bold">הערות (יחליף את הקיים)</label>
-                    <textarea 
+                    <textarea
                       className="w-full h-24 p-3 border rounded-xl"
-                      value={mergeFormData.notes} 
-                      onChange={e => setMergeFormData({...mergeFormData, notes: e.target.value})} 
+                      value={mergeFormData.notes}
+                      onChange={e => setMergeFormData({ ...mergeFormData, notes: e.target.value })}
                     />
                   </div>
                 </div>
@@ -633,7 +655,7 @@ export default function OrdersPage() {
 
               <div className="flex gap-4 pt-4">
                 <Button variant="outline" className="flex-1 h-12" onClick={() => setShowMergeDialog(false)}>ביטול</Button>
-                <Button 
+                <Button
                   className="flex-1 h-12 bg-purple-600 hover:bg-purple-700 font-bold"
                   onClick={executeMerge}
                   disabled={savingMerge}
@@ -664,7 +686,7 @@ export default function OrdersPage() {
                 <X className="h-6 w-6" />
               </Button>
             </div>
-            
+
             <CardContent className="p-0 overflow-y-auto">
               <div className="p-6 space-y-8">
                 {/* Customer Summary */}
@@ -718,7 +740,7 @@ export default function OrdersPage() {
                 {/* Financial Overview - Detailed */}
                 <div className="bg-green-50 p-6 rounded-[2rem] border-2 border-green-100 space-y-4">
                   <h4 className="text-[10px] font-black text-green-600 uppercase tracking-widest text-center">סיכום כספי מפורט</h4>
-                  
+
                   <div className="space-y-2">
                     <div className="flex justify-between text-sm">
                       <span className="text-muted-foreground">סך פריטים:</span>
@@ -784,14 +806,14 @@ export default function OrdersPage() {
             </CardContent>
 
             <div className="p-6 border-t bg-muted/10 grid grid-cols-2 gap-3 sticky bottom-0">
-              <Button 
+              <Button
                 className="h-14 rounded-2xl font-black text-lg shadow-lg shadow-green-600/20 bg-green-600 hover:bg-green-700"
                 onClick={() => router.push(`/dashboard/orders/${viewingOrderData.order.id}/edit`)}
               >
                 <Edit className="h-5 w-5 ml-2" /> עריכה מלאה
               </Button>
-              <Button 
-                variant="outline" 
+              <Button
+                variant="outline"
                 className="h-14 rounded-2xl font-black text-lg border-2 bg-white"
                 onClick={() => router.push(`/dashboard/transactions/new?type=income&order_id=${viewingOrderData.order.id}&customer_id=${viewingOrderData.order.customer_id}&amount=${Number(viewingOrderData.order.total_price || 0) + Number(viewingOrderData.order.total_customer_charge || 0) - Number(viewingOrderData.order.paid_amount || 0)}`)}
               >

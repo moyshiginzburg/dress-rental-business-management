@@ -31,6 +31,8 @@ import {
   Trash2,
   Search,
   X,
+  ChevronRight,
+  ChevronLeft,
 } from "lucide-react";
 
 interface Transaction {
@@ -77,7 +79,11 @@ export default function TransactionsPage() {
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [dateFrom, setDateFrom] = useState<string | null>(null);
   const [dateTo, setDateTo] = useState<string | null>(null);
-  
+
+  // Pagination State
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 500;
+
   // Customer Filter
   const [customerId, setCustomerId] = useState<number | null>(null);
   const [customerSearch, setCustomerSearch] = useState("");
@@ -130,7 +136,7 @@ export default function TransactionsPage() {
         .reduce((sum, item) => sum + item.price, 0);
 
       if (matchedItemsPrice === 0) return 0;
-      
+
       const ratio = matchedItemsPrice / t.order_total_price;
       return t.amount * ratio;
     } catch (e) {
@@ -146,16 +152,16 @@ export default function TransactionsPage() {
         startDate: dateFrom || undefined,
         endDate: dateTo || undefined,
         customer_id: customerId || undefined,
-        limit: 1000,
+        limit: 100000, // Fetch all to calculate accurate profit summary
       });
       if (response.success && response.data) {
         const data = response.data as { transactions: Transaction[] };
-        
+
         // Apply the relative amount calculation to the transactions
         const processedTransactions = data.transactions.map(t => ({
           ...t,
           displayAmount: calculateDisplayAmount(t)
-        })).filter(t => (t as any).displayAmount > 0);
+        })).filter(t => (t as any).displayAmount !== 0);
 
         setTransactions(processedTransactions as any);
 
@@ -165,7 +171,7 @@ export default function TransactionsPage() {
         const expenses = processedTransactions
           .filter((t) => t.type === "expense")
           .reduce((sum, t) => sum + (t as any).displayAmount, 0);
-        
+
         setSummary({
           totalIncome: income,
           totalExpenses: expenses,
@@ -185,8 +191,15 @@ export default function TransactionsPage() {
   }, [typeFilter, selectedCategories, dateFrom, dateTo, customerId, toast, calculateDisplayAmount]);
 
   useEffect(() => {
+    setCurrentPage(1); // Reset page on filter change
     fetchTransactions();
   }, [fetchTransactions]);
+
+  const totalPages = Math.ceil(transactions.length / itemsPerPage);
+  const paginatedTransactions = transactions.slice(
+    (currentPage - 1) * itemsPerPage,
+    currentPage * itemsPerPage
+  );
 
   const handleDelete = async (transaction: Transaction) => {
     if (!confirm("האם לבטל את העסקה?")) return;
@@ -322,7 +335,7 @@ export default function TransactionsPage() {
                 </button>
               )}
             </div>
-            
+
             {customers.length > 0 && !customerId && (
               <div className="absolute top-full right-0 w-full mt-1 bg-popover border rounded-md shadow-md z-50 overflow-hidden">
                 {customers.map(c => (
@@ -344,52 +357,52 @@ export default function TransactionsPage() {
 
           <div className="flex flex-wrap gap-2">
             <select
-            value={typeFilter}
-            onChange={(e) => setTypeFilter(e.target.value)}
-            className="h-10 px-3 border rounded-md bg-background"
-          >
-            <option value="">כל הסוגים</option>
-            <option value="income">הכנסות</option>
-            <option value="expense">הוצאות</option>
-          </select>
-          
-          <div className="flex flex-wrap gap-2 p-1 bg-muted/30 rounded-lg">
-            {[...INCOME_CATEGORIES, ...EXPENSE_CATEGORIES]
-              .filter((cat, index, self) => self.findIndex(c => c.value === cat.value) === index)
-              .map((cat) => (
+              value={typeFilter}
+              onChange={(e) => setTypeFilter(e.target.value)}
+              className="h-10 px-3 border rounded-md bg-background"
+            >
+              <option value="">כל הסוגים</option>
+              <option value="income">הכנסות</option>
+              <option value="expense">הוצאות</option>
+            </select>
+
+            <div className="flex flex-wrap gap-2 p-1 bg-muted/30 rounded-lg">
+              {[...INCOME_CATEGORIES, ...EXPENSE_CATEGORIES]
+                .filter((cat, index, self) => self.findIndex(c => c.value === cat.value) === index)
+                .map((cat) => (
+                  <button
+                    key={cat.value}
+                    type="button"
+                    onClick={() => {
+                      setSelectedCategories(prev =>
+                        prev.includes(cat.value)
+                          ? prev.filter(v => v !== cat.value)
+                          : [...prev, cat.value]
+                      );
+                    }}
+                    className={cn(
+                      "px-3 py-1.5 text-xs font-bold rounded-full border transition-all",
+                      selectedCategories.includes(cat.value)
+                        ? "bg-primary text-white border-primary shadow-sm"
+                        : "bg-background text-muted-foreground border-input hover:border-primary/50"
+                    )}
+                  >
+                    {cat.label}
+                  </button>
+                ))}
+              {selectedCategories.length > 0 && (
                 <button
-                  key={cat.value}
                   type="button"
-                  onClick={() => {
-                    setSelectedCategories(prev => 
-                      prev.includes(cat.value) 
-                        ? prev.filter(v => v !== cat.value) 
-                        : [...prev, cat.value]
-                    );
-                  }}
-                  className={cn(
-                    "px-3 py-1.5 text-xs font-bold rounded-full border transition-all",
-                    selectedCategories.includes(cat.value)
-                      ? "bg-primary text-white border-primary shadow-sm"
-                      : "bg-background text-muted-foreground border-input hover:border-primary/50"
-                  )}
+                  onClick={() => setSelectedCategories([])}
+                  className="px-2 py-1.5 text-xs font-bold text-destructive hover:underline"
                 >
-                  {cat.label}
+                  ניקוי
                 </button>
-              ))}
-            {selectedCategories.length > 0 && (
-              <button 
-                type="button"
-                onClick={() => setSelectedCategories([])}
-                className="px-2 py-1.5 text-xs font-bold text-destructive hover:underline"
-              >
-                ניקוי
-              </button>
-            )}
+              )}
+            </div>
           </div>
         </div>
       </div>
-    </div>
 
       <Card>
         <CardContent className="p-0">
@@ -407,7 +420,7 @@ export default function TransactionsPage() {
                 </tr>
               </thead>
               <tbody>
-                {transactions.map((transaction) => {
+                {paginatedTransactions.map((transaction) => {
                   const displayAmt = (transaction as any).displayAmount ?? transaction.amount;
                   const isPartial = displayAmt !== transaction.amount;
 
@@ -482,6 +495,33 @@ export default function TransactionsPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Pagination Controls */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between border-t border-muted pt-4 px-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+            disabled={currentPage === 1}
+            className="gap-1"
+          >
+            <ChevronRight className="h-4 w-4" /> הקודם
+          </Button>
+          <div className="text-sm text-muted-foreground font-medium">
+            עמוד {currentPage} מתוך {totalPages}
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+            disabled={currentPage === totalPages}
+            className="gap-1"
+          >
+            הבא <ChevronLeft className="h-4 w-4" />
+          </Button>
+        </div>
+      )}
 
       {
         transactions.length === 0 && !loading && (

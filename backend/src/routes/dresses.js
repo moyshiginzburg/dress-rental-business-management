@@ -15,7 +15,7 @@ import multer from 'multer';
 import { processDressImage } from '../services/image.js';
 
 const router = Router();
-const validStatuses = ['available', 'rented', 'sold', 'retired'];
+const validStatuses = ['available', 'sold', 'retired'];
 const validIntendedUses = ['rental', 'sale'];
 
 function normalizeUploadedImagePath(value) {

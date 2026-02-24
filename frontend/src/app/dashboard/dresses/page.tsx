@@ -277,6 +277,11 @@ export default function DressesPage() {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    if (!file.type.startsWith("image/")) {
+      toast({ title: "שגיאה", description: "ניתן להעלות רק קובצי תמונה", variant: "destructive" });
+      return;
+    }
+
     if (file.size > 10 * 1024 * 1024) {
       toast({ title: "שגיאה", description: "הקובץ גדול מדי (מקסימום 10MB)", variant: "destructive" });
       return;
@@ -400,8 +405,6 @@ export default function DressesPage() {
             >
               <option value="">כל הסטטוסים</option>
               <option value="available">פנויה</option>
-              <option value="rented">הוזמנה</option>
-              <option value="damaged">פגומה</option>
               <option value="sold">נמכרה</option>
               <option value="retired">הוצאה מהמלאי</option>
             </select>
@@ -474,11 +477,7 @@ export default function DressesPage() {
                   "px-4 py-1.5 rounded-full text-xs font-black uppercase tracking-wider shadow-lg backdrop-blur-md",
                   dress.status === "sold" || dress.status === "retired"
                     ? "bg-gray-500/90 text-white"
-                    : dress.status === "damaged"
-                      ? "bg-red-500/90 text-white"
-                      : dress.status === "rented"
-                        ? "bg-amber-500/90 text-white"
-                        : "bg-green-500/90 text-white"
+                    : "bg-green-500/90 text-white"
                 )}>
                   {getStatusLabel(dress.status)}
                 </span>
@@ -710,9 +709,7 @@ export default function DressesPage() {
                       className="w-full h-14 px-4 rounded-2xl bg-muted/30 border-none outline-none text-sm font-bold"
                     >
                       <option value="available">פנויה</option>
-                      <option value="rented">הוזמנה</option>
                       <option value="sold">נמכרה</option>
-                      <option value="damaged">פגומה</option>
                       <option value="retired">הוצאה מהמלאי</option>
                     </select>
                   </div>
@@ -758,7 +755,9 @@ export default function DressesPage() {
                         <input
                           type="file"
                           className="hidden"
-                          accept="image/*"
+                          // Keep chooser behavior consistent on Android (camera/gallery/files),
+                          // while actual validation still enforces image-only uploads.
+                          accept="image/*,application/pdf"
                           capture="environment"
                           onChange={handleFileUpload}
                           disabled={saving}

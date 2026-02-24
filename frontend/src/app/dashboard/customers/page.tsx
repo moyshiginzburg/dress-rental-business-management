@@ -63,16 +63,20 @@ export default function CustomersPage() {
   });
   const [saving, setSaving] = useState(false);
   const [sourceFilter, setSourceFilter] = useState("");
+  const [sortBy, setSortBy] = useState("last_active_date");
+  const [sortOrder, setSortOrder] = useState("desc");
 
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [showMergeDialog, setShowMergeDialog] = useState(false);
   const [mergeTargetId, setMergeTargetId] = useState<number | null>(null);
 
-  const fetchCustomers = useCallback(async (searchQuery: string = "") => {
+  const fetchCustomers = useCallback(async (searchQuery: string = "", sortCol: string = "last_active_date", sortDir: string = "desc") => {
     try {
-      const response = await customersApi.list({ 
+      const response = await customersApi.list({
         search: searchQuery,
+        sortBy: sortCol,
+        sortOrder: sortDir,
         limit: 1000 // Show everything
       });
       if (response.success && response.data) {
@@ -93,15 +97,15 @@ export default function CustomersPage() {
 
   // Debounced search
   const debouncedSearch = useCallback(
-    debounce((query: unknown) => {
-      fetchCustomers(query as string);
+    debounce((query: any, sortCol: any, sortDir: any) => {
+      fetchCustomers(query as string, sortCol as string, sortDir as string);
     }, 300),
     [fetchCustomers]
   );
 
   useEffect(() => {
-    fetchCustomers(search);
-  }, [search, fetchCustomers]);
+    fetchCustomers(search, sortBy, sortOrder);
+  }, [search, sortBy, sortOrder, fetchCustomers]);
 
   const resetForm = () => {
     setFormData({
@@ -128,7 +132,7 @@ export default function CustomersPage() {
   };
 
   const toggleSelection = (id: number) => {
-    setSelectedIds(prev => 
+    setSelectedIds(prev =>
       prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
     );
   };
@@ -237,7 +241,7 @@ export default function CustomersPage() {
             </p>
           </div>
           <div className="flex gap-2">
-            <Button 
+            <Button
               variant={isSelectionMode ? "secondary" : "outline"}
               onClick={() => {
                 setIsSelectionMode(!isSelectionMode);
@@ -265,6 +269,21 @@ export default function CustomersPage() {
               className="h-14 pr-12 rounded-2xl bg-white border-none shadow-sm text-lg"
             />
           </div>
+
+          <select
+            value={`${sortBy}-${sortOrder}`}
+            onChange={(e) => {
+              const [col, dir] = e.target.value.split('-');
+              setSortBy(col);
+              setSortOrder(dir);
+            }}
+            className="h-14 px-4 rounded-2xl bg-white border-none shadow-sm font-bold text-sm"
+          >
+            <option value="last_active_date-desc">פעילות אחרונה</option>
+            <option value="name-asc">שם (א' - ת')</option>
+            <option value="created_at-desc">נוספו לאחרונה</option>
+          </select>
+
           <select
             value={sourceFilter}
             onChange={(e) => setSourceFilter(e.target.value)}
@@ -283,7 +302,7 @@ export default function CustomersPage() {
         {customers.filter(c => !sourceFilter || c.source === sourceFilter).map((customer) => (
           <div key={customer.id} className="relative group">
             {isSelectionMode && (
-              <div 
+              <div
                 className={cn(
                   "absolute top-4 right-4 z-10 h-6 w-6 rounded-full border-2 cursor-pointer flex items-center justify-center transition-all bg-white",
                   selectedIds.includes(customer.id) ? "border-primary bg-primary text-white" : "border-muted-foreground/30"
@@ -293,7 +312,7 @@ export default function CustomersPage() {
                 {selectedIds.includes(customer.id) && <CheckIcon className="h-4 w-4" />}
               </div>
             )}
-            <Card 
+            <Card
               onClick={() => isSelectionMode && toggleSelection(customer.id)}
               className={cn(
                 "rounded-[1.5rem] border-none shadow-xl shadow-gray-200/40 bg-white transition-all active:scale-[0.98]",
@@ -301,65 +320,65 @@ export default function CustomersPage() {
                 selectedIds.includes(customer.id) && "ring-2 ring-primary bg-primary/5"
               )}
             >
-            <CardContent className="p-5">
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-3">
-                  <div className="h-12 w-12 rounded-2xl bg-primary/5 flex items-center justify-center text-primary font-black text-xl">
-                    {customer.name.charAt(0)}
+              <CardContent className="p-5">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="h-12 w-12 rounded-2xl bg-primary/5 flex items-center justify-center text-primary font-black text-xl">
+                      {customer.name.charAt(0)}
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-lg text-gray-900 leading-none">{customer.name}</h3>
+                      <p className="text-xs font-medium text-muted-foreground mt-1">
+                        {customer.phone ? formatPhoneNumber(customer.phone) : "ללא טלפון"}
+                      </p>
+                    </div>
                   </div>
-                  <div>
-                    <h3 className="font-bold text-lg text-gray-900 leading-none">{customer.name}</h3>
-                    <p className="text-xs font-medium text-muted-foreground mt-1">
-                      {customer.phone ? formatPhoneNumber(customer.phone) : "ללא טלפון"}
-                    </p>
-                  </div>
-                </div>
-                <div className="flex gap-1">
-                  {customer.phone && !isSelectionMode && (
-                    <a
-                      href={createWhatsAppLink(customer.phone)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="h-10 w-10 bg-green-50 rounded-xl flex items-center justify-center text-green-600 transition-colors active:bg-green-100"
-                    >
-                      <MessageCircle className="h-5 w-5" />
-                    </a>
-                  )}
-                  {customer.phone && !isSelectionMode && (
-                    <a
-                      href={`tel:${customer.phone}`}
-                      className="h-10 w-10 bg-blue-50 rounded-xl flex items-center justify-center text-blue-600 transition-colors active:bg-blue-100"
-                    >
-                      <Phone className="h-5 w-5" />
-                    </a>
-                  )}
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between border-t pt-4">
-                <div className="flex gap-2">
-                  <span className="text-[10px] font-bold text-muted-foreground bg-gray-100 px-2 py-1 rounded-lg uppercase">
-                    נוספה: {formatDateShort(customer.created_at)}
-                  </span>
-                  {customer.source && (
-                    <span className="text-[10px] font-bold text-primary/60 bg-primary/5 px-2 py-1 rounded-lg uppercase">
-                      {customer.source}
-                    </span>
-                  )}
-                </div>
-                {!isSelectionMode && (
                   <div className="flex gap-1">
-                    <Button variant="ghost" size="icon" onClick={() => handleEdit(customer)} className="h-8 w-8 text-gray-400">
-                      <Edit className="h-4 w-4" />
-                    </Button>
-                    <Button variant="ghost" size="icon" onClick={() => handleDelete(customer)} className="h-8 w-8 text-red-300 hover:text-red-500">
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                    {customer.phone && !isSelectionMode && (
+                      <a
+                        href={createWhatsAppLink(customer.phone)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="h-10 w-10 bg-green-50 rounded-xl flex items-center justify-center text-green-600 transition-colors active:bg-green-100"
+                      >
+                        <MessageCircle className="h-5 w-5" />
+                      </a>
+                    )}
+                    {customer.phone && !isSelectionMode && (
+                      <a
+                        href={`tel:${customer.phone}`}
+                        className="h-10 w-10 bg-blue-50 rounded-xl flex items-center justify-center text-blue-600 transition-colors active:bg-blue-100"
+                      >
+                        <Phone className="h-5 w-5" />
+                      </a>
+                    )}
                   </div>
-                )}
-              </div>
-            </CardContent>
-          </Card>
+                </div>
+
+                <div className="flex items-center justify-between border-t pt-4">
+                  <div className="flex gap-2">
+                    <span className="text-[10px] font-bold text-muted-foreground bg-gray-100 px-2 py-1 rounded-lg uppercase">
+                      נוספה: {formatDateShort(customer.created_at)}
+                    </span>
+                    {customer.source && (
+                      <span className="text-[10px] font-bold text-primary/60 bg-primary/5 px-2 py-1 rounded-lg uppercase">
+                        {customer.source}
+                      </span>
+                    )}
+                  </div>
+                  {!isSelectionMode && (
+                    <div className="flex gap-1">
+                      <Button variant="ghost" size="icon" onClick={() => handleEdit(customer)} className="h-8 w-8 text-gray-400">
+                        <Edit className="h-4 w-4" />
+                      </Button>
+                      <Button variant="ghost" size="icon" onClick={() => handleDelete(customer)} className="h-8 w-8 text-red-300 hover:text-red-500">
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
           </div>
         ))}
       </div>
@@ -367,7 +386,7 @@ export default function CustomersPage() {
       {/* Floating Merge Button */}
       {isSelectionMode && selectedIds.length === 2 && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 animate-in slide-in-from-bottom-4 fade-in">
-          <Button 
+          <Button
             onClick={handleMergeClick}
             className="h-14 px-8 rounded-full shadow-2xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-lg gap-2"
           >
@@ -406,8 +425,8 @@ export default function CustomersPage() {
                   if (!c) return null;
                   const isTarget = mergeTargetId === id;
                   return (
-                    <div 
-                      key={id} 
+                    <div
+                      key={id}
                       onClick={() => {
                         setMergeTargetId(id);
                         setFormData({
@@ -441,24 +460,24 @@ export default function CustomersPage() {
                 <div className="space-y-4">
                   <div className="space-y-2">
                     <label className="text-sm font-bold">שם מלא</label>
-                    <Input value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
+                    <Input value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })} />
                   </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
                       <label className="text-sm font-bold">טלפון</label>
-                      <Input value={formData.phone} onChange={e => setFormData({...formData, phone: e.target.value})} dir="ltr" />
+                      <Input value={formData.phone} onChange={e => setFormData({ ...formData, phone: e.target.value })} dir="ltr" />
                     </div>
                     <div className="space-y-2">
                       <label className="text-sm font-bold">אימייל</label>
-                      <Input value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} dir="ltr" />
+                      <Input value={formData.email} onChange={e => setFormData({ ...formData, email: e.target.value })} dir="ltr" />
                     </div>
                   </div>
                   <div className="space-y-2">
                     <label className="text-sm font-bold">הערות (יחליף את הקיים)</label>
-                    <textarea 
+                    <textarea
                       className="w-full h-24 p-3 border rounded-xl"
-                      value={formData.notes} 
-                      onChange={e => setFormData({...formData, notes: e.target.value})} 
+                      value={formData.notes}
+                      onChange={e => setFormData({ ...formData, notes: e.target.value })}
                     />
                   </div>
                 </div>
@@ -466,7 +485,7 @@ export default function CustomersPage() {
 
               <div className="flex gap-4 pt-4">
                 <Button variant="outline" className="flex-1 h-12" onClick={() => setShowMergeDialog(false)}>ביטול</Button>
-                <Button 
+                <Button
                   className="flex-1 h-12 bg-purple-600 hover:bg-purple-700 font-bold"
                   onClick={executeMerge}
                   disabled={saving}
@@ -489,12 +508,12 @@ export default function CustomersPage() {
                 <X className="h-6 w-6" />
               </Button>
             </div>
-            
+
             <CardContent className="p-6">
               <form onSubmit={handleSubmit} className="space-y-6">
                 {!editingCustomer && (
                   <div className="flex justify-end mb-2">
-                    <ContactPicker 
+                    <ContactPicker
                       onContactSelect={(contact) => {
                         setFormData({
                           ...formData,

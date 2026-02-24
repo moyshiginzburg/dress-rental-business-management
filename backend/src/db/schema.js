@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS dresses (
     base_price REAL DEFAULT 0,
     total_income REAL DEFAULT 0,
     rental_count INTEGER DEFAULT 0,
-    status TEXT DEFAULT 'available' CHECK(status IN ('available', 'rented', 'sold', 'retired')),
+    status TEXT DEFAULT 'available' CHECK(status IN ('available', 'sold', 'retired')),
     intended_use TEXT DEFAULT 'rental' CHECK(intended_use IN ('rental', 'sale')),
     photo_url TEXT,
     thumbnail_url TEXT,

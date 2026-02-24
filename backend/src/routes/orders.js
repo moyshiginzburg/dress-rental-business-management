@@ -95,7 +95,8 @@ router.get('/', (req, res, next) => {
     let sql = `
       SELECT o.*, 
              c.name as customer_name, c.phone as customer_phone, c.email as customer_email,
-             (SELECT COALESCE(SUM(customer_charge_amount), 0) FROM transactions t WHERE t.order_id = o.id) as total_customer_charge
+             (SELECT COALESCE(SUM(customer_charge_amount), 0) FROM transactions t WHERE t.order_id = o.id) as total_customer_charge,
+             (SELECT COALESCE(MAX(date), '') FROM transactions t WHERE t.order_id = o.id) as last_active_date
       FROM orders o
       LEFT JOIN customers c ON o.customer_id = c.id
       WHERE 1=1
@@ -119,10 +120,11 @@ router.get('/', (req, res, next) => {
       params.push(endDate);
     }
 
-    const validSortColumns = ['created_at', 'event_date', 'total_price', 'status'];
-    const sortColumn = validSortColumns.includes(sortBy) ? `o.${sortBy}` : 'o.created_at';
+    const validSortColumns = ['created_at', 'event_date', 'total_price', 'status', 'customer_name', 'last_active_date'];
+    const sortColumn = validSortColumns.includes(sortBy) ? sortBy : 'event_date';
     const order = sortOrder.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
-    sql += ` ORDER BY ${sortColumn} ${order}`;
+    const sortPrefix = ['customer_name', 'last_active_date'].includes(sortColumn) ? '' : 'o.';
+    sql += ` ORDER BY ${sortPrefix}${sortColumn} ${order}`;
 
     const pageNum = parseInt(page, 10);
     const limitNum = parseInt(limit, 10);
@@ -373,54 +375,14 @@ router.post('/', async (req, res, next) => {
           let installments = parseInt(payment.installments, 10);
           if (Number.isNaN(installments) || installments < 1) installments = 1;
 
-          if (payment.fileBase64) {
-            try {
-              const buffer = Buffer.from(payment.fileBase64, 'base64');
-              const mimeType = getMimeTypeFromFileName(payment.fileName || '');
-              const aiData = await extractReceiptDetails(buffer, mimeType, paymentMethod);
-
-              if (aiData?.paymentMethod && !paymentMethod) {
-                paymentMethod = aiData.paymentMethod;
-              }
-
-              if (aiData?.confirmationNumber && !confirmationNumber) {
-                confirmationNumber = aiData.confirmationNumber;
-              }
-              if (aiData?.lastFourDigits && !lastFourDigits) {
-                lastFourDigits = aiData.lastFourDigits;
-              }
-              if (aiData?.checkNumber && !checkNumber) {
-                checkNumber = aiData.checkNumber;
-              }
-              if (aiData?.bankDetails && !bankDetails) {
-                bankDetails = JSON.stringify(aiData.bankDetails);
-              }
-              if (aiData?.installments && (!payment.installments || parseInt(payment.installments, 10) < 1)) {
-                installments = parseInt(aiData.installments, 10);
-                if (Number.isNaN(installments) || installments < 1) installments = 1;
-              }
-            } catch (aiError) {
-              console.error('Order payment AI extraction failed:', aiError);
-            }
-          }
-
-          const sanitizedPayment = sanitizePaymentDetails({
-            paymentMethod,
-            confirmationNumber,
-            lastFourDigits,
-            checkNumber,
-            bankDetails,
-            installments
-          });
-
           normalizedDepositPayments.push({
             amount: pAmt,
-            method: sanitizedPayment.paymentMethod || payment.payment_method || 'לא צוין',
-            confirmationNumber: sanitizedPayment.confirmationNumber || null,
-            lastFourDigits: sanitizedPayment.lastFourDigits || null,
-            checkNumber: sanitizedPayment.checkNumber || null,
-            bankDetails: sanitizedPayment.bankDetails || null,
-            installments: sanitizedPayment.installments,
+            method: paymentMethod || payment.payment_method || 'לא צוין',
+            confirmationNumber: confirmationNumber || null,
+            lastFourDigits: lastFourDigits || null,
+            checkNumber: checkNumber || null,
+            bankDetails: bankDetails || null,
+            installments: installments,
             hasFile: Boolean(payment.fileBase64),
             fileBase64: payment.fileBase64 || null,
             fileName: payment.fileName || null
@@ -434,50 +396,19 @@ router.post('/', async (req, res, next) => {
               finalCustomerId,
               customerData.name,
               pAmt,
-              sanitizedPayment.paymentMethod || 'לא צוין',
+              paymentMethod || 'לא צוין',
               orderId,
               payment.notes || null,
-              sanitizedPayment.confirmationNumber || null,
-              sanitizedPayment.lastFourDigits || null,
-              sanitizedPayment.checkNumber || null,
-              sanitizedPayment.bankDetails || null,
-              sanitizedPayment.installments
+              confirmationNumber || null,
+              lastFourDigits || null,
+              checkNumber || null,
+              bankDetails || null,
+              installments
             ]
           );
         }
       }
 
-    }
-
-    // Fire-and-forget: send email notification in the background.
-    // This prevents SMTP timeouts from blocking the HTTP response.
-    if (isEmailEnabled()) {
-      const dressesForEmail = (items || []).map((item) => {
-        const basePrice = parseFloat(item.base_price) || 0;
-        const extra = parseFloat(item.additional_payments) || 0;
-        const finalPrice = parseFloat(item.final_price) || (basePrice + extra);
-        return {
-          name: item.dress_name || item.wearer_name || 'פריט',
-          price: finalPrice,
-          itemType: item.item_type || 'rental',
-          itemTypeLabel: getItemTypeLabel(item.item_type || 'rental')
-        };
-      });
-
-      sendNewOrderNotification({
-        customerName: customerData.name,
-        customerPhone: customerData.phone,
-        customerEmail: customerData.email || null,
-        eventDate: event_date,
-        orderSummary,
-        dresses: dressesForEmail,
-        totalPrice: parseFloat(total_price),
-        deposit: depositAmt,
-        depositPayments: normalizedDepositPayments,
-        notes
-      }).catch(emailError => {
-        console.error('Order notification email failed:', emailError);
-      });
     }
 
     const newOrder = get(
@@ -488,11 +419,113 @@ router.post('/', async (req, res, next) => {
       [orderId]
     );
 
+    // 🌟 FAST RESPONSE: Send 201 Created immediately to unblock the UI!
     res.status(201).json({
       success: true,
       message: 'הזמנה נוצרה בהצלחה',
       data: { order: newOrder }
     });
+
+    // 🌟 BACKGROUND PROCESSING: AI + Email
+    // Runs asynchronously after res.send() finishes
+    (async () => {
+      try {
+        // 1. Run AI for each deposit payment with a file
+        if (deposit_payments && Array.isArray(deposit_payments)) {
+          for (let i = 0; i < normalizedDepositPayments.length; i++) {
+            const payment = normalizedDepositPayments[i];
+
+            if (payment.hasFile && payment.fileBase64) {
+              const buffer = Buffer.from(payment.fileBase64, 'base64');
+              const mimeType = getMimeTypeFromFileName(payment.fileName || '');
+
+              const aiData = await extractReceiptDetails(buffer, mimeType, payment.method);
+
+              if (aiData) {
+                if (aiData.paymentMethod && (!payment.method || payment.method === 'לא צוין')) payment.method = aiData.paymentMethod;
+                if (aiData.confirmationNumber && !payment.confirmationNumber) payment.confirmationNumber = aiData.confirmationNumber;
+                if (aiData.lastFourDigits && !payment.lastFourDigits) payment.lastFourDigits = aiData.lastFourDigits;
+                if (aiData.checkNumber && !payment.checkNumber) payment.checkNumber = aiData.checkNumber;
+                if (aiData.bankDetails && !payment.bankDetails) payment.bankDetails = JSON.stringify(aiData.bankDetails);
+                if (aiData.installments && payment.installments <= 1) {
+                  let parsedInstal = parseInt(aiData.installments, 10);
+                  if (!Number.isNaN(parsedInstal) && parsedInstal > 1) payment.installments = parsedInstal;
+                }
+
+                const sanitizedPayment = sanitizePaymentDetails({
+                  paymentMethod: payment.method,
+                  confirmationNumber: payment.confirmationNumber,
+                  lastFourDigits: payment.lastFourDigits,
+                  checkNumber: payment.checkNumber,
+                  bankDetails: payment.bankDetails,
+                  installments: payment.installments
+                });
+
+                payment.method = sanitizedPayment.paymentMethod || payment.method;
+                payment.confirmationNumber = sanitizedPayment.confirmationNumber;
+                payment.lastFourDigits = sanitizedPayment.lastFourDigits;
+                payment.checkNumber = sanitizedPayment.checkNumber;
+                payment.bankDetails = sanitizedPayment.bankDetails;
+                payment.installments = sanitizedPayment.installments;
+
+                // Update the matching transaction in DB
+                run(
+                  `UPDATE transactions 
+                   SET payment_method = ?, confirmation_number = ?, last_four_digits = ?, 
+                       check_number = ?, bank_details = ?, installments = ?, updated_at = CURRENT_TIMESTAMP 
+                   WHERE id = (
+                     SELECT id FROM transactions
+                     WHERE order_id = ? AND amount = ? AND type = 'income' AND category = 'order'
+                     ORDER BY id DESC
+                     LIMIT 1
+                   )`,
+                  [
+                    payment.method || null,
+                    payment.confirmationNumber || null,
+                    payment.lastFourDigits || null,
+                    payment.checkNumber || null,
+                    payment.bankDetails || null,
+                    payment.installments,
+                    orderId,
+                    payment.amount
+                  ]
+                );
+              }
+            }
+          }
+        }
+
+        // 2. Send Notifications (Only after AI updated DB)
+        if (isEmailEnabled()) {
+          const dressesForEmail = (items || []).map((item) => {
+            const basePrice = parseFloat(item.base_price) || 0;
+            const extra = parseFloat(item.additional_payments) || 0;
+            const finalPrice = parseFloat(item.final_price) || (basePrice + extra);
+            return {
+              name: item.dress_name || item.wearer_name || 'פריט',
+              price: finalPrice,
+              itemType: item.item_type || 'rental',
+              itemTypeLabel: getItemTypeLabel(item.item_type || 'rental')
+            };
+          });
+
+          await sendNewOrderNotification({
+            customerName: customerData.name,
+            customerPhone: customerData.phone,
+            customerEmail: customerData.email || null,
+            eventDate: event_date,
+            orderSummary,
+            dresses: dressesForEmail,
+            totalPrice: parseFloat(total_price),
+            deposit: depositAmt,
+            depositPayments: normalizedDepositPayments, // Now potentially enriched by AI
+            notes
+          });
+        }
+      } catch (backgroundError) {
+        console.error('Background Order AI/Email processing failed:', backgroundError);
+      }
+    })(); // End of Background Promise
 
   } catch (error) {
     next(error);
@@ -713,7 +746,7 @@ router.post('/merge', (req, res, next) => {
         'SELECT SUM(final_price) as newTotal FROM order_items WHERE order_id = ?',
         [targetOrderId]
       );
-      
+
       // Recalculate paid amount from transactions
       const { newPaid } = get(
         "SELECT SUM(amount) as newPaid FROM transactions WHERE order_id = ? AND type = 'income'",
@@ -733,7 +766,7 @@ router.post('/merge', (req, res, next) => {
         'SELECT item_type, dress_name, wearer_name FROM order_items WHERE order_id = ?',
         [targetOrderId]
       );
-      
+
       let orderSummary = '';
       if (items && items.length > 0) {
         const itemSummaries = items.map(item => {

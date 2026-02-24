@@ -27,21 +27,26 @@ router.get('/', (req, res, next) => {
   try {
     const { search, page = 1, limit = 50, sortBy = 'name', sortOrder = 'asc' } = req.query;
 
-    let sql = 'SELECT * FROM customers WHERE 1=1';
+    let sql = `
+      SELECT c.*, 
+             COALESCE((SELECT MAX(date) FROM transactions WHERE customer_id = c.id), c.created_at) as last_active_date
+      FROM customers c 
+      WHERE 1=1
+    `;
     const params = [];
 
     // Add search filter
     if (search) {
-      sql += ' AND (name LIKE ? OR phone LIKE ? OR email LIKE ?)';
+      sql += ' AND (c.name LIKE ? OR c.phone LIKE ? OR c.email LIKE ?)';
       const searchPattern = `%${search}%`;
       params.push(searchPattern, searchPattern, searchPattern);
     }
 
     // Add sorting
-    const validSortColumns = ['name', 'created_at', 'updated_at', 'source'];
-    const sortColumn = validSortColumns.includes(sortBy) ? sortBy : 'name';
-    const order = sortOrder.toLowerCase() === 'desc' ? 'DESC' : 'ASC';
-    sql += ` ORDER BY ${sortColumn} ${order}`;
+    const validSortColumns = ['name', 'created_at', 'updated_at', 'source', 'last_active_date'];
+    const sortColumn = validSortColumns.includes(sortBy) ? sortBy : 'last_active_date';
+    const order = sortOrder.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+    sql += ` ORDER BY ${sortColumn === 'name' || sortColumn === 'source' || sortColumn === 'last_active_date' ? sortColumn : `c.${sortColumn}`} ${order}`;
 
     // Add pagination
     const pageNum = parseInt(page, 10);

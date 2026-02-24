@@ -11,15 +11,15 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { 
-  ArrowRight, 
-  Wallet, 
-  User, 
-  Calendar, 
-  Tag, 
-  CreditCard, 
-  Camera, 
-  X, 
+import {
+  ArrowRight,
+  Wallet,
+  User,
+  Calendar,
+  Tag,
+  CreditCard,
+  Camera,
+  X,
   ShoppingBag,
   Plus,
   Search,
@@ -31,7 +31,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { useToast } from "@/components/ui/use-toast";
 import { transactionsApi, customersApi, ordersApi } from "@/lib/api";
-import { cn, getCategoryLabel, normalizePhoneInput } from "@/lib/utils";
+import { cn, getCategoryLabel, normalizePhoneInput, formatDateInput } from "@/lib/utils";
 import { clearSharedUploadPayload, getSharedUploadPayload } from "@/lib/shared-upload";
 import { ContactPicker } from "@/components/dashboard/contact-picker";
 
@@ -65,31 +65,31 @@ export default function NewTransactionPage() {
   const { toast } = useToast();
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  
+
   const [type, setType] = useState<"income" | "expense">("income");
   const [uiCategory, setUiCategory] = useState("");
   const [amount, setAmount] = useState("");
   const [category, setCategory] = useState("");
-  const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
+  const [date, setDate] = useState(formatDateInput(new Date()));
   const [paymentMethod, setPaymentMethod] = useState("cash");
   const [notes, setNotes] = useState("");
   const [fileBase64, setFileBase64] = useState<string | undefined>();
   const [fileName, setFileName] = useState<string | undefined>();
-  
+
   const [customerId, setCustomerId] = useState("");
   const [customerSearch, setCustomerSearch] = useState("");
   const [customers, setCustomers] = useState<{ id: number; name: string; phone: string }[]>([]);
   const [isNewCustomer, setIsNewCustomer] = useState(false);
   const [newCustomerDetails, setNewCustomerDetails] = useState({ name: "", phone: "", email: "" });
-  
+
   const [orderId, setOrderId] = useState("");
   const [recentOrders, setRecentOrders] = useState<any[]>([]);
   const [expenseAllocation, setExpenseAllocation] = useState<"business" | "customer" | "split">("business");
   const [customerChargeAmount, setCustomerChargeAmount] = useState("");
-  
+
   const [supplier, setSupplier] = useState("");
   const [product, setProduct] = useState("");
-  
+
   // Payment Details State
   const [bankNumber, setBankNumber] = useState("");
   const [branchNumber, setBranchNumber] = useState("");
@@ -103,7 +103,7 @@ export default function NewTransactionPage() {
   useEffect(() => {
     const typeParam = searchParams.get("type");
     if (typeParam === "expense") setType("expense");
-    
+
     const amountParam = searchParams.get("amount");
     if (amountParam) setAmount(amountParam);
 
@@ -146,10 +146,10 @@ export default function NewTransactionPage() {
   useEffect(() => {
     const loadData = async () => {
       if (type === "income" && uiCategory === "existing_order") {
-        const res = await ordersApi.list({ limit: 10 } as any);
+        const res = await ordersApi.list({ limit: 50, sortBy: 'event_date', sortOrder: 'desc' } as any);
         if (res.success) setRecentOrders((res.data as any).orders || []);
       } else if (type === "expense" && (expenseAllocation === "customer" || expenseAllocation === "split")) {
-        const res = await ordersApi.list({ limit: 10 } as any);
+        const res = await ordersApi.list({ limit: 50, sortBy: 'event_date', sortOrder: 'desc' } as any);
         if (res.success) setRecentOrders((res.data as any).orders || []);
       }
     };
@@ -175,7 +175,7 @@ export default function NewTransactionPage() {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      if (file.size > 5 * 1024 * 1024) { 
+      if (file.size > 5 * 1024 * 1024) {
         toast({ title: "שגיאה", description: "הקובץ גדול מדי", variant: "destructive" });
         return;
       }
@@ -211,7 +211,7 @@ export default function NewTransactionPage() {
         check_number: checkNumber || undefined,
         last_four_digits: lastFourDigits || undefined,
         installments: installments ? parseInt(installments) : 1,
-        bank_details: (bankNumber || branchNumber || accountNumber) ? 
+        bank_details: (bankNumber || branchNumber || accountNumber) ?
           JSON.stringify({ bank: bankNumber, branch: branchNumber, account: accountNumber }) : undefined,
         customer_id: customerId ? parseInt(customerId) : undefined,
         order_id: orderId ? parseInt(orderId) : undefined,
@@ -257,10 +257,10 @@ export default function NewTransactionPage() {
       </div>
 
       <form onSubmit={handleSubmit} className="max-w-2xl mx-auto p-4 sm:p-6 space-y-8">
-        
+
         {/* Type Selector */}
         <div className="bg-muted p-1.5 rounded-2xl flex relative overflow-hidden">
-          <div 
+          <div
             className={cn(
               "absolute inset-y-1.5 w-[calc(50%-6px)] rounded-xl bg-white shadow-sm transition-all duration-300 ease-spring",
               type === "expense" ? "translate-x-0" : "translate-x-[calc(100%+6px)]"
@@ -311,9 +311,9 @@ export default function NewTransactionPage() {
             <label className="text-xs font-bold text-muted-foreground flex items-center gap-1">
               <Calendar className="h-3 w-3" /> תאריך
             </label>
-            <Input 
-              type="date" 
-              value={date} 
+            <Input
+              type="date"
+              value={date}
               onChange={(e) => setDate(e.target.value)}
               className="h-12 rounded-xl border-2"
             />
@@ -374,7 +374,6 @@ export default function NewTransactionPage() {
                         setOrderId(order.id.toString());
                         setCustomerId(order.customer_id.toString());
                         setCategory('order');
-                        setAmount((order.total_price - order.paid_amount).toString());
                         setCustomerSearch(order.customer_name);
                       }}
                       className="w-full text-right p-4 bg-card border-2 rounded-xl hover:border-primary transition-all shadow-sm"
@@ -400,6 +399,18 @@ export default function NewTransactionPage() {
                   <div>
                     <p className="text-[10px] font-black text-primary uppercase tracking-widest">משוייך להזמנה #{orderId}</p>
                     <p className="text-lg font-black">{customerSearch}</p>
+
+                    {/* Add remaining balance indication explicitly here */}
+                    {(() => {
+                      const order = recentOrders.find(o => o.id.toString() === orderId);
+                      if (!order) return null;
+                      const balance = order.total_price - order.paid_amount;
+                      return (
+                        <p className="text-xs font-bold text-green-700 mt-1 flex items-center gap-1">
+                          <Wallet className="h-3 w-3" /> יתרה נוכחית בהזמנה: ₪{balance}
+                        </p>
+                      );
+                    })()}
                   </div>
                 </div>
                 <Button type="button" variant="ghost" size="icon" onClick={() => { setOrderId(""); setCategory(""); }} className="text-destructive"><X /></Button>
@@ -409,26 +420,26 @@ export default function NewTransactionPage() {
             {(uiCategory === "repair" || uiCategory === "other") && (
               <div className="space-y-4 animate-in fade-in slide-in-from-top-2">
                 <label className="text-xs font-bold text-muted-foreground uppercase tracking-widest">מי הלקוחה?</label>
-                
+
                 {isNewCustomer ? (
                   <div className="bg-primary/5 p-4 rounded-2xl border-2 border-primary/20 space-y-4 animate-in zoom-in-95">
                     <div className="flex justify-between items-center">
                       <h3 className="font-bold text-primary flex items-center gap-2">
                         <User className="h-4 w-4" /> פרטי לקוחה חדשה
                       </h3>
-                      <Button 
-                        type="button" 
-                        variant="ghost" 
-                        size="icon" 
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
                         onClick={() => setIsNewCustomer(false)}
                         className="h-8 w-8 rounded-full"
                       >
                         <X className="h-4 w-4" />
                       </Button>
                     </div>
-                    
+
                     <div className="flex justify-end">
-                      <ContactPicker 
+                      <ContactPicker
                         onContactSelect={(contact) => {
                           setNewCustomerDetails({
                             name: contact.name,
@@ -444,18 +455,18 @@ export default function NewTransactionPage() {
                     <div className="space-y-3">
                       <div className="space-y-1">
                         <label className="text-xs font-medium">שם מלא</label>
-                        <Input 
+                        <Input
                           value={newCustomerDetails.name}
-                          onChange={(e) => setNewCustomerDetails({...newCustomerDetails, name: e.target.value})}
+                          onChange={(e) => setNewCustomerDetails({ ...newCustomerDetails, name: e.target.value })}
                           className="bg-white"
                           placeholder="שם הלקוחה"
                         />
                       </div>
                       <div className="space-y-1">
                         <label className="text-xs font-medium">טלפון</label>
-                        <Input 
+                        <Input
                           value={newCustomerDetails.phone}
-                          onChange={(e) => setNewCustomerDetails({...newCustomerDetails, phone: normalizePhoneInput(e.target.value)})}
+                          onChange={(e) => setNewCustomerDetails({ ...newCustomerDetails, phone: normalizePhoneInput(e.target.value) })}
                           className="bg-white text-left"
                           placeholder="050-0000000"
                           dir="ltr"
@@ -463,9 +474,9 @@ export default function NewTransactionPage() {
                       </div>
                       <div className="space-y-1">
                         <label className="text-xs font-medium">אימייל (אופציונלי)</label>
-                        <Input 
+                        <Input
                           value={newCustomerDetails.email}
-                          onChange={(e) => setNewCustomerDetails({...newCustomerDetails, email: e.target.value})}
+                          onChange={(e) => setNewCustomerDetails({ ...newCustomerDetails, email: e.target.value })}
                           className="bg-white text-left"
                           placeholder="email@example.com"
                           dir="ltr"
@@ -491,9 +502,9 @@ export default function NewTransactionPage() {
                       <button
                         key={c.id}
                         type="button"
-                        onClick={() => { 
-                          setCustomerId(c.id.toString()); 
-                          setCustomerSearch(c.name); 
+                        onClick={() => {
+                          setCustomerId(c.id.toString());
+                          setCustomerSearch(c.name);
                           setIsNewCustomer(false);
                         }}
                         className={cn(
@@ -592,15 +603,20 @@ export default function NewTransactionPage() {
                 <label className="text-xs font-bold text-red-700 uppercase">שיוך לחיוב</label>
                 {!orderId ? (
                   <div className="grid gap-2 max-h-40 overflow-y-auto">
-                    {recentOrders.slice(0, 5).map(o => (
+                    {recentOrders.map(o => (
                       <button
                         key={o.id}
                         type="button"
                         onClick={() => { setOrderId(o.id.toString()); setCustomerId(o.customer_id.toString()); setCustomerSearch(o.customer_name); }}
-                        className="p-3 bg-white border-2 rounded-xl text-right hover:border-red-300 transition-all"
+                        className="p-3 bg-white border-2 rounded-xl text-right hover:border-red-300 transition-all flex justify-between"
                       >
-                        <p className="font-bold text-red-600 text-sm">{o.customer_name}</p>
-                        <p className="text-[10px] text-muted-foreground">הזמנה #{o.id}</p>
+                        <div>
+                          <p className="font-bold text-red-600 text-sm">{o.customer_name}</p>
+                          <p className="text-[10px] text-muted-foreground">הזמנה #{o.id}</p>
+                        </div>
+                        <div className="text-left flex flex-col items-end">
+                          <span className="text-xs font-bold text-red-700 bg-red-50 px-2 py-0.5 rounded-md">₪{o.total_price - o.paid_amount} חסר</span>
+                        </div>
                       </button>
                     ))}
                   </div>
@@ -609,8 +625,18 @@ export default function NewTransactionPage() {
                     <div>
                       <p className="text-[10px] font-black text-red-600">הזמנה #{orderId}</p>
                       <p className="font-bold">{customerSearch}</p>
+                      {(() => {
+                        const order = recentOrders.find(o => o.id.toString() === orderId);
+                        if (!order) return null;
+                        const balance = order.total_price - order.paid_amount;
+                        return (
+                          <p className="text-[10px] font-bold text-red-700 mt-1 flex items-center gap-1">
+                            <Wallet className="h-3 w-3" /> יתרה נוכחית: ₪{balance}
+                          </p>
+                        );
+                      })()}
                     </div>
-                    <Button type="button" variant="ghost" size="icon" onClick={() => setOrderId("")} className="text-red-600"><X /></Button>
+                    <Button type="button" variant="ghost" size="icon" onClick={() => { setOrderId(""); setCustomerId(""); }} className="text-red-600"><X /></Button>
                   </div>
                 )}
                 {expenseAllocation === "split" && (
@@ -629,7 +655,7 @@ export default function NewTransactionPage() {
 
         {/* Global Fields */}
         <section className="space-y-4">
-          
+
           {/* Payment Details - Conditional Fields */}
           {type === "income" && paymentMethod === "credit" && (
             <div className="grid grid-cols-3 gap-2 animate-in fade-in slide-in-from-top-2">
@@ -639,22 +665,22 @@ export default function NewTransactionPage() {
               </div>
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-muted-foreground uppercase">4 ספרות</label>
-                <Input 
-                  value={lastFourDigits} 
-                  onChange={(e) => setLastFourDigits(e.target.value)} 
-                  placeholder="****" 
+                <Input
+                  value={lastFourDigits}
+                  onChange={(e) => setLastFourDigits(e.target.value)}
+                  placeholder="****"
                   maxLength={4}
-                  className="h-10 text-center" 
+                  className="h-10 text-center"
                 />
               </div>
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-muted-foreground uppercase">תשלומים</label>
-                <Input 
-                  type="number" 
+                <Input
+                  type="number"
                   min="1"
-                  value={installments} 
-                  onChange={(e) => setInstallments(e.target.value)} 
-                  className="h-10 text-center" 
+                  value={installments}
+                  onChange={(e) => setInstallments(e.target.value)}
+                  className="h-10 text-center"
                 />
               </div>
             </div>
@@ -740,14 +766,14 @@ export default function NewTransactionPage() {
       {/* Sticky Bottom Bar */}
       <div className="fixed bottom-0 left-0 right-0 p-4 bg-background/80 backdrop-blur-lg border-t z-40">
         <div className="max-w-2xl mx-auto flex gap-3">
-          <Button 
-            variant="outline" 
+          <Button
+            variant="outline"
             className="flex-1 h-14 rounded-2xl text-lg font-bold border-2"
             onClick={() => router.back()}
           >
             ביטול
           </Button>
-          <Button 
+          <Button
             className={cn(
               "flex-[2] h-14 rounded-2xl text-lg font-bold shadow-xl transition-all",
               type === "income" ? "bg-green-600 hover:bg-green-700" : "bg-red-600 hover:bg-red-700"

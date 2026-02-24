@@ -33,7 +33,6 @@ const ORDER_TYPE_OPTIONS = [
 
 const DRESS_STATUS_OPTIONS = [
   { value: 'available', label: 'זמינה' },
-  { value: 'rented', label: 'מושכרת' },
   { value: 'sold', label: 'נמכרה' },
   { value: 'retired', label: 'יצאה ממלאי' },
 ];

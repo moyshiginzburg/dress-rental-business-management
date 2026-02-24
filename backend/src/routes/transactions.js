@@ -12,10 +12,11 @@ import { Router } from 'express';
 import { run, get, all } from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
 import { ApiError } from '../middleware/errorHandler.js';
-import { sendNewIncomeNotification, isEmailEnabled, sendDetailedIncomeNotification } from '../services/email.js';
+import { isEmailEnabled, sendDetailedIncomeNotification } from '../services/email.js';
 import { extractReceiptDetails } from '../services/ai.js';
 import { sanitizePaymentDetails } from '../services/paymentDetails.js';
 import { normalizePhoneNumber } from '../services/phone.js';
+import { saveExpenseReceipt, renameExpenseReceipt } from '../services/localStorage.js';
 
 const router = Router();
 
@@ -93,7 +94,7 @@ router.get('/', (req, res, next) => {
       sql += ' AND t.type = ?';
       params.push(type);
     }
-    
+
     // Add customer_id filter
     if (customer_id) {
       sql += ' AND t.customer_id = ?';
@@ -168,7 +169,7 @@ router.get('/', (req, res, next) => {
     if (search) {
       countSql += ' AND (t.customer_name LIKE ? OR t.supplier LIKE ? OR t.product LIKE ? OR t.notes LIKE ?)';
       const searchPattern = `%${search}%`;
-      params.push(searchPattern, searchPattern, searchPattern, searchPattern);
+      countParams.push(searchPattern, searchPattern, searchPattern, searchPattern);
     }
     const { total } = get(countSql, countParams);
 
@@ -376,40 +377,6 @@ router.post('/', async (req, res, next) => {
     let installments = parseInt(requestedInstallments, 10);
     if (Number.isNaN(installments) || installments < 1) installments = 1;
 
-    if (fileBase64 && type === 'income') {
-      try {
-        const buffer = Buffer.from(fileBase64, 'base64');
-        const safeFileName = (fileName || '').toLowerCase();
-        const mimeType = safeFileName.endsWith('.pdf') ? 'application/pdf' : 'image/jpeg';
-        
-        const aiResult = await extractReceiptDetails(buffer, mimeType, paymentMethod);
-        
-        if (aiResult) {
-          if (aiResult.paymentMethod && !paymentMethod) {
-            paymentMethod = aiResult.paymentMethod;
-          }
-          if (aiResult.confirmationNumber && !confirmationNumber) {
-            confirmationNumber = aiResult.confirmationNumber;
-          }
-          if (aiResult.lastFourDigits && !lastFourDigits) {
-            lastFourDigits = aiResult.lastFourDigits;
-          }
-          if (aiResult.checkNumber && !checkNumber) {
-            checkNumber = aiResult.checkNumber;
-          }
-          if (aiResult.bankDetails && !bankDetails) {
-            bankDetails = JSON.stringify(aiResult.bankDetails);
-          }
-          if (aiResult.installments && (!requestedInstallments || parseInt(requestedInstallments, 10) < 1)) {
-            installments = parseInt(aiResult.installments, 10);
-          }
-          console.log('AI Extraction Result:', aiResult);
-        }
-      } catch (aiError) {
-        console.error('AI extraction failed:', aiError);
-      }
-    }
-
     const sanitizedPayment = sanitizePaymentDetails({
       paymentMethod,
       confirmationNumber,
@@ -450,7 +417,32 @@ router.post('/', async (req, res, next) => {
       ]
     );
 
-    const newTransaction = get('SELECT * FROM transactions WHERE id = ?', [result.lastInsertRowid]);
+    const transactionId = result.lastInsertRowid;
+    const newTransaction = get('SELECT * FROM transactions WHERE id = ?', [transactionId]);
+
+    // Save expense receipt file to local storage (uploads/expenses/YEAR/CATEGORY/)
+    if (type === 'expense' && fileBase64) {
+      try {
+        const safeFileName = (fileName || '').toLowerCase();
+        let extension = 'jpg';
+        if (safeFileName.endsWith('.pdf')) extension = 'pdf';
+        else if (safeFileName.endsWith('.png')) extension = 'png';
+        else if (safeFileName.endsWith('.webp')) extension = 'webp';
+
+        const expenseDate = date ? new Date(date) : new Date();
+        saveExpenseReceipt(
+          fileBase64,
+          category,
+          product || notes || '',
+          supplier || '',
+          parseFloat(amount),
+          expenseDate,
+          extension
+        );
+      } catch (saveError) {
+        console.error('Failed to save expense receipt file:', saveError.message);
+      }
+    }
 
     if (type === 'income' && order_id) {
       const order = get('SELECT * FROM orders WHERE id = ?', [order_id]);
@@ -463,57 +455,109 @@ router.post('/', async (req, res, next) => {
       }
     }
 
-    // Fire-and-forget: send notifications in the background to avoid
-    // blocking the HTTP response if SMTP is slow or unreachable.
-    if (type === 'income' && isEmailEnabled()) {
-      let customerPhone = null;
-      let customerEmail = null;
-      if (finalCustomerId) {
-        const customer = get('SELECT phone, email FROM customers WHERE id = ?', [finalCustomerId]);
-        customerPhone = customer?.phone;
-        customerEmail = customer?.email;
-      }
-
-      sendDetailedIncomeNotification({
-        customerName: finalCustomerName,
-        customerPhone,
-        customerEmail,
-        amount: parseFloat(amount),
-        paymentMethod,
-        confirmationNumber,
-        lastFourDigits,
-        checkNumber,
-        bankDetails,
-        installments,
-        fileBase64,
-        fileName
-      }).catch(emailError => {
-        console.error('Error sending income notification:', emailError.message);
-      });
-    }
-
-    if (type === 'expense' && isEmailEnabled()) {
-      import('../services/email.js').then(({ sendNewExpenseNotification }) => {
-        sendNewExpenseNotification({
-          amount: parseFloat(amount),
-          category: getCategoryDisplayName(category),
-          supplier: supplier || null,
-          product: product || null,
-          notes,
-          transactionDate: date,
-          fileBase64,
-          fileName
-        }).catch(emailError => {
-          console.error('Error sending expense notification:', emailError.message);
-        });
-      });
-    }
-
+    // 🌟 FAST RESPONSE: Send 201 Created immediately to unblock the UI!
     res.status(201).json({
       success: true,
       message: type === 'income' ? 'הכנסה נוספה בהצלחה' : 'הוצאה נוספה בהצלחה',
       data: { transaction: newTransaction, emailSent: isEmailEnabled() }
     });
+
+    // 🌟 BACKGROUND PROCESSING: AI + Email
+    // This code runs asynchronously after res.send() finishes
+    (async () => {
+      try {
+        // 1. Run AI for Income receipt if present
+        if (fileBase64 && type === 'income') {
+          const buffer = Buffer.from(fileBase64, 'base64');
+          const safeFileName = (fileName || '').toLowerCase();
+          const mimeType = safeFileName.endsWith('.pdf') ? 'application/pdf' : 'image/jpeg';
+
+          const aiResult = await extractReceiptDetails(buffer, mimeType, paymentMethod);
+
+          if (aiResult) {
+            if (aiResult.paymentMethod && !paymentMethod) paymentMethod = aiResult.paymentMethod;
+            if (aiResult.confirmationNumber && !confirmationNumber) confirmationNumber = aiResult.confirmationNumber;
+            if (aiResult.lastFourDigits && !lastFourDigits) lastFourDigits = aiResult.lastFourDigits;
+            if (aiResult.checkNumber && !checkNumber) checkNumber = aiResult.checkNumber;
+            if (aiResult.bankDetails && !bankDetails) bankDetails = JSON.stringify(aiResult.bankDetails);
+            if (aiResult.installments && (!requestedInstallments || parseInt(requestedInstallments, 10) < 1)) {
+              installments = parseInt(aiResult.installments, 10);
+            }
+
+            const aiSanitized = sanitizePaymentDetails({
+              paymentMethod, confirmationNumber, lastFourDigits, checkNumber, bankDetails, installments
+            });
+
+            // Re-assign sanitized back
+            paymentMethod = aiSanitized.paymentMethod;
+            confirmationNumber = aiSanitized.confirmationNumber;
+            lastFourDigits = aiSanitized.lastFourDigits;
+            checkNumber = aiSanitized.checkNumber;
+            bankDetails = aiSanitized.bankDetails;
+            installments = aiSanitized.installments;
+
+            // Update database with AI parsed features securely
+            run(
+              `UPDATE transactions 
+               SET payment_method = ?, confirmation_number = ?, last_four_digits = ?, 
+                   check_number = ?, bank_details = ?, installments = ?, updated_at = CURRENT_TIMESTAMP 
+               WHERE id = ?`,
+              [
+                paymentMethod || null,
+                confirmationNumber || null,
+                lastFourDigits || null,
+                checkNumber || null,
+                bankDetails || null,
+                installments || 1,
+                transactionId
+              ]
+            );
+          }
+        }
+
+        // 2. Send Notifications (Only after AI updated DB)
+        if (type === 'income' && isEmailEnabled()) {
+          let customerPhone = null;
+          let customerEmail = null;
+          if (finalCustomerId) {
+            const customer = get('SELECT phone, email FROM customers WHERE id = ?', [finalCustomerId]);
+            customerPhone = customer?.phone;
+            customerEmail = customer?.email;
+          }
+
+          await sendDetailedIncomeNotification({
+            customerName: finalCustomerName,
+            customerPhone,
+            customerEmail,
+            amount: parseFloat(amount),
+            paymentMethod,
+            confirmationNumber,
+            lastFourDigits,
+            checkNumber,
+            bankDetails,
+            installments,
+            fileBase64,
+            fileName
+          });
+        }
+
+        if (type === 'expense' && isEmailEnabled()) {
+          const { sendNewExpenseNotification } = await import('../services/email.js');
+          await sendNewExpenseNotification({
+            amount: parseFloat(amount),
+            category: getCategoryDisplayName(category),
+            supplier: supplier || null,
+            product: product || null,
+            notes,
+            transactionDate: date,
+            fileBase64,
+            fileName
+          });
+        }
+      } catch (backgroundError) {
+        console.error('Background AI/Email processing failed:', backgroundError);
+      }
+    })(); // End of Background Promise
 
   } catch (error) {
     next(error);
@@ -600,11 +644,106 @@ router.put('/:id', (req, res, next) => {
 
     const updatedTransaction = get('SELECT * FROM transactions WHERE id = ?', [id]);
 
+    // 🌟 FAST RESPONSE: Return early
     res.json({
       success: true,
       message: 'עסקה עודכנה בהצלחה',
       data: { transaction: updatedTransaction }
     });
+
+    // 🌟 BACKGROUND PROCESSING: Syncing updates to Drive and Sending Emails
+    (async () => {
+      try {
+        if (!isEmailEnabled()) return;
+
+        // 1. If it's an expense, check if fields affecting filename changed
+        if (type === 'expense') {
+          const oldDate = existing.date;
+          const oldCategory = existing.category;
+          const oldSupplier = existing.supplier || existing.customer_name;
+          const oldAmount = existing.amount;
+          const newDate = updatedTransaction.date;
+          const newCategory = updatedTransaction.category;
+          const newSupplier = updatedTransaction.supplier || updatedTransaction.customer_name;
+          const newAmount = updatedTransaction.amount;
+
+          // If a major field connected to path/name changed
+          if (oldDate !== newDate || oldCategory !== newCategory || oldSupplier !== newSupplier || oldAmount !== newAmount) {
+            console.log(`Expense update triggered rename flow for ID ${id}`);
+
+            // We need getCategoryDisplayName for the folder names
+            const oldCatFolder = getCategoryDisplayName(oldCategory);
+            const newCatFolder = getCategoryDisplayName(newCategory);
+
+            // Fire local rename (assuming jpg/png/pdf default to jpg if unknown, though ideally we'd look it up if we saved it in DB. For now try mostly '.jpg' or skip if not found)
+            // Apps script rename works by matching the string.
+            // Try local rename across common extensions.
+            const exts = ['jpg', 'png', 'pdf'];
+            for (const ext of exts) {
+              const renamed = await renameExpenseReceipt(
+                new Date(oldDate), oldCatFolder, oldSupplier, existing.product || existing.notes, oldAmount, ext,
+                new Date(newDate), newCatFolder, newSupplier, updatedTransaction.product || updatedTransaction.notes, newAmount
+              );
+              if (renamed) {
+                break;
+              }
+            }
+          }
+        }
+
+        // 2. If it's an income, check if PAYMENT details changed (ignoring simple 'notes' change)
+        if (type === 'income') {
+          const pOld = sanitizePaymentDetails({
+            paymentMethod: existing.payment_method,
+            confirmationNumber: existing.confirmation_number,
+            lastFourDigits: existing.last_four_digits,
+            checkNumber: existing.check_number,
+            bankDetails: existing.bank_details,
+            installments: existing.installments
+          });
+          const pNew = sanitizedPayment;
+
+          // Determine if core payment details or amount changed
+          const paymentChanged =
+            existing.amount !== updatedTransaction.amount ||
+            pOld.paymentMethod !== pNew.paymentMethod ||
+            pOld.confirmationNumber !== pNew.confirmationNumber ||
+            pOld.lastFourDigits !== pNew.lastFourDigits ||
+            pOld.checkNumber !== pNew.checkNumber ||
+            pOld.bankDetails !== pNew.bankDetails ||
+            pOld.installments !== pNew.installments;
+
+          if (paymentChanged) {
+            console.log(`Income payment details changed for ID ${id}. Sending updated notification.`);
+            let customerPhone = null;
+            let customerEmail = null;
+            if (updatedTransaction.customer_id) {
+              const customer = get('SELECT phone, email FROM customers WHERE id = ?', [updatedTransaction.customer_id]);
+              customerPhone = customer?.phone;
+              customerEmail = customer?.email;
+            }
+
+            await sendDetailedIncomeNotification({
+              customerName: updatedTransaction.customer_name || 'לקוח_כלשהו',
+              customerPhone,
+              customerEmail,
+              amount: updatedTransaction.amount,
+              paymentMethod: updatedTransaction.payment_method,
+              confirmationNumber: updatedTransaction.confirmation_number,
+              lastFourDigits: updatedTransaction.last_four_digits,
+              checkNumber: updatedTransaction.check_number,
+              bankDetails: updatedTransaction.bank_details,
+              installments: updatedTransaction.installments,
+              fileBase64: null,
+              fileName: null
+            });
+          }
+        }
+
+      } catch (bgError) {
+        console.error('Background processing failed for transaction update:', bgError);
+      }
+    })();
 
   } catch (error) {
     next(error);

@@ -1,0 +1,2911 @@
+diff --git a/backend/package.json b/backend/package.json
+index 853315b..afb90b2 100644
+--- a/backend/package.json
++++ b/backend/package.json
+@@ -26,8 +26,10 @@
+     "cors": "^2.8.5",
+     "dotenv": "^16.4.7",
+     "express": "^4.21.2",
++    "express-rate-limit": "^8.2.1",
+     "express-validator": "^7.2.1",
+     "googleapis": "^140.0.1",
++    "helmet": "^8.1.0",
+     "jsonwebtoken": "^9.0.2",
+     "multer": "^2.0.2",
+     "pdf-lib": "^1.17.1",
+diff --git a/backend/src/config/index.js b/backend/src/config/index.js
+index abee1aa..afdf90b 100644
+--- a/backend/src/config/index.js
++++ b/backend/src/config/index.js
+@@ -85,7 +85,6 @@ export const uploadConfig = {
+   uploadsDir: join(DATA_DIR, 'uploads'),
+   signaturesDir: join(DATA_DIR, 'uploads', 'signatures'),
+   agreementsDir: join(DATA_DIR, 'uploads', 'agreements'),
+-  receiptsDir: join(DATA_DIR, 'uploads', 'receipts'),
+   dressesDir: join(DATA_DIR, 'uploads', 'dresses'),
+   maxFileSize: 5 * 1024 * 1024, // 5MB
+   allowedImageTypes: ['image/jpeg', 'image/png', 'image/webp'],
+diff --git a/backend/src/db/remove-dress-cost-and-entry-date-columns.js b/backend/src/db/remove-dress-cost-and-entry-date-columns.js
+index 942a33b..554aa3c 100644
+--- a/backend/src/db/remove-dress-cost-and-entry-date-columns.js
++++ b/backend/src/db/remove-dress-cost-and-entry-date-columns.js
+@@ -31,7 +31,7 @@ try {
+       const totalIncomeExpr = existingColumns.has('total_income') ? 'COALESCE(total_income, 0)' : '0';
+       const rentalCountExpr = existingColumns.has('rental_count') ? 'COALESCE(rental_count, 0)' : '0';
+       const statusExpr = existingColumns.has('status')
+-        ? "CASE WHEN status IN ('available', 'rented', 'sold', 'damaged', 'retired') THEN status ELSE 'available' END"
++        ? "CASE WHEN status IN ('available', 'sold', 'retired') THEN status ELSE 'available' END"
+         : "'available'";
+       const intendedUseExpr = existingColumns.has('intended_use')
+         ? "CASE WHEN intended_use IN ('rental', 'sale') THEN intended_use ELSE 'rental' END"
+@@ -55,7 +55,7 @@ try {
+             base_price REAL DEFAULT 0,
+             total_income REAL DEFAULT 0,
+             rental_count INTEGER DEFAULT 0,
+-            status TEXT DEFAULT 'available' CHECK(status IN ('available', 'rented', 'sold', 'damaged', 'retired')),
++            status TEXT DEFAULT 'available' CHECK(status IN ('available', 'sold', 'retired')),
+             intended_use TEXT DEFAULT 'rental' CHECK(intended_use IN ('rental', 'sale')),
+             photo_url TEXT,
+             thumbnail_url TEXT,
+diff --git a/backend/src/db/schema.js b/backend/src/db/schema.js
+index d4591b6..99ed933 100644
+--- a/backend/src/db/schema.js
++++ b/backend/src/db/schema.js
+@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS dresses (
+     base_price REAL DEFAULT 0,
+     total_income REAL DEFAULT 0,
+     rental_count INTEGER DEFAULT 0,
+-    status TEXT DEFAULT 'available' CHECK(status IN ('available', 'rented', 'sold', 'retired')),
++    status TEXT DEFAULT 'available' CHECK(status IN ('available', 'sold', 'retired')),
+     intended_use TEXT DEFAULT 'rental' CHECK(intended_use IN ('rental', 'sale')),
+     photo_url TEXT,
+     thumbnail_url TEXT,
+diff --git a/backend/src/index.js b/backend/src/index.js
+index 73848a7..c57ce82 100644
+--- a/backend/src/index.js
++++ b/backend/src/index.js
+@@ -10,7 +10,9 @@
+ 
+ import express from 'express';
+ import cors from 'cors';
+-import { serverConfig, uploadConfig, localStorageConfig } from './config/index.js';
++import helmet from 'helmet';
++import rateLimit from 'express-rate-limit';
++import { serverConfig, uploadConfig } from './config/index.js';
+ import { notFoundHandler, errorHandler } from './middleware/errorHandler.js';
+ import { requestLogger, errorLogger } from './middleware/activityLogger.js';
+ import { mkdirSync, existsSync } from 'fs';
+@@ -31,10 +33,9 @@ import appsScriptLogsRoutes from './routes/apps-script-logs.js';
+ 
+ // Ensure upload directories exist
+ const uploadDirs = [
+-  uploadConfig.uploadsDir, 
+-  uploadConfig.signaturesDir, 
++  uploadConfig.uploadsDir,
++  uploadConfig.signaturesDir,
+   uploadConfig.agreementsDir,
+-  uploadConfig.receiptsDir,
+   uploadConfig.dressesDir
+ ];
+ for (const dir of uploadDirs) {
+@@ -47,6 +48,9 @@ for (const dir of uploadDirs) {
+ // Create Express app
+ const app = express();
+ 
++// Trust the first proxy (e.g., Tailscale Funnel) to accurately get client IPs for rate-limiting
++app.set('trust proxy', 1);
++
+ // ===================
+ // Middleware
+ // ===================
+@@ -65,10 +69,11 @@ app.use(cors({
+   origin: (origin, callback) => {
+     // Allow requests with no origin (like mobile apps or curl)
+     if (!origin) return callback(null, true);
+-    
+-    // Check if origin is in allowed list
++
++    // Check if origin is in allowed list or is a Vercel subdomain
+     const isAllowed = allowedOrigins.includes(origin) ||
+-                     serverConfig.isDevelopment;
++      (origin && origin.endsWith('.vercel.app')) ||
++      serverConfig.isDevelopment;
+ 
+     if (isAllowed) {
+       callback(null, true);
+@@ -81,6 +86,11 @@ app.use(cors({
+   allowedHeaders: ['Content-Type', 'Authorization']
+ }));
+ 
++// Security headers — adds standard HTTP security headers
++// (X-Content-Type-Options, X-Frame-Options, etc.)
++// Does NOT affect JWT tokens, cookies, or existing sessions.
++app.use(helmet());
++
+ // Body parsing
+ app.use(express.json({ limit: '10mb' }));
+ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+@@ -127,8 +137,22 @@ app.get(frontendRoutes, (req, res) => {
+   res.redirect(302, `${frontendUrl}${req.path}`);
+ });
+ 
++// Rate limiter for login endpoint only.
++// Allows 15 login attempts per 15-minute window per IP.
++// Does NOT affect any other API endpoints or authenticated requests.
++const loginRateLimiter = rateLimit({
++  windowMs: 15 * 60 * 1000,  // 15 minutes
++  max: 15,                    // max 15 attempts per window
++  standardHeaders: true,      // return rate limit info in RateLimit-* headers
++  legacyHeaders: false,       // disable X-RateLimit-* headers
++  message: {
++    success: false,
++    message: 'יותר מדי ניסיונות התחברות. נסה שוב בעוד 15 דקות.',
++  },
++});
++
+ // Mount route modules
+-app.use('/api/auth', authRoutes);
++app.use('/api/auth', loginRateLimiter, authRoutes);
+ app.use('/api/customers', customersRoutes);
+ app.use('/api/dresses', dressesRoutes);
+ app.use('/api/transactions', transactionsRoutes);
+@@ -160,7 +184,7 @@ const PORT = serverConfig.port;
+ app.listen(PORT, async () => {
+   console.log('');
+   console.log('╔════════════════════════════════════════════════════════════╗');
+-  console.log('║         Dress Rental Business Management - Backend            ║');
++  console.log('║       Dress Rental Business Management - Backend           ║');
+   console.log('╠════════════════════════════════════════════════════════════╣');
+   console.log(`║  Server running on: http://localhost:${PORT}                   ║`);
+   console.log(`║  Environment: ${serverConfig.nodeEnv.padEnd(43)}║`);
+diff --git a/backend/src/routes/customers.js b/backend/src/routes/customers.js
+index 9ba3e3e..594b536 100644
+--- a/backend/src/routes/customers.js
++++ b/backend/src/routes/customers.js
+@@ -27,21 +27,26 @@ router.get('/', (req, res, next) => {
+   try {
+     const { search, page = 1, limit = 50, sortBy = 'name', sortOrder = 'asc' } = req.query;
+ 
+-    let sql = 'SELECT * FROM customers WHERE 1=1';
++    let sql = `
++      SELECT c.*, 
++             COALESCE((SELECT MAX(date) FROM transactions WHERE customer_id = c.id), c.created_at) as last_active_date
++      FROM customers c 
++      WHERE 1=1
++    `;
+     const params = [];
+ 
+     // Add search filter
+     if (search) {
+-      sql += ' AND (name LIKE ? OR phone LIKE ? OR email LIKE ?)';
++      sql += ' AND (c.name LIKE ? OR c.phone LIKE ? OR c.email LIKE ?)';
+       const searchPattern = `%${search}%`;
+       params.push(searchPattern, searchPattern, searchPattern);
+     }
+ 
+     // Add sorting
+-    const validSortColumns = ['name', 'created_at', 'updated_at', 'source'];
+-    const sortColumn = validSortColumns.includes(sortBy) ? sortBy : 'name';
+-    const order = sortOrder.toLowerCase() === 'desc' ? 'DESC' : 'ASC';
+-    sql += ` ORDER BY ${sortColumn} ${order}`;
++    const validSortColumns = ['name', 'created_at', 'updated_at', 'source', 'last_active_date'];
++    const sortColumn = validSortColumns.includes(sortBy) ? sortBy : 'last_active_date';
++    const order = sortOrder.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
++    sql += ` ORDER BY ${sortColumn === 'name' || sortColumn === 'source' || sortColumn === 'last_active_date' ? sortColumn : `c.${sortColumn}`} ${order}`;
+ 
+     // Add pagination
+     const pageNum = parseInt(page, 10);
+diff --git a/backend/src/routes/dresses.js b/backend/src/routes/dresses.js
+index 1559d05..c87304f 100644
+--- a/backend/src/routes/dresses.js
++++ b/backend/src/routes/dresses.js
+@@ -15,7 +15,7 @@ import multer from 'multer';
+ import { processDressImage } from '../services/image.js';
+ 
+ const router = Router();
+-const validStatuses = ['available', 'rented', 'sold', 'retired'];
++const validStatuses = ['available', 'sold', 'retired'];
+ const validIntendedUses = ['rental', 'sale'];
+ 
+ function normalizeUploadedImagePath(value) {
+diff --git a/backend/src/routes/export.js b/backend/src/routes/export.js
+index 7c28286..f09110b 100644
+--- a/backend/src/routes/export.js
++++ b/backend/src/routes/export.js
+@@ -33,7 +33,6 @@ const ORDER_TYPE_OPTIONS = [
+ 
+ const DRESS_STATUS_OPTIONS = [
+   { value: 'available', label: 'זמינה' },
+-  { value: 'rented', label: 'מושכרת' },
+   { value: 'sold', label: 'נמכרה' },
+   { value: 'retired', label: 'יצאה ממלאי' },
+ ];
+diff --git a/backend/src/routes/orders.js b/backend/src/routes/orders.js
+index 577f82d..f8d289e 100644
+--- a/backend/src/routes/orders.js
++++ b/backend/src/routes/orders.js
+@@ -95,7 +95,8 @@ router.get('/', (req, res, next) => {
+     let sql = `
+       SELECT o.*, 
+              c.name as customer_name, c.phone as customer_phone, c.email as customer_email,
+-             (SELECT COALESCE(SUM(customer_charge_amount), 0) FROM transactions t WHERE t.order_id = o.id) as total_customer_charge
++             (SELECT COALESCE(SUM(customer_charge_amount), 0) FROM transactions t WHERE t.order_id = o.id) as total_customer_charge,
++             (SELECT COALESCE(MAX(date), '') FROM transactions t WHERE t.order_id = o.id) as last_active_date
+       FROM orders o
+       LEFT JOIN customers c ON o.customer_id = c.id
+       WHERE 1=1
+@@ -119,10 +120,11 @@ router.get('/', (req, res, next) => {
+       params.push(endDate);
+     }
+ 
+-    const validSortColumns = ['created_at', 'event_date', 'total_price', 'status'];
+-    const sortColumn = validSortColumns.includes(sortBy) ? `o.${sortBy}` : 'o.created_at';
++    const validSortColumns = ['created_at', 'event_date', 'total_price', 'status', 'customer_name', 'last_active_date'];
++    const sortColumn = validSortColumns.includes(sortBy) ? sortBy : 'event_date';
+     const order = sortOrder.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+-    sql += ` ORDER BY ${sortColumn} ${order}`;
++    const sortPrefix = ['customer_name', 'last_active_date'].includes(sortColumn) ? '' : 'o.';
++    sql += ` ORDER BY ${sortPrefix}${sortColumn} ${order}`;
+ 
+     const pageNum = parseInt(page, 10);
+     const limitNum = parseInt(limit, 10);
+@@ -373,54 +375,14 @@ router.post('/', async (req, res, next) => {
+           let installments = parseInt(payment.installments, 10);
+           if (Number.isNaN(installments) || installments < 1) installments = 1;
+ 
+-          if (payment.fileBase64) {
+-            try {
+-              const buffer = Buffer.from(payment.fileBase64, 'base64');
+-              const mimeType = getMimeTypeFromFileName(payment.fileName || '');
+-              const aiData = await extractReceiptDetails(buffer, mimeType, paymentMethod);
+-
+-              if (aiData?.paymentMethod && !paymentMethod) {
+-                paymentMethod = aiData.paymentMethod;
+-              }
+-
+-              if (aiData?.confirmationNumber && !confirmationNumber) {
+-                confirmationNumber = aiData.confirmationNumber;
+-              }
+-              if (aiData?.lastFourDigits && !lastFourDigits) {
+-                lastFourDigits = aiData.lastFourDigits;
+-              }
+-              if (aiData?.checkNumber && !checkNumber) {
+-                checkNumber = aiData.checkNumber;
+-              }
+-              if (aiData?.bankDetails && !bankDetails) {
+-                bankDetails = JSON.stringify(aiData.bankDetails);
+-              }
+-              if (aiData?.installments && (!payment.installments || parseInt(payment.installments, 10) < 1)) {
+-                installments = parseInt(aiData.installments, 10);
+-                if (Number.isNaN(installments) || installments < 1) installments = 1;
+-              }
+-            } catch (aiError) {
+-              console.error('Order payment AI extraction failed:', aiError);
+-            }
+-          }
+-
+-          const sanitizedPayment = sanitizePaymentDetails({
+-            paymentMethod,
+-            confirmationNumber,
+-            lastFourDigits,
+-            checkNumber,
+-            bankDetails,
+-            installments
+-          });
+-
+           normalizedDepositPayments.push({
+             amount: pAmt,
+-            method: sanitizedPayment.paymentMethod || payment.payment_method || 'לא צוין',
+-            confirmationNumber: sanitizedPayment.confirmationNumber || null,
+-            lastFourDigits: sanitizedPayment.lastFourDigits || null,
+-            checkNumber: sanitizedPayment.checkNumber || null,
+-            bankDetails: sanitizedPayment.bankDetails || null,
+-            installments: sanitizedPayment.installments,
++            method: paymentMethod || payment.payment_method || 'לא צוין',
++            confirmationNumber: confirmationNumber || null,
++            lastFourDigits: lastFourDigits || null,
++            checkNumber: checkNumber || null,
++            bankDetails: bankDetails || null,
++            installments: installments,
+             hasFile: Boolean(payment.fileBase64),
+             fileBase64: payment.fileBase64 || null,
+             fileName: payment.fileName || null
+@@ -434,14 +396,14 @@ router.post('/', async (req, res, next) => {
+               finalCustomerId,
+               customerData.name,
+               pAmt,
+-              sanitizedPayment.paymentMethod || 'לא צוין',
++              paymentMethod || 'לא צוין',
+               orderId,
+               payment.notes || null,
+-              sanitizedPayment.confirmationNumber || null,
+-              sanitizedPayment.lastFourDigits || null,
+-              sanitizedPayment.checkNumber || null,
+-              sanitizedPayment.bankDetails || null,
+-              sanitizedPayment.installments
++              confirmationNumber || null,
++              lastFourDigits || null,
++              checkNumber || null,
++              bankDetails || null,
++              installments
+             ]
+           );
+         }
+@@ -449,37 +411,6 @@ router.post('/', async (req, res, next) => {
+ 
+     }
+ 
+-    // Fire-and-forget: send email notification in the background.
+-    // This prevents SMTP timeouts from blocking the HTTP response.
+-    if (isEmailEnabled()) {
+-      const dressesForEmail = (items || []).map((item) => {
+-        const basePrice = parseFloat(item.base_price) || 0;
+-        const extra = parseFloat(item.additional_payments) || 0;
+-        const finalPrice = parseFloat(item.final_price) || (basePrice + extra);
+-        return {
+-          name: item.dress_name || item.wearer_name || 'פריט',
+-          price: finalPrice,
+-          itemType: item.item_type || 'rental',
+-          itemTypeLabel: getItemTypeLabel(item.item_type || 'rental')
+-        };
+-      });
+-
+-      sendNewOrderNotification({
+-        customerName: customerData.name,
+-        customerPhone: customerData.phone,
+-        customerEmail: customerData.email || null,
+-        eventDate: event_date,
+-        orderSummary,
+-        dresses: dressesForEmail,
+-        totalPrice: parseFloat(total_price),
+-        deposit: depositAmt,
+-        depositPayments: normalizedDepositPayments,
+-        notes
+-      }).catch(emailError => {
+-        console.error('Order notification email failed:', emailError);
+-      });
+-    }
+-
+     const newOrder = get(
+       `SELECT o.*, c.name as customer_name, c.phone as customer_phone
+        FROM orders o
+@@ -488,12 +419,114 @@ router.post('/', async (req, res, next) => {
+       [orderId]
+     );
+ 
++    // 🌟 FAST RESPONSE: Send 201 Created immediately to unblock the UI!
+     res.status(201).json({
+       success: true,
+       message: 'הזמנה נוצרה בהצלחה',
+       data: { order: newOrder }
+     });
+ 
++    // 🌟 BACKGROUND PROCESSING: AI + Email
++    // Runs asynchronously after res.send() finishes
++    (async () => {
++      try {
++        // 1. Run AI for each deposit payment with a file
++        if (deposit_payments && Array.isArray(deposit_payments)) {
++          for (let i = 0; i < normalizedDepositPayments.length; i++) {
++            const payment = normalizedDepositPayments[i];
++
++            if (payment.hasFile && payment.fileBase64) {
++              const buffer = Buffer.from(payment.fileBase64, 'base64');
++              const mimeType = getMimeTypeFromFileName(payment.fileName || '');
++
++              const aiData = await extractReceiptDetails(buffer, mimeType, payment.method);
++
++              if (aiData) {
++                if (aiData.paymentMethod && (!payment.method || payment.method === 'לא צוין')) payment.method = aiData.paymentMethod;
++                if (aiData.confirmationNumber && !payment.confirmationNumber) payment.confirmationNumber = aiData.confirmationNumber;
++                if (aiData.lastFourDigits && !payment.lastFourDigits) payment.lastFourDigits = aiData.lastFourDigits;
++                if (aiData.checkNumber && !payment.checkNumber) payment.checkNumber = aiData.checkNumber;
++                if (aiData.bankDetails && !payment.bankDetails) payment.bankDetails = JSON.stringify(aiData.bankDetails);
++                if (aiData.installments && payment.installments <= 1) {
++                  let parsedInstal = parseInt(aiData.installments, 10);
++                  if (!Number.isNaN(parsedInstal) && parsedInstal > 1) payment.installments = parsedInstal;
++                }
++
++                const sanitizedPayment = sanitizePaymentDetails({
++                  paymentMethod: payment.method,
++                  confirmationNumber: payment.confirmationNumber,
++                  lastFourDigits: payment.lastFourDigits,
++                  checkNumber: payment.checkNumber,
++                  bankDetails: payment.bankDetails,
++                  installments: payment.installments
++                });
++
++                payment.method = sanitizedPayment.paymentMethod || payment.method;
++                payment.confirmationNumber = sanitizedPayment.confirmationNumber;
++                payment.lastFourDigits = sanitizedPayment.lastFourDigits;
++                payment.checkNumber = sanitizedPayment.checkNumber;
++                payment.bankDetails = sanitizedPayment.bankDetails;
++                payment.installments = sanitizedPayment.installments;
++
++                // Update the matching transaction in DB
++                run(
++                  `UPDATE transactions 
++                   SET payment_method = ?, confirmation_number = ?, last_four_digits = ?, 
++                       check_number = ?, bank_details = ?, installments = ?, updated_at = CURRENT_TIMESTAMP 
++                   WHERE id = (
++                     SELECT id FROM transactions
++                     WHERE order_id = ? AND amount = ? AND type = 'income' AND category = 'order'
++                     ORDER BY id DESC
++                     LIMIT 1
++                   )`,
++                  [
++                    payment.method || null,
++                    payment.confirmationNumber || null,
++                    payment.lastFourDigits || null,
++                    payment.checkNumber || null,
++                    payment.bankDetails || null,
++                    payment.installments,
++                    orderId,
++                    payment.amount
++                  ]
++                );
++              }
++            }
++          }
++        }
++
++        // 2. Send Notifications (Only after AI updated DB)
++        if (isEmailEnabled()) {
++          const dressesForEmail = (items || []).map((item) => {
++            const basePrice = parseFloat(item.base_price) || 0;
++            const extra = parseFloat(item.additional_payments) || 0;
++            const finalPrice = parseFloat(item.final_price) || (basePrice + extra);
++            return {
++              name: item.dress_name || item.wearer_name || 'פריט',
++              price: finalPrice,
++              itemType: item.item_type || 'rental',
++              itemTypeLabel: getItemTypeLabel(item.item_type || 'rental')
++            };
++          });
++
++          await sendNewOrderNotification({
++            customerName: customerData.name,
++            customerPhone: customerData.phone,
++            customerEmail: customerData.email || null,
++            eventDate: event_date,
++            orderSummary,
++            dresses: dressesForEmail,
++            totalPrice: parseFloat(total_price),
++            deposit: depositAmt,
++            depositPayments: normalizedDepositPayments, // Now potentially enriched by AI
++            notes
++          });
++        }
++      } catch (backgroundError) {
++        console.error('Background Order AI/Email processing failed:', backgroundError);
++      }
++    })(); // End of Background Promise
++
+   } catch (error) {
+     next(error);
+   }
+@@ -713,7 +746,7 @@ router.post('/merge', (req, res, next) => {
+         'SELECT SUM(final_price) as newTotal FROM order_items WHERE order_id = ?',
+         [targetOrderId]
+       );
+-      
++
+       // Recalculate paid amount from transactions
+       const { newPaid } = get(
+         "SELECT SUM(amount) as newPaid FROM transactions WHERE order_id = ? AND type = 'income'",
+@@ -733,7 +766,7 @@ router.post('/merge', (req, res, next) => {
+         'SELECT item_type, dress_name, wearer_name FROM order_items WHERE order_id = ?',
+         [targetOrderId]
+       );
+-      
++
+       let orderSummary = '';
+       if (items && items.length > 0) {
+         const itemSummaries = items.map(item => {
+diff --git a/backend/src/routes/transactions.js b/backend/src/routes/transactions.js
+index a643119..2a8a80a 100644
+--- a/backend/src/routes/transactions.js
++++ b/backend/src/routes/transactions.js
+@@ -12,10 +12,11 @@ import { Router } from 'express';
+ import { run, get, all } from '../db/database.js';
+ import { requireAuth } from '../middleware/auth.js';
+ import { ApiError } from '../middleware/errorHandler.js';
+-import { sendNewIncomeNotification, isEmailEnabled, sendDetailedIncomeNotification } from '../services/email.js';
++import { isEmailEnabled, sendDetailedIncomeNotification } from '../services/email.js';
+ import { extractReceiptDetails } from '../services/ai.js';
+ import { sanitizePaymentDetails } from '../services/paymentDetails.js';
+ import { normalizePhoneNumber } from '../services/phone.js';
++import { saveExpenseReceipt, renameExpenseReceipt } from '../services/localStorage.js';
+ 
+ const router = Router();
+ 
+@@ -93,7 +94,7 @@ router.get('/', (req, res, next) => {
+       sql += ' AND t.type = ?';
+       params.push(type);
+     }
+-    
++
+     // Add customer_id filter
+     if (customer_id) {
+       sql += ' AND t.customer_id = ?';
+@@ -168,7 +169,7 @@ router.get('/', (req, res, next) => {
+     if (search) {
+       countSql += ' AND (t.customer_name LIKE ? OR t.supplier LIKE ? OR t.product LIKE ? OR t.notes LIKE ?)';
+       const searchPattern = `%${search}%`;
+-      params.push(searchPattern, searchPattern, searchPattern, searchPattern);
++      countParams.push(searchPattern, searchPattern, searchPattern, searchPattern);
+     }
+     const { total } = get(countSql, countParams);
+ 
+@@ -376,40 +377,6 @@ router.post('/', async (req, res, next) => {
+     let installments = parseInt(requestedInstallments, 10);
+     if (Number.isNaN(installments) || installments < 1) installments = 1;
+ 
+-    if (fileBase64 && type === 'income') {
+-      try {
+-        const buffer = Buffer.from(fileBase64, 'base64');
+-        const safeFileName = (fileName || '').toLowerCase();
+-        const mimeType = safeFileName.endsWith('.pdf') ? 'application/pdf' : 'image/jpeg';
+-        
+-        const aiResult = await extractReceiptDetails(buffer, mimeType, paymentMethod);
+-        
+-        if (aiResult) {
+-          if (aiResult.paymentMethod && !paymentMethod) {
+-            paymentMethod = aiResult.paymentMethod;
+-          }
+-          if (aiResult.confirmationNumber && !confirmationNumber) {
+-            confirmationNumber = aiResult.confirmationNumber;
+-          }
+-          if (aiResult.lastFourDigits && !lastFourDigits) {
+-            lastFourDigits = aiResult.lastFourDigits;
+-          }
+-          if (aiResult.checkNumber && !checkNumber) {
+-            checkNumber = aiResult.checkNumber;
+-          }
+-          if (aiResult.bankDetails && !bankDetails) {
+-            bankDetails = JSON.stringify(aiResult.bankDetails);
+-          }
+-          if (aiResult.installments && (!requestedInstallments || parseInt(requestedInstallments, 10) < 1)) {
+-            installments = parseInt(aiResult.installments, 10);
+-          }
+-          console.log('AI Extraction Result:', aiResult);
+-        }
+-      } catch (aiError) {
+-        console.error('AI extraction failed:', aiError);
+-      }
+-    }
+-
+     const sanitizedPayment = sanitizePaymentDetails({
+       paymentMethod,
+       confirmationNumber,
+@@ -450,7 +417,32 @@ router.post('/', async (req, res, next) => {
+       ]
+     );
+ 
+-    const newTransaction = get('SELECT * FROM transactions WHERE id = ?', [result.lastInsertRowid]);
++    const transactionId = result.lastInsertRowid;
++    const newTransaction = get('SELECT * FROM transactions WHERE id = ?', [transactionId]);
++
++    // Save expense receipt file to local storage (uploads/expenses/YEAR/CATEGORY/)
++    if (type === 'expense' && fileBase64) {
++      try {
++        const safeFileName = (fileName || '').toLowerCase();
++        let extension = 'jpg';
++        if (safeFileName.endsWith('.pdf')) extension = 'pdf';
++        else if (safeFileName.endsWith('.png')) extension = 'png';
++        else if (safeFileName.endsWith('.webp')) extension = 'webp';
++
++        const expenseDate = date ? new Date(date) : new Date();
++        saveExpenseReceipt(
++          fileBase64,
++          category,
++          product || notes || '',
++          supplier || '',
++          parseFloat(amount),
++          expenseDate,
++          extension
++        );
++      } catch (saveError) {
++        console.error('Failed to save expense receipt file:', saveError.message);
++      }
++    }
+ 
+     if (type === 'income' && order_id) {
+       const order = get('SELECT * FROM orders WHERE id = ?', [order_id]);
+@@ -463,58 +455,110 @@ router.post('/', async (req, res, next) => {
+       }
+     }
+ 
+-    // Fire-and-forget: send notifications in the background to avoid
+-    // blocking the HTTP response if SMTP is slow or unreachable.
+-    if (type === 'income' && isEmailEnabled()) {
+-      let customerPhone = null;
+-      let customerEmail = null;
+-      if (finalCustomerId) {
+-        const customer = get('SELECT phone, email FROM customers WHERE id = ?', [finalCustomerId]);
+-        customerPhone = customer?.phone;
+-        customerEmail = customer?.email;
+-      }
+-
+-      sendDetailedIncomeNotification({
+-        customerName: finalCustomerName,
+-        customerPhone,
+-        customerEmail,
+-        amount: parseFloat(amount),
+-        paymentMethod,
+-        confirmationNumber,
+-        lastFourDigits,
+-        checkNumber,
+-        bankDetails,
+-        installments,
+-        fileBase64,
+-        fileName
+-      }).catch(emailError => {
+-        console.error('Error sending income notification:', emailError.message);
+-      });
+-    }
+-
+-    if (type === 'expense' && isEmailEnabled()) {
+-      import('../services/email.js').then(({ sendNewExpenseNotification }) => {
+-        sendNewExpenseNotification({
+-          amount: parseFloat(amount),
+-          category: getCategoryDisplayName(category),
+-          supplier: supplier || null,
+-          product: product || null,
+-          notes,
+-          transactionDate: date,
+-          fileBase64,
+-          fileName
+-        }).catch(emailError => {
+-          console.error('Error sending expense notification:', emailError.message);
+-        });
+-      });
+-    }
+-
++    // 🌟 FAST RESPONSE: Send 201 Created immediately to unblock the UI!
+     res.status(201).json({
+       success: true,
+       message: type === 'income' ? 'הכנסה נוספה בהצלחה' : 'הוצאה נוספה בהצלחה',
+       data: { transaction: newTransaction, emailSent: isEmailEnabled() }
+     });
+ 
++    // 🌟 BACKGROUND PROCESSING: AI + Email
++    // This code runs asynchronously after res.send() finishes
++    (async () => {
++      try {
++        // 1. Run AI for Income receipt if present
++        if (fileBase64 && type === 'income') {
++          const buffer = Buffer.from(fileBase64, 'base64');
++          const safeFileName = (fileName || '').toLowerCase();
++          const mimeType = safeFileName.endsWith('.pdf') ? 'application/pdf' : 'image/jpeg';
++
++          const aiResult = await extractReceiptDetails(buffer, mimeType, paymentMethod);
++
++          if (aiResult) {
++            if (aiResult.paymentMethod && !paymentMethod) paymentMethod = aiResult.paymentMethod;
++            if (aiResult.confirmationNumber && !confirmationNumber) confirmationNumber = aiResult.confirmationNumber;
++            if (aiResult.lastFourDigits && !lastFourDigits) lastFourDigits = aiResult.lastFourDigits;
++            if (aiResult.checkNumber && !checkNumber) checkNumber = aiResult.checkNumber;
++            if (aiResult.bankDetails && !bankDetails) bankDetails = JSON.stringify(aiResult.bankDetails);
++            if (aiResult.installments && (!requestedInstallments || parseInt(requestedInstallments, 10) < 1)) {
++              installments = parseInt(aiResult.installments, 10);
++            }
++
++            const aiSanitized = sanitizePaymentDetails({
++              paymentMethod, confirmationNumber, lastFourDigits, checkNumber, bankDetails, installments
++            });
++
++            // Re-assign sanitized back
++            paymentMethod = aiSanitized.paymentMethod;
++            confirmationNumber = aiSanitized.confirmationNumber;
++            lastFourDigits = aiSanitized.lastFourDigits;
++            checkNumber = aiSanitized.checkNumber;
++            bankDetails = aiSanitized.bankDetails;
++            installments = aiSanitized.installments;
++
++            // Update database with AI parsed features securely
++            run(
++              `UPDATE transactions 
++               SET payment_method = ?, confirmation_number = ?, last_four_digits = ?, 
++                   check_number = ?, bank_details = ?, installments = ?, updated_at = CURRENT_TIMESTAMP 
++               WHERE id = ?`,
++              [
++                paymentMethod || null,
++                confirmationNumber || null,
++                lastFourDigits || null,
++                checkNumber || null,
++                bankDetails || null,
++                installments || 1,
++                transactionId
++              ]
++            );
++          }
++        }
++
++        // 2. Send Notifications (Only after AI updated DB)
++        if (type === 'income' && isEmailEnabled()) {
++          let customerPhone = null;
++          let customerEmail = null;
++          if (finalCustomerId) {
++            const customer = get('SELECT phone, email FROM customers WHERE id = ?', [finalCustomerId]);
++            customerPhone = customer?.phone;
++            customerEmail = customer?.email;
++          }
++
++          await sendDetailedIncomeNotification({
++            customerName: finalCustomerName,
++            customerPhone,
++            customerEmail,
++            amount: parseFloat(amount),
++            paymentMethod,
++            confirmationNumber,
++            lastFourDigits,
++            checkNumber,
++            bankDetails,
++            installments,
++            fileBase64,
++            fileName
++          });
++        }
++
++        if (type === 'expense' && isEmailEnabled()) {
++          const { sendNewExpenseNotification } = await import('../services/email.js');
++          await sendNewExpenseNotification({
++            amount: parseFloat(amount),
++            category: getCategoryDisplayName(category),
++            supplier: supplier || null,
++            product: product || null,
++            notes,
++            transactionDate: date,
++            fileBase64,
++            fileName
++          });
++        }
++      } catch (backgroundError) {
++        console.error('Background AI/Email processing failed:', backgroundError);
++      }
++    })(); // End of Background Promise
++
+   } catch (error) {
+     next(error);
+   }
+@@ -600,12 +644,107 @@ router.put('/:id', (req, res, next) => {
+ 
+     const updatedTransaction = get('SELECT * FROM transactions WHERE id = ?', [id]);
+ 
++    // 🌟 FAST RESPONSE: Return early
+     res.json({
+       success: true,
+       message: 'עסקה עודכנה בהצלחה',
+       data: { transaction: updatedTransaction }
+     });
+ 
++    // 🌟 BACKGROUND PROCESSING: Syncing updates to Drive and Sending Emails
++    (async () => {
++      try {
++        if (!isEmailEnabled()) return;
++
++        // 1. If it's an expense, check if fields affecting filename changed
++        if (type === 'expense') {
++          const oldDate = existing.date;
++          const oldCategory = existing.category;
++          const oldSupplier = existing.supplier || existing.customer_name;
++          const oldAmount = existing.amount;
++          const newDate = updatedTransaction.date;
++          const newCategory = updatedTransaction.category;
++          const newSupplier = updatedTransaction.supplier || updatedTransaction.customer_name;
++          const newAmount = updatedTransaction.amount;
++
++          // If a major field connected to path/name changed
++          if (oldDate !== newDate || oldCategory !== newCategory || oldSupplier !== newSupplier || oldAmount !== newAmount) {
++            console.log(`Expense update triggered rename flow for ID ${id}`);
++
++            // We need getCategoryDisplayName for the folder names
++            const oldCatFolder = getCategoryDisplayName(oldCategory);
++            const newCatFolder = getCategoryDisplayName(newCategory);
++
++            // Fire local rename (assuming jpg/png/pdf default to jpg if unknown, though ideally we'd look it up if we saved it in DB. For now try mostly '.jpg' or skip if not found)
++            // Apps script rename works by matching the string.
++            // Try local rename across common extensions.
++            const exts = ['jpg', 'png', 'pdf'];
++            for (const ext of exts) {
++              const renamed = await renameExpenseReceipt(
++                new Date(oldDate), oldCatFolder, oldSupplier, existing.product || existing.notes, oldAmount, ext,
++                new Date(newDate), newCatFolder, newSupplier, updatedTransaction.product || updatedTransaction.notes, newAmount
++              );
++              if (renamed) {
++                break;
++              }
++            }
++          }
++        }
++
++        // 2. If it's an income, check if PAYMENT details changed (ignoring simple 'notes' change)
++        if (type === 'income') {
++          const pOld = sanitizePaymentDetails({
++            paymentMethod: existing.payment_method,
++            confirmationNumber: existing.confirmation_number,
++            lastFourDigits: existing.last_four_digits,
++            checkNumber: existing.check_number,
++            bankDetails: existing.bank_details,
++            installments: existing.installments
++          });
++          const pNew = sanitizedPayment;
++
++          // Determine if core payment details or amount changed
++          const paymentChanged =
++            existing.amount !== updatedTransaction.amount ||
++            pOld.paymentMethod !== pNew.paymentMethod ||
++            pOld.confirmationNumber !== pNew.confirmationNumber ||
++            pOld.lastFourDigits !== pNew.lastFourDigits ||
++            pOld.checkNumber !== pNew.checkNumber ||
++            pOld.bankDetails !== pNew.bankDetails ||
++            pOld.installments !== pNew.installments;
++
++          if (paymentChanged) {
++            console.log(`Income payment details changed for ID ${id}. Sending updated notification.`);
++            let customerPhone = null;
++            let customerEmail = null;
++            if (updatedTransaction.customer_id) {
++              const customer = get('SELECT phone, email FROM customers WHERE id = ?', [updatedTransaction.customer_id]);
++              customerPhone = customer?.phone;
++              customerEmail = customer?.email;
++            }
++
++            await sendDetailedIncomeNotification({
++              customerName: updatedTransaction.customer_name || 'לקוח_כלשהו',
++              customerPhone,
++              customerEmail,
++              amount: updatedTransaction.amount,
++              paymentMethod: updatedTransaction.payment_method,
++              confirmationNumber: updatedTransaction.confirmation_number,
++              lastFourDigits: updatedTransaction.last_four_digits,
++              checkNumber: updatedTransaction.check_number,
++              bankDetails: updatedTransaction.bank_details,
++              installments: updatedTransaction.installments,
++              fileBase64: null,
++              fileName: null
++            });
++          }
++        }
++
++      } catch (bgError) {
++        console.error('Background processing failed for transaction update:', bgError);
++      }
++    })();
++
+   } catch (error) {
+     next(error);
+   }
+diff --git a/backend/src/services/localStorage.js b/backend/src/services/localStorage.js
+index 95e63fd..c3e5ff8 100644
+--- a/backend/src/services/localStorage.js
++++ b/backend/src/services/localStorage.js
+@@ -2,7 +2,7 @@
+  * Local Storage Service
+  * 
+  * Purpose: Save files to local synced folders that automatically
+- * sync with Google Drive. Used for agreements, receipts, and documents.
++ * sync with Google Drive. Used for agreements, expenses, and documents.
+  * 
+  * Folder Structure:
+  * - Expenses: /הוצאות והכנסות עסק/[YEAR]/[CATEGORY]/
+@@ -54,17 +54,17 @@ export function getAgreementsFolderPath() {
+ export function getExpenseCategories(year = new Date().getFullYear()) {
+   try {
+     const yearFolder = join(localStorageConfig.expensesFolder, year.toString());
+-    
++
+     if (!existsSync(yearFolder)) {
+       return [];
+     }
+-    
++
+     const items = readdirSync(yearFolder, { withFileTypes: true });
+     return items
+       .filter(item => item.isDirectory())
+       .map(item => item.name)
+       .sort();
+-    
++
+   } catch (error) {
+     console.error('Error getting expense categories:', error.message);
+     return [];
+@@ -89,57 +89,74 @@ function cleanForFilename(str) {
+ }
+ 
+ /**
+- * Save expense receipt to the synced folder
+- * @param {Buffer|string} receiptData - Receipt file data (buffer or base64)
+- * @param {string} category - Expense category (folder name)
+- * @param {string} description - Description for filename
+- * @param {Date} expenseDate - Date of expense (for year folder)
+- * @param {string} extension - File extension (default: 'jpg')
+- * @returns {string|null} - Path to saved file or null on error
++ * Format date as YYMMDD for expense filenames
++ */
++function formatDateYYMMDD(date = new Date()) {
++  const yy = date.getFullYear().toString().slice(-2);
++  const mm = (date.getMonth() + 1).toString().padStart(2, '0');
++  const dd = date.getDate().toString().padStart(2, '0');
++  return `${yy}${mm}${dd}`;
++}
++
++/**
++ * Save expense receipt to the synced folder.
++ *
++ * Filename format: "[YYMMDD] [supplier] [description] [amount]₪.[ext]"
++ * Folder structure: expenses/[YEAR]/[category]/
++ *
++ * @param {Buffer|string} receiptData  - Receipt file data (buffer or base64)
++ * @param {string}        category     - Expense category (folder name, e.g. 'חומרים')
++ * @param {string}        description  - Description of the expense
++ * @param {string}        supplier     - Supplier / store name (may be empty string)
++ * @param {number}        amount       - Expense amount in ILS
++ * @param {Date}          expenseDate  - Date of expense (determines year sub-folder)
++ * @param {string}        extension    - File extension without dot (default: 'jpg')
++ * @returns {string|null} Path to the saved file, or null on error
+  */
+-export function saveExpenseReceipt(receiptData, category, description, expenseDate = new Date(), extension = 'jpg') {
++export function saveExpenseReceipt(receiptData, category, description, supplier, amount, expenseDate = new Date(), extension = 'jpg') {
+   try {
+     const year = expenseDate.getFullYear();
+     const folderPath = join(localStorageConfig.expensesFolder, year.toString(), cleanForFilename(category));
+     ensureDirectoryExists(folderPath);
+-    
+-    // Create filename
+-    const dateStr = formatDateForFolder(expenseDate);
+-    const cleanDesc = cleanForFilename(description);
+-    const filename = `${dateStr} ${cleanDesc}.${extension}`;
++
++    // Build filename: "[YYMMDD] [supplier] [description] [amount]₪.ext"
++    const dateStr = formatDateYYMMDD(expenseDate);
++    const parts = [dateStr];
++    if (supplier && supplier.trim()) parts.push(cleanForFilename(supplier.trim()));
++    if (description && description.trim()) parts.push(cleanForFilename(description.trim()));
++    if (amount != null) parts.push(`${amount}₪`);
++    const filename = `${parts.join(' ')}.${extension}`;
+     const filePath = join(folderPath, filename);
+-    
++
+     // Convert to buffer if needed
+     let buffer = receiptData;
+     if (typeof receiptData === 'string') {
+-      if (receiptData.includes(';base64,')) {
+-        buffer = Buffer.from(receiptData.split(';base64,')[1], 'base64');
+-      } else {
+-        buffer = Buffer.from(receiptData, 'base64');
+-      }
++      buffer = Buffer.from(
++        receiptData.includes(';base64,') ? receiptData.split(';base64,')[1] : receiptData,
++        'base64'
++      );
+     }
+-    
++
+     writeFileSync(filePath, buffer);
+-    
+-    console.log(`Saved receipt to: ${filePath}`);
+-    
++    console.log(`Saved expense receipt to: ${filePath}`);
++
+     logActivity({
+       action: LogAction.CREATE,
+       category: LogCategory.TRANSACTION,
+       entityType: 'receipt_file',
+       entityName: filename,
+-      details: { path: filePath, category, description },
++      details: { path: filePath, category, description, supplier, amount },
+     });
+-    
++
+     return filePath;
+-    
++
+   } catch (error) {
+-    console.error('Error saving receipt:', error.message);
++    console.error('Error saving expense receipt:', error.message);
+     logActivity({
+       action: LogAction.ERROR,
+       category: LogCategory.TRANSACTION,
+-      errorMessage: `Failed to save receipt: ${error.message}`,
+-      details: { category, description },
++      errorMessage: `Failed to save expense receipt: ${error.message}`,
++      details: { category, description, supplier, amount },
+     });
+     return null;
+   }
+@@ -157,25 +174,25 @@ export function saveAgreementPdf(pdfBuffer, customerName, agreementDate = new Da
+   try {
+     const dateStr = formatDateForFolder(agreementDate);
+     const cleanName = cleanForFilename(customerName);
+-    
++
+     // Create folder name: "שם לקוחה - תאריך" or "שם לקוחה - תאריך - מספר הזמנה"
+     let folderName = `${cleanName} - ${dateStr}`;
+     if (orderId) {
+       folderName += ` - ${orderId}`;
+     }
+-    
++
+     const folderPath = join(localStorageConfig.agreementsFolder, folderName);
+     ensureDirectoryExists(folderPath);
+-    
++
+     // Create PDF filename
+     const pdfFilename = `הסכם השכרה - ${cleanName}.pdf`;
+     const pdfPath = join(folderPath, pdfFilename);
+-    
++
+     // Save PDF
+     writeFileSync(pdfPath, pdfBuffer);
+-    
++
+     console.log(`Saved agreement PDF to: ${pdfPath}`);
+-    
++
+     logActivity({
+       action: LogAction.CREATE,
+       category: LogCategory.AGREEMENT,
+@@ -183,9 +200,9 @@ export function saveAgreementPdf(pdfBuffer, customerName, agreementDate = new Da
+       entityName: pdfFilename,
+       details: { folderPath, pdfPath, customerName, orderId },
+     });
+-    
++
+     return { folderPath, pdfPath };
+-    
++
+   } catch (error) {
+     console.error('Error saving agreement PDF:', error.message);
+     logActivity({
+@@ -204,15 +221,15 @@ export function saveAgreementPdf(pdfBuffer, customerName, agreementDate = new Da
+ export function isExpensesFolderAccessible() {
+   try {
+     const path = localStorageConfig.expensesFolder;
+-    
++
+     if (!existsSync(path)) {
+       console.warn(`Expenses folder does not exist: ${path}`);
+       return false;
+     }
+-    
++
+     readdirSync(path);
+     return true;
+-    
++
+   } catch (error) {
+     console.error('Expenses folder not accessible:', error.message);
+     return false;
+@@ -225,13 +242,13 @@ export function isExpensesFolderAccessible() {
+ export function isAgreementsFolderAccessible() {
+   try {
+     const path = localStorageConfig.agreementsFolder;
+-    
++
+     // Try to create the folder if it doesn't exist
+     ensureDirectoryExists(path);
+-    
++
+     readdirSync(path);
+     return true;
+-    
++
+   } catch (error) {
+     console.error('Agreements folder not accessible:', error.message);
+     return false;
+@@ -255,21 +272,97 @@ export function listFilesInFolder(folderPath) {
+     if (!existsSync(folderPath)) {
+       return [];
+     }
+-    
++
+     return readdirSync(folderPath);
+-    
++
+   } catch (error) {
+     console.error('Error listing files:', error.message);
+     return [];
+   }
+ }
+ 
++/**
++ * Rename or move an existing expense receipt locally
++ * @param {Date} oldDate        - Original expense date
++ * @param {string} oldCategory  - Original category
++ * @param {string} oldSupplier  - Original supplier
++ * @param {string} oldDesc      - Original notes/product
++ * @param {number} oldAmount    - Original amount
++ * @param {string} extension    - File extension (e.g. 'jpg')
++ * @param {Date} newDate        - New expense date
++ * @param {string} newCategory  - New category
++ * @param {string} newSupplier  - New supplier
++ * @param {string} newDesc      - New notes/product
++ * @param {number} newAmount    - New amount
++ * @returns {boolean} True if successful or not needed, false on error
++ */
++export async function renameExpenseReceipt(
++  oldDate, oldCategory, oldSupplier, oldDesc, oldAmount, extension,
++  newDate, newCategory, newSupplier, newDesc, newAmount
++) {
++  try {
++    const fs = await import('fs');
++
++    // Build OLD path
++    const oldYear = oldDate.getFullYear();
++    const oldFolderPath = join(localStorageConfig.expensesFolder, oldYear.toString(), cleanForFilename(oldCategory));
++
++    const oldDateStr = formatDateYYMMDD(oldDate);
++    const oldParts = [oldDateStr];
++    if (oldSupplier && oldSupplier.trim()) oldParts.push(cleanForFilename(oldSupplier.trim()));
++    if (oldDesc && oldDesc.trim()) oldParts.push(cleanForFilename(oldDesc.trim()));
++    if (oldAmount != null) oldParts.push(`${oldAmount}₪`);
++    const oldFilename = `${oldParts.join(' ')}.${extension}`;
++    const oldFilePath = join(oldFolderPath, oldFilename);
++
++    if (!existsSync(oldFilePath)) {
++      console.log(`Rename skipped: Old local file not found at ${oldFilePath}`);
++      return false; // Not a strict error, might only live in Drive, but return false
++    }
++
++    // Build NEW path
++    const newYear = newDate.getFullYear();
++    const newFolderPath = join(localStorageConfig.expensesFolder, newYear.toString(), cleanForFilename(newCategory));
++    ensureDirectoryExists(newFolderPath);
++
++    const newDateStr = formatDateYYMMDD(newDate);
++    const newParts = [newDateStr];
++    if (newSupplier && newSupplier.trim()) newParts.push(cleanForFilename(newSupplier.trim()));
++    if (newDesc && newDesc.trim()) newParts.push(cleanForFilename(newDesc.trim()));
++    if (newAmount != null) newParts.push(`${newAmount}₪`);
++    const newFilename = `${newParts.join(' ')}.${extension}`;
++    const newFilePath = join(newFolderPath, newFilename);
++
++    if (oldFilePath === newFilePath) {
++      return true; // No change needed
++    }
++
++    fs.renameSync(oldFilePath, newFilePath);
++    console.log(`Renamed local expense receipt: ${oldFilename} -> ${newFilename}`);
++
++    logActivity({
++      action: LogAction.UPDATE,
++      category: LogCategory.TRANSACTION,
++      entityType: 'receipt_file',
++      entityName: newFilename,
++      details: { oldPath: oldFilePath, newPath: newFilePath }
++    });
++
++    return true;
++
++  } catch (error) {
++    console.error('Error renaming expense receipt locally:', error.message);
++    return false;
++  }
++}
++
+ export default {
+   getSyncedFolderPath,
+   getExpensesFolderPath,
+   getAgreementsFolderPath,
+   getExpenseCategories,
+   saveExpenseReceipt,
++  renameExpenseReceipt,
+   saveAgreementPdf,
+   isExpensesFolderAccessible,
+   isAgreementsFolderAccessible,
+diff --git a/frontend/src/app/dashboard/customers/page.tsx b/frontend/src/app/dashboard/customers/page.tsx
+index 2dceb4b..6dba56d 100644
+--- a/frontend/src/app/dashboard/customers/page.tsx
++++ b/frontend/src/app/dashboard/customers/page.tsx
+@@ -63,16 +63,20 @@ export default function CustomersPage() {
+   });
+   const [saving, setSaving] = useState(false);
+   const [sourceFilter, setSourceFilter] = useState("");
++  const [sortBy, setSortBy] = useState("last_active_date");
++  const [sortOrder, setSortOrder] = useState("desc");
+ 
+   const [selectedIds, setSelectedIds] = useState<number[]>([]);
+   const [isSelectionMode, setIsSelectionMode] = useState(false);
+   const [showMergeDialog, setShowMergeDialog] = useState(false);
+   const [mergeTargetId, setMergeTargetId] = useState<number | null>(null);
+ 
+-  const fetchCustomers = useCallback(async (searchQuery: string = "") => {
++  const fetchCustomers = useCallback(async (searchQuery: string = "", sortCol: string = "last_active_date", sortDir: string = "desc") => {
+     try {
+-      const response = await customersApi.list({ 
++      const response = await customersApi.list({
+         search: searchQuery,
++        sortBy: sortCol,
++        sortOrder: sortDir,
+         limit: 1000 // Show everything
+       });
+       if (response.success && response.data) {
+@@ -93,15 +97,15 @@ export default function CustomersPage() {
+ 
+   // Debounced search
+   const debouncedSearch = useCallback(
+-    debounce((query: unknown) => {
+-      fetchCustomers(query as string);
++    debounce((query: any, sortCol: any, sortDir: any) => {
++      fetchCustomers(query as string, sortCol as string, sortDir as string);
+     }, 300),
+     [fetchCustomers]
+   );
+ 
+   useEffect(() => {
+-    fetchCustomers(search);
+-  }, [search, fetchCustomers]);
++    fetchCustomers(search, sortBy, sortOrder);
++  }, [search, sortBy, sortOrder, fetchCustomers]);
+ 
+   const resetForm = () => {
+     setFormData({
+@@ -128,7 +132,7 @@ export default function CustomersPage() {
+   };
+ 
+   const toggleSelection = (id: number) => {
+-    setSelectedIds(prev => 
++    setSelectedIds(prev =>
+       prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+     );
+   };
+@@ -237,7 +241,7 @@ export default function CustomersPage() {
+             </p>
+           </div>
+           <div className="flex gap-2">
+-            <Button 
++            <Button
+               variant={isSelectionMode ? "secondary" : "outline"}
+               onClick={() => {
+                 setIsSelectionMode(!isSelectionMode);
+@@ -265,6 +269,21 @@ export default function CustomersPage() {
+               className="h-14 pr-12 rounded-2xl bg-white border-none shadow-sm text-lg"
+             />
+           </div>
++
++          <select
++            value={`${sortBy}-${sortOrder}`}
++            onChange={(e) => {
++              const [col, dir] = e.target.value.split('-');
++              setSortBy(col);
++              setSortOrder(dir);
++            }}
++            className="h-14 px-4 rounded-2xl bg-white border-none shadow-sm font-bold text-sm"
++          >
++            <option value="last_active_date-desc">פעילות אחרונה</option>
++            <option value="name-asc">שם (א' - ת')</option>
++            <option value="created_at-desc">נוספו לאחרונה</option>
++          </select>
++
+           <select
+             value={sourceFilter}
+             onChange={(e) => setSourceFilter(e.target.value)}
+@@ -283,7 +302,7 @@ export default function CustomersPage() {
+         {customers.filter(c => !sourceFilter || c.source === sourceFilter).map((customer) => (
+           <div key={customer.id} className="relative group">
+             {isSelectionMode && (
+-              <div 
++              <div
+                 className={cn(
+                   "absolute top-4 right-4 z-10 h-6 w-6 rounded-full border-2 cursor-pointer flex items-center justify-center transition-all bg-white",
+                   selectedIds.includes(customer.id) ? "border-primary bg-primary text-white" : "border-muted-foreground/30"
+@@ -293,7 +312,7 @@ export default function CustomersPage() {
+                 {selectedIds.includes(customer.id) && <CheckIcon className="h-4 w-4" />}
+               </div>
+             )}
+-            <Card 
++            <Card
+               onClick={() => isSelectionMode && toggleSelection(customer.id)}
+               className={cn(
+                 "rounded-[1.5rem] border-none shadow-xl shadow-gray-200/40 bg-white transition-all active:scale-[0.98]",
+@@ -301,65 +320,65 @@ export default function CustomersPage() {
+                 selectedIds.includes(customer.id) && "ring-2 ring-primary bg-primary/5"
+               )}
+             >
+-            <CardContent className="p-5">
+-              <div className="flex items-center justify-between mb-4">
+-                <div className="flex items-center gap-3">
+-                  <div className="h-12 w-12 rounded-2xl bg-primary/5 flex items-center justify-center text-primary font-black text-xl">
+-                    {customer.name.charAt(0)}
++              <CardContent className="p-5">
++                <div className="flex items-center justify-between mb-4">
++                  <div className="flex items-center gap-3">
++                    <div className="h-12 w-12 rounded-2xl bg-primary/5 flex items-center justify-center text-primary font-black text-xl">
++                      {customer.name.charAt(0)}
++                    </div>
++                    <div>
++                      <h3 className="font-bold text-lg text-gray-900 leading-none">{customer.name}</h3>
++                      <p className="text-xs font-medium text-muted-foreground mt-1">
++                        {customer.phone ? formatPhoneNumber(customer.phone) : "ללא טלפון"}
++                      </p>
++                    </div>
+                   </div>
+-                  <div>
+-                    <h3 className="font-bold text-lg text-gray-900 leading-none">{customer.name}</h3>
+-                    <p className="text-xs font-medium text-muted-foreground mt-1">
+-                      {customer.phone ? formatPhoneNumber(customer.phone) : "ללא טלפון"}
+-                    </p>
++                  <div className="flex gap-1">
++                    {customer.phone && !isSelectionMode && (
++                      <a
++                        href={createWhatsAppLink(customer.phone)}
++                        target="_blank"
++                        rel="noopener noreferrer"
++                        className="h-10 w-10 bg-green-50 rounded-xl flex items-center justify-center text-green-600 transition-colors active:bg-green-100"
++                      >
++                        <MessageCircle className="h-5 w-5" />
++                      </a>
++                    )}
++                    {customer.phone && !isSelectionMode && (
++                      <a
++                        href={`tel:${customer.phone}`}
++                        className="h-10 w-10 bg-blue-50 rounded-xl flex items-center justify-center text-blue-600 transition-colors active:bg-blue-100"
++                      >
++                        <Phone className="h-5 w-5" />
++                      </a>
++                    )}
+                   </div>
+                 </div>
+-                <div className="flex gap-1">
+-                  {customer.phone && !isSelectionMode && (
+-                    <a
+-                      href={createWhatsAppLink(customer.phone)}
+-                      target="_blank"
+-                      rel="noopener noreferrer"
+-                      className="h-10 w-10 bg-green-50 rounded-xl flex items-center justify-center text-green-600 transition-colors active:bg-green-100"
+-                    >
+-                      <MessageCircle className="h-5 w-5" />
+-                    </a>
+-                  )}
+-                  {customer.phone && !isSelectionMode && (
+-                    <a
+-                      href={`tel:${customer.phone}`}
+-                      className="h-10 w-10 bg-blue-50 rounded-xl flex items-center justify-center text-blue-600 transition-colors active:bg-blue-100"
+-                    >
+-                      <Phone className="h-5 w-5" />
+-                    </a>
+-                  )}
+-                </div>
+-              </div>
+ 
+-              <div className="flex items-center justify-between border-t pt-4">
+-                <div className="flex gap-2">
+-                  <span className="text-[10px] font-bold text-muted-foreground bg-gray-100 px-2 py-1 rounded-lg uppercase">
+-                    נוספה: {formatDateShort(customer.created_at)}
+-                  </span>
+-                  {customer.source && (
+-                    <span className="text-[10px] font-bold text-primary/60 bg-primary/5 px-2 py-1 rounded-lg uppercase">
+-                      {customer.source}
++                <div className="flex items-center justify-between border-t pt-4">
++                  <div className="flex gap-2">
++                    <span className="text-[10px] font-bold text-muted-foreground bg-gray-100 px-2 py-1 rounded-lg uppercase">
++                      נוספה: {formatDateShort(customer.created_at)}
+                     </span>
++                    {customer.source && (
++                      <span className="text-[10px] font-bold text-primary/60 bg-primary/5 px-2 py-1 rounded-lg uppercase">
++                        {customer.source}
++                      </span>
++                    )}
++                  </div>
++                  {!isSelectionMode && (
++                    <div className="flex gap-1">
++                      <Button variant="ghost" size="icon" onClick={() => handleEdit(customer)} className="h-8 w-8 text-gray-400">
++                        <Edit className="h-4 w-4" />
++                      </Button>
++                      <Button variant="ghost" size="icon" onClick={() => handleDelete(customer)} className="h-8 w-8 text-red-300 hover:text-red-500">
++                        <Trash2 className="h-4 w-4" />
++                      </Button>
++                    </div>
+                   )}
+                 </div>
+-                {!isSelectionMode && (
+-                  <div className="flex gap-1">
+-                    <Button variant="ghost" size="icon" onClick={() => handleEdit(customer)} className="h-8 w-8 text-gray-400">
+-                      <Edit className="h-4 w-4" />
+-                    </Button>
+-                    <Button variant="ghost" size="icon" onClick={() => handleDelete(customer)} className="h-8 w-8 text-red-300 hover:text-red-500">
+-                      <Trash2 className="h-4 w-4" />
+-                    </Button>
+-                  </div>
+-                )}
+-              </div>
+-            </CardContent>
+-          </Card>
++              </CardContent>
++            </Card>
+           </div>
+         ))}
+       </div>
+@@ -367,7 +386,7 @@ export default function CustomersPage() {
+       {/* Floating Merge Button */}
+       {isSelectionMode && selectedIds.length === 2 && (
+         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 animate-in slide-in-from-bottom-4 fade-in">
+-          <Button 
++          <Button
+             onClick={handleMergeClick}
+             className="h-14 px-8 rounded-full shadow-2xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-lg gap-2"
+           >
+@@ -406,8 +425,8 @@ export default function CustomersPage() {
+                   if (!c) return null;
+                   const isTarget = mergeTargetId === id;
+                   return (
+-                    <div 
+-                      key={id} 
++                    <div
++                      key={id}
+                       onClick={() => {
+                         setMergeTargetId(id);
+                         setFormData({
+@@ -441,24 +460,24 @@ export default function CustomersPage() {
+                 <div className="space-y-4">
+                   <div className="space-y-2">
+                     <label className="text-sm font-bold">שם מלא</label>
+-                    <Input value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
++                    <Input value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })} />
+                   </div>
+                   <div className="grid grid-cols-2 gap-4">
+                     <div className="space-y-2">
+                       <label className="text-sm font-bold">טלפון</label>
+-                      <Input value={formData.phone} onChange={e => setFormData({...formData, phone: e.target.value})} dir="ltr" />
++                      <Input value={formData.phone} onChange={e => setFormData({ ...formData, phone: e.target.value })} dir="ltr" />
+                     </div>
+                     <div className="space-y-2">
+                       <label className="text-sm font-bold">אימייל</label>
+-                      <Input value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} dir="ltr" />
++                      <Input value={formData.email} onChange={e => setFormData({ ...formData, email: e.target.value })} dir="ltr" />
+                     </div>
+                   </div>
+                   <div className="space-y-2">
+                     <label className="text-sm font-bold">הערות (יחליף את הקיים)</label>
+-                    <textarea 
++                    <textarea
+                       className="w-full h-24 p-3 border rounded-xl"
+-                      value={formData.notes} 
+-                      onChange={e => setFormData({...formData, notes: e.target.value})} 
++                      value={formData.notes}
++                      onChange={e => setFormData({ ...formData, notes: e.target.value })}
+                     />
+                   </div>
+                 </div>
+@@ -466,7 +485,7 @@ export default function CustomersPage() {
+ 
+               <div className="flex gap-4 pt-4">
+                 <Button variant="outline" className="flex-1 h-12" onClick={() => setShowMergeDialog(false)}>ביטול</Button>
+-                <Button 
++                <Button
+                   className="flex-1 h-12 bg-purple-600 hover:bg-purple-700 font-bold"
+                   onClick={executeMerge}
+                   disabled={saving}
+@@ -489,12 +508,12 @@ export default function CustomersPage() {
+                 <X className="h-6 w-6" />
+               </Button>
+             </div>
+-            
++
+             <CardContent className="p-6">
+               <form onSubmit={handleSubmit} className="space-y-6">
+                 {!editingCustomer && (
+                   <div className="flex justify-end mb-2">
+-                    <ContactPicker 
++                    <ContactPicker
+                       onContactSelect={(contact) => {
+                         setFormData({
+                           ...formData,
+diff --git a/frontend/src/app/dashboard/dresses/page.tsx b/frontend/src/app/dashboard/dresses/page.tsx
+index 32ee37d..4f88d53 100644
+--- a/frontend/src/app/dashboard/dresses/page.tsx
++++ b/frontend/src/app/dashboard/dresses/page.tsx
+@@ -277,6 +277,11 @@ export default function DressesPage() {
+     const file = e.target.files?.[0];
+     if (!file) return;
+ 
++    if (!file.type.startsWith("image/")) {
++      toast({ title: "שגיאה", description: "ניתן להעלות רק קובצי תמונה", variant: "destructive" });
++      return;
++    }
++
+     if (file.size > 10 * 1024 * 1024) {
+       toast({ title: "שגיאה", description: "הקובץ גדול מדי (מקסימום 10MB)", variant: "destructive" });
+       return;
+@@ -400,8 +405,6 @@ export default function DressesPage() {
+             >
+               <option value="">כל הסטטוסים</option>
+               <option value="available">פנויה</option>
+-              <option value="rented">הוזמנה</option>
+-              <option value="damaged">פגומה</option>
+               <option value="sold">נמכרה</option>
+               <option value="retired">הוצאה מהמלאי</option>
+             </select>
+@@ -474,11 +477,7 @@ export default function DressesPage() {
+                   "px-4 py-1.5 rounded-full text-xs font-black uppercase tracking-wider shadow-lg backdrop-blur-md",
+                   dress.status === "sold" || dress.status === "retired"
+                     ? "bg-gray-500/90 text-white"
+-                    : dress.status === "damaged"
+-                      ? "bg-red-500/90 text-white"
+-                      : dress.status === "rented"
+-                        ? "bg-amber-500/90 text-white"
+-                        : "bg-green-500/90 text-white"
++                    : "bg-green-500/90 text-white"
+                 )}>
+                   {getStatusLabel(dress.status)}
+                 </span>
+@@ -710,9 +709,7 @@ export default function DressesPage() {
+                       className="w-full h-14 px-4 rounded-2xl bg-muted/30 border-none outline-none text-sm font-bold"
+                     >
+                       <option value="available">פנויה</option>
+-                      <option value="rented">הוזמנה</option>
+                       <option value="sold">נמכרה</option>
+-                      <option value="damaged">פגומה</option>
+                       <option value="retired">הוצאה מהמלאי</option>
+                     </select>
+                   </div>
+@@ -758,7 +755,9 @@ export default function DressesPage() {
+                         <input
+                           type="file"
+                           className="hidden"
+-                          accept="image/*"
++                          // Keep chooser behavior consistent on Android (camera/gallery/files),
++                          // while actual validation still enforces image-only uploads.
++                          accept="image/*,application/pdf"
+                           capture="environment"
+                           onChange={handleFileUpload}
+                           disabled={saving}
+diff --git a/frontend/src/app/dashboard/orders/page.tsx b/frontend/src/app/dashboard/orders/page.tsx
+index 05da587..23fa118 100644
+--- a/frontend/src/app/dashboard/orders/page.tsx
++++ b/frontend/src/app/dashboard/orders/page.tsx
+@@ -82,7 +82,9 @@ export default function OrdersPage() {
+   const [statusFilter, setStatusFilter] = useState<string>("");
+   const [dateFrom, setDateFrom] = useState<string | null>(null);
+   const [dateTo, setDateTo] = useState<string | null>(null);
+-  
++  const [sortBy, setSortBy] = useState("event_date");
++  const [sortOrder, setSortOrder] = useState("desc");
++
+   const [viewingOrderData, setViewingOrderData] = useState<OrderDetailData | null>(null);
+   const [loadingOrderDetails, setLoadingOrderDetails] = useState(false);
+   const [creatingSignLinkForOrderId, setCreatingSignLinkForOrderId] = useState<number | null>(null);
+@@ -108,7 +110,7 @@ export default function OrdersPage() {
+   }, [searchParams]);
+ 
+   const toggleSelection = (id: number) => {
+-    setSelectedIds(prev => 
++    setSelectedIds(prev =>
+       prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+     );
+   };
+@@ -151,12 +153,14 @@ export default function OrdersPage() {
+     }
+   };
+ 
+-  const fetchOrders = useCallback(async () => {
++  const fetchOrders = useCallback(async (sortCol: string = "event_date", sortDir: string = "desc") => {
+     try {
+       const response = await ordersApi.list({
+         status: statusFilter || undefined,
+         startDate: dateFrom || undefined,
+         endDate: dateTo || undefined,
++        sortBy: sortCol,
++        sortOrder: sortDir,
+         page: 1,
+         limit: 1000,
+       });
+@@ -172,8 +176,8 @@ export default function OrdersPage() {
+   }, [statusFilter, dateFrom, dateTo, toast]);
+ 
+   useEffect(() => {
+-    fetchOrders();
+-  }, [fetchOrders]);
++    fetchOrders(sortBy, sortOrder);
++  }, [fetchOrders, sortBy, sortOrder]);
+ 
+   const handleStatusUpdate = async (orderId: number, status: string) => {
+     try {
+@@ -247,17 +251,17 @@ export default function OrdersPage() {
+   };
+ 
+   const activeOrdersCount = orders.filter((o) => o.status === "active").length;
+-  
++
+   // Financial Summary Calculations
+   const ordersSummary = orders.filter(o => o.status !== 'cancelled').reduce((acc, o) => {
+     const totalWithCharges = o.total_price + (o.total_customer_charge || 0);
+     const balance = totalWithCharges - o.paid_amount;
+-    
++
+     acc.totalAmount += totalWithCharges;
+     acc.totalPaid += o.paid_amount;
+     if (balance > 0) acc.totalDebt += balance;
+     if (balance < 0) acc.totalCredit += Math.abs(balance);
+-    
++
+     return acc;
+   }, { totalAmount: 0, totalPaid: 0, totalDebt: 0, totalCredit: 0 });
+ 
+@@ -282,7 +286,7 @@ export default function OrdersPage() {
+           <p className="text-muted-foreground font-medium mt-1">מרכז הבקרה על כל ההשכרות והתפירות</p>
+         </div>
+         <div className="flex gap-2">
+-          <Button 
++          <Button
+             variant={isSelectionMode ? "secondary" : "outline"}
+             onClick={() => {
+               setIsSelectionMode(!isSelectionMode);
+@@ -292,8 +296,8 @@ export default function OrdersPage() {
+           >
+             {isSelectionMode ? "ביטול בחירה" : "בחירה מרובה"}
+           </Button>
+-          <Button 
+-            onClick={() => router.push('/dashboard/orders/new')} 
++          <Button
++            onClick={() => router.push('/dashboard/orders/new')}
+             className="h-14 px-8 rounded-2xl shadow-xl shadow-green-500/20 bg-green-600 hover:bg-green-700 text-lg font-bold gap-2"
+           >
+             <Plus className="h-6 w-6" />
+@@ -344,22 +348,40 @@ export default function OrdersPage() {
+       <div className="bg-white p-4 rounded-[2rem] shadow-sm space-y-4">
+         <div className="flex flex-col md:flex-row gap-4">
+           <div className="flex-1">
+-            <DateRangeFilter 
+-              dateFrom={dateFrom} 
+-              dateTo={dateTo} 
+-              onDateChange={(from, to) => { setDateFrom(from); setDateTo(to); }} 
++            <DateRangeFilter
++              dateFrom={dateFrom}
++              dateTo={dateTo}
++              onDateChange={(from, to) => { setDateFrom(from); setDateTo(to); }}
+             />
+           </div>
+-          <div className="w-full md:w-48">
+-            <select 
+-              value={statusFilter} 
+-              onChange={(e) => setStatusFilter(e.target.value)} 
+-              className="w-full h-12 px-4 rounded-xl border-2 bg-background font-bold text-sm"
+-            >
+-              <option value="">כל הסטטוסים</option>
+-              <option value="active">פעילה</option>
+-              <option value="cancelled">בוטלה</option>
+-            </select>
++          <div className="flex gap-4 w-full md:w-auto overflow-x-auto pb-2 md:pb-0">
++            <div className="w-48 shrink-0">
++              <select
++                value={`${sortBy}-${sortOrder}`}
++                onChange={(e) => {
++                  const [col, dir] = e.target.value.split('-');
++                  setSortBy(col);
++                  setSortOrder(dir);
++                }}
++                className="w-full h-12 px-4 rounded-xl border-2 bg-background font-bold text-sm"
++              >
++                <option value="event_date-desc">תאריך אירוע (קרובים תחילה)</option>
++                <option value="event_date-asc">תאריך אירוע (רחוקים תחילה)</option>
++                <option value="customer_name-asc">שם הלקוחה (א' - ת')</option>
++                <option value="last_active_date-desc">פעילות אחרונה</option>
++              </select>
++            </div>
++            <div className="w-48 shrink-0">
++              <select
++                value={statusFilter}
++                onChange={(e) => setStatusFilter(e.target.value)}
++                className="w-full h-12 px-4 rounded-xl border-2 bg-background font-bold text-sm"
++              >
++                <option value="">כל הסטטוסים</option>
++                <option value="active">פעילה</option>
++                <option value="cancelled">בוטלה</option>
++              </select>
++            </div>
+           </div>
+         </div>
+       </div>
+@@ -382,7 +404,7 @@ export default function OrdersPage() {
+             return (
+               <div key={order.id} className="relative group">
+                 {isSelectionMode && (
+-                  <div 
++                  <div
+                     className={cn(
+                       "absolute top-4 right-4 z-10 h-6 w-6 rounded-full border-2 cursor-pointer flex items-center justify-center transition-all bg-white",
+                       selectedIds.includes(order.id) ? "border-green-600 bg-green-600 text-white" : "border-muted-foreground/30"
+@@ -392,7 +414,7 @@ export default function OrdersPage() {
+                     {selectedIds.includes(order.id) && <Check className="h-4 w-4" />}
+                   </div>
+                 )}
+-                <Card 
++                <Card
+                   onClick={() => isSelectionMode && toggleSelection(order.id)}
+                   className={cn(
+                     "rounded-[2rem] border-none shadow-sm overflow-hidden transition-all hover:shadow-md",
+@@ -415,7 +437,7 @@ export default function OrdersPage() {
+                           <h3 className="text-2xl font-black mb-1">{order.customer_name}</h3>
+                           <p className="text-sm font-medium text-muted-foreground mb-4">{formatPhoneNumber(order.customer_phone)}</p>
+                         </div>
+-                        
++
+                         <div className="flex items-center gap-2 mt-auto pt-4 border-t border-muted">
+                           {order.event_date && (
+                             <div className="flex items-center gap-1.5 text-xs font-bold text-muted-foreground">
+@@ -457,8 +479,8 @@ export default function OrdersPage() {
+                         <div className={cn(
+                           "p-4 rounded-2xl flex items-center justify-between",
+                           isFullyPaid ? "bg-green-50 border border-green-100" :
+-                          hasDebt ? "bg-orange-50 border border-orange-100" :
+-                          "bg-blue-50 border border-blue-100"
++                            hasDebt ? "bg-orange-50 border border-orange-100" :
++                              "bg-blue-50 border border-blue-100"
+                         )}>
+                           <div>
+                             <p className="text-[10px] font-black uppercase opacity-60">
+@@ -474,8 +496,8 @@ export default function OrdersPage() {
+                           <div className={cn(
+                             "h-10 w-10 rounded-full flex items-center justify-center",
+                             isFullyPaid ? "bg-green-200/50 text-green-700" :
+-                            hasDebt ? "bg-orange-200/50 text-orange-700" :
+-                            "bg-blue-200/50 text-blue-700"
++                              hasDebt ? "bg-orange-200/50 text-orange-700" :
++                                "bg-blue-200/50 text-blue-700"
+                           )}>
+                             <CreditCard className="h-5 w-5" />
+                           </div>
+@@ -485,38 +507,38 @@ export default function OrdersPage() {
+                       {/* Action Buttons */}
+                       {!isSelectionMode && (
+                         <div className="p-6 lg:w-1/4 flex flex-row lg:flex-col justify-center items-center gap-3 bg-muted/5">
+-                          <Button 
+-                            variant="outline" 
+-                            size="lg" 
+-                            onClick={() => viewOrder(order.id)} 
++                          <Button
++                            variant="outline"
++                            size="lg"
++                            onClick={() => viewOrder(order.id)}
+                             className="flex-1 lg:w-full rounded-2xl font-bold h-12 border-2 hover:bg-white"
+                           >
+                             <Eye className="h-5 w-5 ml-2" /> צפייה
+                           </Button>
+-                          <Button 
+-                            variant="outline" 
+-                            size="lg" 
+-                            onClick={() => router.push(`/dashboard/orders/${order.id}/edit`)} 
++                          <Button
++                            variant="outline"
++                            size="lg"
++                            onClick={() => router.push(`/dashboard/orders/${order.id}/edit`)}
+                             className="flex-1 lg:w-full rounded-2xl font-bold h-12 border-2 border-primary/20 text-primary hover:bg-primary/5"
+                           >
+                             <Edit className="h-5 w-5 ml-2" /> עריכה
+                           </Button>
+                           <div className="flex gap-2 w-full">
+                             {order.customer_phone && (
+-                              <a 
+-                                href={createWhatsAppLink(order.customer_phone)} 
+-                                target="_blank" 
+-                                rel="noopener noreferrer" 
++                              <a
++                                href={createWhatsAppLink(order.customer_phone)}
++                                target="_blank"
++                                rel="noopener noreferrer"
+                                 className="flex-1 lg:w-auto h-12 bg-green-500 hover:bg-green-600 text-white rounded-2xl flex items-center justify-center transition-colors shadow-lg shadow-green-500/20"
+                               >
+                                 <MessageCircle className="h-6 w-6" />
+                               </a>
+                             )}
+                             {order.status !== "cancelled" && (
+-                              <Button 
+-                                variant="ghost" 
+-                                size="icon" 
+-                                onClick={() => handleDelete(order)} 
++                              <Button
++                                variant="ghost"
++                                size="icon"
++                                onClick={() => handleDelete(order)}
+                                 className="h-12 w-12 rounded-2xl text-destructive hover:bg-destructive/5"
+                               >
+                                 <Trash2 className="h-5 w-5" />
+@@ -537,7 +559,7 @@ export default function OrdersPage() {
+       {/* Floating Merge Button */}
+       {isSelectionMode && selectedIds.length === 2 && (
+         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 animate-in slide-in-from-bottom-4 fade-in">
+-          <Button 
++          <Button
+             onClick={handleMergeClick}
+             className="h-14 px-8 rounded-full shadow-2xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-lg gap-2"
+           >
+@@ -568,8 +590,8 @@ export default function OrdersPage() {
+                   if (!o) return null;
+                   const isTarget = mergeTargetId === id;
+                   return (
+-                    <div 
+-                      key={id} 
++                    <div
++                      key={id}
+                       onClick={() => {
+                         setMergeTargetId(id);
+                         setMergeFormData({
+@@ -602,11 +624,11 @@ export default function OrdersPage() {
+                 <div className="space-y-4">
+                   <div className="space-y-2">
+                     <label className="text-sm font-bold">תאריך אירוע</label>
+-                    <input 
++                    <input
+                       type="date"
+                       className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+-                      value={mergeFormData.event_date} 
+-                      onChange={e => setMergeFormData({...mergeFormData, event_date: e.target.value})} 
++                      value={mergeFormData.event_date}
++                      onChange={e => setMergeFormData({ ...mergeFormData, event_date: e.target.value })}
+                     />
+                   </div>
+                   <div className="space-y-2">
+@@ -614,7 +636,7 @@ export default function OrdersPage() {
+                     <select
+                       className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                       value={mergeFormData.status}
+-                      onChange={e => setMergeFormData({...mergeFormData, status: e.target.value})}
++                      onChange={e => setMergeFormData({ ...mergeFormData, status: e.target.value })}
+                     >
+                       <option value="active">פעילה</option>
+                       <option value="cancelled">בוטלה</option>
+@@ -622,10 +644,10 @@ export default function OrdersPage() {
+                   </div>
+                   <div className="space-y-2">
+                     <label className="text-sm font-bold">הערות (יחליף את הקיים)</label>
+-                    <textarea 
++                    <textarea
+                       className="w-full h-24 p-3 border rounded-xl"
+-                      value={mergeFormData.notes} 
+-                      onChange={e => setMergeFormData({...mergeFormData, notes: e.target.value})} 
++                      value={mergeFormData.notes}
++                      onChange={e => setMergeFormData({ ...mergeFormData, notes: e.target.value })}
+                     />
+                   </div>
+                 </div>
+@@ -633,7 +655,7 @@ export default function OrdersPage() {
+ 
+               <div className="flex gap-4 pt-4">
+                 <Button variant="outline" className="flex-1 h-12" onClick={() => setShowMergeDialog(false)}>ביטול</Button>
+-                <Button 
++                <Button
+                   className="flex-1 h-12 bg-purple-600 hover:bg-purple-700 font-bold"
+                   onClick={executeMerge}
+                   disabled={savingMerge}
+@@ -664,7 +686,7 @@ export default function OrdersPage() {
+                 <X className="h-6 w-6" />
+               </Button>
+             </div>
+-            
++
+             <CardContent className="p-0 overflow-y-auto">
+               <div className="p-6 space-y-8">
+                 {/* Customer Summary */}
+@@ -718,7 +740,7 @@ export default function OrdersPage() {
+                 {/* Financial Overview - Detailed */}
+                 <div className="bg-green-50 p-6 rounded-[2rem] border-2 border-green-100 space-y-4">
+                   <h4 className="text-[10px] font-black text-green-600 uppercase tracking-widest text-center">סיכום כספי מפורט</h4>
+-                  
++
+                   <div className="space-y-2">
+                     <div className="flex justify-between text-sm">
+                       <span className="text-muted-foreground">סך פריטים:</span>
+@@ -784,14 +806,14 @@ export default function OrdersPage() {
+             </CardContent>
+ 
+             <div className="p-6 border-t bg-muted/10 grid grid-cols-2 gap-3 sticky bottom-0">
+-              <Button 
++              <Button
+                 className="h-14 rounded-2xl font-black text-lg shadow-lg shadow-green-600/20 bg-green-600 hover:bg-green-700"
+                 onClick={() => router.push(`/dashboard/orders/${viewingOrderData.order.id}/edit`)}
+               >
+                 <Edit className="h-5 w-5 ml-2" /> עריכה מלאה
+               </Button>
+-              <Button 
+-                variant="outline" 
++              <Button
++                variant="outline"
+                 className="h-14 rounded-2xl font-black text-lg border-2 bg-white"
+                 onClick={() => router.push(`/dashboard/transactions/new?type=income&order_id=${viewingOrderData.order.id}&customer_id=${viewingOrderData.order.customer_id}&amount=${Number(viewingOrderData.order.total_price || 0) + Number(viewingOrderData.order.total_customer_charge || 0) - Number(viewingOrderData.order.paid_amount || 0)}`)}
+               >
+diff --git a/frontend/src/app/dashboard/transactions/[id]/edit/page.tsx b/frontend/src/app/dashboard/transactions/[id]/edit/page.tsx
+index 586aef6..b6eba86 100644
+--- a/frontend/src/app/dashboard/transactions/[id]/edit/page.tsx
++++ b/frontend/src/app/dashboard/transactions/[id]/edit/page.tsx
+@@ -10,12 +10,12 @@
+ 
+ import { useState, useEffect } from "react";
+ import { useRouter, useParams } from "next/navigation";
+-import { 
+-  ArrowRight, 
+-  Calendar, 
+-  CreditCard, 
+-  Camera, 
+-  X, 
++import {
++  ArrowRight,
++  Calendar,
++  CreditCard,
++  Camera,
++  X,
+   ShoppingBag,
+   Plus,
+   Search,
+@@ -58,10 +58,10 @@ export default function EditTransactionPage() {
+   const params = useParams();
+   const transactionId = params.id as string;
+   const { toast } = useToast();
+-  
++
+   const [loading, setLoading] = useState(true);
+   const [saving, setSaving] = useState(false);
+-  
++
+   const [type, setType] = useState<"income" | "expense">("income");
+   const [uiCategory, setUiCategory] = useState("");
+   const [amount, setAmount] = useState("");
+@@ -71,19 +71,19 @@ export default function EditTransactionPage() {
+   const [notes, setNotes] = useState("");
+   const [fileBase64, setFileBase64] = useState<string | undefined>();
+   const [fileName, setFileName] = useState<string | undefined>();
+-  
++
+   const [customerId, setCustomerId] = useState("");
+   const [customerSearch, setCustomerSearch] = useState("");
+   const [customers, setCustomers] = useState<{ id: number; name: string; phone: string }[]>([]);
+-  
++
+   const [orderId, setOrderId] = useState("");
+   const [recentOrders, setRecentOrders] = useState<any[]>([]);
+   const [expenseAllocation, setExpenseAllocation] = useState<"business" | "customer" | "split">("business");
+   const [customerChargeAmount, setCustomerChargeAmount] = useState("");
+-  
++
+   const [supplier, setSupplier] = useState("");
+   const [product, setProduct] = useState("");
+-  
++
+   // Payment Details State
+   const [bankNumber, setBankNumber] = useState("");
+   const [branchNumber, setBranchNumber] = useState("");
+@@ -100,7 +100,7 @@ export default function EditTransactionPage() {
+         if (res.success && res.data) {
+           const t = (res.data as any).transaction; // Corrected access to .transaction
+           if (!t) throw new Error("Transaction not found");
+-          
++
+           setType(t.type);
+           setAmount(t.amount.toString());
+           setCategory(t.category);
+@@ -110,7 +110,7 @@ export default function EditTransactionPage() {
+           setCustomerId(t.customer_id?.toString() || "");
+           setCustomerSearch(t.customer_name || "");
+           setOrderId(t.order_id?.toString() || "");
+-          
++
+           if (t.supplier) setSupplier(t.supplier);
+           if (t.product) setProduct(t.product);
+           if (t.check_number) setCheckNumber(t.check_number);
+@@ -123,9 +123,9 @@ export default function EditTransactionPage() {
+               setBankNumber(bankData.bank || "");
+               setBranchNumber(bankData.branch || "");
+               setAccountNumber(bankData.account || "");
+-            } catch (e) {}
++            } catch (e) { }
+           }
+-          
++
+           if (t.type === "income") {
+             if (t.order_id) setUiCategory("existing_order");
+             else if (t.category === "repair") setUiCategory("repair");
+@@ -156,10 +156,10 @@ export default function EditTransactionPage() {
+   useEffect(() => {
+     const loadData = async () => {
+       if (type === "income" && uiCategory === "existing_order") {
+-        const res = await ordersApi.list({ limit: 10 } as any);
++        const res = await ordersApi.list({ limit: 50, sortBy: 'event_date', sortOrder: 'desc' } as any);
+         if (res.success) setRecentOrders((res.data as any).orders || []);
+       } else if (type === "expense" && (expenseAllocation === "customer" || expenseAllocation === "split")) {
+-        const res = await ordersApi.list({ limit: 10 } as any);
++        const res = await ordersApi.list({ limit: 50, sortBy: 'event_date', sortOrder: 'desc' } as any);
+         if (res.success) setRecentOrders((res.data as any).orders || []);
+       }
+     };
+@@ -185,7 +185,7 @@ export default function EditTransactionPage() {
+   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+     const file = e.target.files?.[0];
+     if (file) {
+-      if (file.size > 5 * 1024 * 1024) { 
++      if (file.size > 5 * 1024 * 1024) {
+         toast({ title: "שגיאה", description: "הקובץ גדול מדי", variant: "destructive" });
+         return;
+       }
+@@ -221,7 +221,7 @@ export default function EditTransactionPage() {
+         check_number: checkNumber || undefined,
+         last_four_digits: lastFourDigits || undefined,
+         installments: installments ? parseInt(installments) : 1,
+-        bank_details: (bankNumber || branchNumber || accountNumber) ? 
++        bank_details: (bankNumber || branchNumber || accountNumber) ?
+           JSON.stringify({ bank: bankNumber, branch: branchNumber, account: accountNumber }) : undefined,
+         customer_id: customerId ? parseInt(customerId) : undefined,
+         order_id: orderId ? parseInt(orderId) : undefined,
+@@ -259,13 +259,13 @@ export default function EditTransactionPage() {
+       </div>
+ 
+       <form onSubmit={handleSubmit} className="max-w-2xl mx-auto p-4 sm:p-6 space-y-8">
+-        
++
+         {/* Type Info (Non-editable for safety) */}
+         <div className="bg-muted p-4 rounded-2xl flex items-center justify-center gap-2">
+-           <span className="text-sm font-bold text-muted-foreground uppercase tracking-widest">סוג התנועה:</span>
+-           <span className={cn("font-black px-4 py-1 rounded-full text-white", type === 'income' ? 'bg-green-600' : 'bg-red-600')}>
+-             {type === 'income' ? 'הכנסה' : 'הוצאה'}
+-           </span>
++          <span className="text-sm font-bold text-muted-foreground uppercase tracking-widest">סוג התנועה:</span>
++          <span className={cn("font-black px-4 py-1 rounded-full text-white", type === 'income' ? 'bg-green-600' : 'bg-red-600')}>
++            {type === 'income' ? 'הכנסה' : 'הוצאה'}
++          </span>
+         </div>
+ 
+         {/* Amount Input */}
+@@ -290,9 +290,9 @@ export default function EditTransactionPage() {
+             <label className="text-xs font-bold text-muted-foreground flex items-center gap-1">
+               <Calendar className="h-3 w-3" /> תאריך
+             </label>
+-            <Input 
+-              type="date" 
+-              value={date} 
++            <Input
++              type="date"
++              value={date}
+               onChange={(e) => setDate(e.target.value)}
+               className="h-12 rounded-xl border-2"
+             />
+@@ -477,7 +477,7 @@ export default function EditTransactionPage() {
+                 <label className="text-xs font-bold text-red-700 uppercase">שיוך לחיוב</label>
+                 {!orderId ? (
+                   <div className="grid gap-2 max-h-40 overflow-y-auto">
+-                    {recentOrders.slice(0, 5).map(o => (
++                    {recentOrders.map(o => (
+                       <button
+                         key={o.id}
+                         type="button"
+@@ -510,11 +510,12 @@ export default function EditTransactionPage() {
+               </Card>
+             )}
+           </div>
+-        )}
++        )
++        }
+ 
+         {/* Global Fields */}
+         <section className="space-y-4">
+-          
++
+           {/* Payment Details - Conditional Fields */}
+           {type === "income" && paymentMethod === "credit" && (
+             <div className="grid grid-cols-3 gap-2 animate-in fade-in slide-in-from-top-2">
+@@ -524,22 +525,22 @@ export default function EditTransactionPage() {
+               </div>
+               <div className="space-y-1">
+                 <label className="text-[10px] font-bold text-muted-foreground uppercase">4 ספרות</label>
+-                <Input 
+-                  value={lastFourDigits} 
+-                  onChange={(e) => setLastFourDigits(e.target.value)} 
+-                  placeholder="****" 
++                <Input
++                  value={lastFourDigits}
++                  onChange={(e) => setLastFourDigits(e.target.value)}
++                  placeholder="****"
+                   maxLength={4}
+-                  className="h-10 text-center" 
++                  className="h-10 text-center"
+                 />
+               </div>
+               <div className="space-y-1">
+                 <label className="text-[10px] font-bold text-muted-foreground uppercase">תשלומים</label>
+-                <Input 
+-                  type="number" 
++                <Input
++                  type="number"
+                   min="1"
+-                  value={installments} 
+-                  onChange={(e) => setInstallments(e.target.value)} 
+-                  className="h-10 text-center" 
++                  value={installments}
++                  onChange={(e) => setInstallments(e.target.value)}
++                  className="h-10 text-center"
+                 />
+               </div>
+             </div>
+@@ -620,19 +621,19 @@ export default function EditTransactionPage() {
+           )}
+         </section>
+ 
+-      </form>
++      </form >
+ 
+       {/* Sticky Bottom Bar */}
+-      <div className="fixed bottom-0 left-0 right-0 p-4 bg-background/80 backdrop-blur-lg border-t z-40">
++      < div className="fixed bottom-0 left-0 right-0 p-4 bg-background/80 backdrop-blur-lg border-t z-40" >
+         <div className="max-w-2xl mx-auto flex gap-3">
+-          <Button 
+-            variant="outline" 
++          <Button
++            variant="outline"
+             className="flex-1 h-14 rounded-2xl text-lg font-bold border-2"
+             onClick={() => router.back()}
+           >
+             ביטול
+           </Button>
+-          <Button 
++          <Button
+             className={cn(
+               "flex-[2] h-14 rounded-2xl text-lg font-bold shadow-xl transition-all",
+               type === "income" ? "bg-green-600 hover:bg-green-700" : "bg-red-600 hover:bg-red-700"
+@@ -643,7 +644,7 @@ export default function EditTransactionPage() {
+             {saving ? "מעדכן..." : "שמרי שינויים 🎉"}
+           </Button>
+         </div>
+-      </div>
+-    </div>
++      </div >
++    </div >
+   );
+ }
+diff --git a/frontend/src/app/dashboard/transactions/new/page.tsx b/frontend/src/app/dashboard/transactions/new/page.tsx
+index b3a4e41..7c4ba36 100644
+--- a/frontend/src/app/dashboard/transactions/new/page.tsx
++++ b/frontend/src/app/dashboard/transactions/new/page.tsx
+@@ -11,15 +11,15 @@
+ 
+ import { useState, useEffect, useRef } from "react";
+ import { useRouter, useSearchParams } from "next/navigation";
+-import { 
+-  ArrowRight, 
+-  Wallet, 
+-  User, 
+-  Calendar, 
+-  Tag, 
+-  CreditCard, 
+-  Camera, 
+-  X, 
++import {
++  ArrowRight,
++  Wallet,
++  User,
++  Calendar,
++  Tag,
++  CreditCard,
++  Camera,
++  X,
+   ShoppingBag,
+   Plus,
+   Search,
+@@ -31,7 +31,7 @@ import { Input } from "@/components/ui/input";
+ import { Card, CardContent } from "@/components/ui/card";
+ import { useToast } from "@/components/ui/use-toast";
+ import { transactionsApi, customersApi, ordersApi } from "@/lib/api";
+-import { cn, getCategoryLabel, normalizePhoneInput } from "@/lib/utils";
++import { cn, getCategoryLabel, normalizePhoneInput, formatDateInput } from "@/lib/utils";
+ import { clearSharedUploadPayload, getSharedUploadPayload } from "@/lib/shared-upload";
+ import { ContactPicker } from "@/components/dashboard/contact-picker";
+ 
+@@ -65,31 +65,31 @@ export default function NewTransactionPage() {
+   const { toast } = useToast();
+   const [loading, setLoading] = useState(false);
+   const [saving, setSaving] = useState(false);
+-  
++
+   const [type, setType] = useState<"income" | "expense">("income");
+   const [uiCategory, setUiCategory] = useState("");
+   const [amount, setAmount] = useState("");
+   const [category, setCategory] = useState("");
+-  const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
++  const [date, setDate] = useState(formatDateInput(new Date()));
+   const [paymentMethod, setPaymentMethod] = useState("cash");
+   const [notes, setNotes] = useState("");
+   const [fileBase64, setFileBase64] = useState<string | undefined>();
+   const [fileName, setFileName] = useState<string | undefined>();
+-  
++
+   const [customerId, setCustomerId] = useState("");
+   const [customerSearch, setCustomerSearch] = useState("");
+   const [customers, setCustomers] = useState<{ id: number; name: string; phone: string }[]>([]);
+   const [isNewCustomer, setIsNewCustomer] = useState(false);
+   const [newCustomerDetails, setNewCustomerDetails] = useState({ name: "", phone: "", email: "" });
+-  
++
+   const [orderId, setOrderId] = useState("");
+   const [recentOrders, setRecentOrders] = useState<any[]>([]);
+   const [expenseAllocation, setExpenseAllocation] = useState<"business" | "customer" | "split">("business");
+   const [customerChargeAmount, setCustomerChargeAmount] = useState("");
+-  
++
+   const [supplier, setSupplier] = useState("");
+   const [product, setProduct] = useState("");
+-  
++
+   // Payment Details State
+   const [bankNumber, setBankNumber] = useState("");
+   const [branchNumber, setBranchNumber] = useState("");
+@@ -103,7 +103,7 @@ export default function NewTransactionPage() {
+   useEffect(() => {
+     const typeParam = searchParams.get("type");
+     if (typeParam === "expense") setType("expense");
+-    
++
+     const amountParam = searchParams.get("amount");
+     if (amountParam) setAmount(amountParam);
+ 
+@@ -146,10 +146,10 @@ export default function NewTransactionPage() {
+   useEffect(() => {
+     const loadData = async () => {
+       if (type === "income" && uiCategory === "existing_order") {
+-        const res = await ordersApi.list({ limit: 10 } as any);
++        const res = await ordersApi.list({ limit: 50, sortBy: 'event_date', sortOrder: 'desc' } as any);
+         if (res.success) setRecentOrders((res.data as any).orders || []);
+       } else if (type === "expense" && (expenseAllocation === "customer" || expenseAllocation === "split")) {
+-        const res = await ordersApi.list({ limit: 10 } as any);
++        const res = await ordersApi.list({ limit: 50, sortBy: 'event_date', sortOrder: 'desc' } as any);
+         if (res.success) setRecentOrders((res.data as any).orders || []);
+       }
+     };
+@@ -175,7 +175,7 @@ export default function NewTransactionPage() {
+   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+     const file = e.target.files?.[0];
+     if (file) {
+-      if (file.size > 5 * 1024 * 1024) { 
++      if (file.size > 5 * 1024 * 1024) {
+         toast({ title: "שגיאה", description: "הקובץ גדול מדי", variant: "destructive" });
+         return;
+       }
+@@ -211,7 +211,7 @@ export default function NewTransactionPage() {
+         check_number: checkNumber || undefined,
+         last_four_digits: lastFourDigits || undefined,
+         installments: installments ? parseInt(installments) : 1,
+-        bank_details: (bankNumber || branchNumber || accountNumber) ? 
++        bank_details: (bankNumber || branchNumber || accountNumber) ?
+           JSON.stringify({ bank: bankNumber, branch: branchNumber, account: accountNumber }) : undefined,
+         customer_id: customerId ? parseInt(customerId) : undefined,
+         order_id: orderId ? parseInt(orderId) : undefined,
+@@ -257,10 +257,10 @@ export default function NewTransactionPage() {
+       </div>
+ 
+       <form onSubmit={handleSubmit} className="max-w-2xl mx-auto p-4 sm:p-6 space-y-8">
+-        
++
+         {/* Type Selector */}
+         <div className="bg-muted p-1.5 rounded-2xl flex relative overflow-hidden">
+-          <div 
++          <div
+             className={cn(
+               "absolute inset-y-1.5 w-[calc(50%-6px)] rounded-xl bg-white shadow-sm transition-all duration-300 ease-spring",
+               type === "expense" ? "translate-x-0" : "translate-x-[calc(100%+6px)]"
+@@ -311,9 +311,9 @@ export default function NewTransactionPage() {
+             <label className="text-xs font-bold text-muted-foreground flex items-center gap-1">
+               <Calendar className="h-3 w-3" /> תאריך
+             </label>
+-            <Input 
+-              type="date" 
+-              value={date} 
++            <Input
++              type="date"
++              value={date}
+               onChange={(e) => setDate(e.target.value)}
+               className="h-12 rounded-xl border-2"
+             />
+@@ -374,7 +374,6 @@ export default function NewTransactionPage() {
+                         setOrderId(order.id.toString());
+                         setCustomerId(order.customer_id.toString());
+                         setCategory('order');
+-                        setAmount((order.total_price - order.paid_amount).toString());
+                         setCustomerSearch(order.customer_name);
+                       }}
+                       className="w-full text-right p-4 bg-card border-2 rounded-xl hover:border-primary transition-all shadow-sm"
+@@ -400,6 +399,18 @@ export default function NewTransactionPage() {
+                   <div>
+                     <p className="text-[10px] font-black text-primary uppercase tracking-widest">משוייך להזמנה #{orderId}</p>
+                     <p className="text-lg font-black">{customerSearch}</p>
++
++                    {/* Add remaining balance indication explicitly here */}
++                    {(() => {
++                      const order = recentOrders.find(o => o.id.toString() === orderId);
++                      if (!order) return null;
++                      const balance = order.total_price - order.paid_amount;
++                      return (
++                        <p className="text-xs font-bold text-green-700 mt-1 flex items-center gap-1">
++                          <Wallet className="h-3 w-3" /> יתרה נוכחית בהזמנה: ₪{balance}
++                        </p>
++                      );
++                    })()}
+                   </div>
+                 </div>
+                 <Button type="button" variant="ghost" size="icon" onClick={() => { setOrderId(""); setCategory(""); }} className="text-destructive"><X /></Button>
+@@ -409,26 +420,26 @@ export default function NewTransactionPage() {
+             {(uiCategory === "repair" || uiCategory === "other") && (
+               <div className="space-y-4 animate-in fade-in slide-in-from-top-2">
+                 <label className="text-xs font-bold text-muted-foreground uppercase tracking-widest">מי הלקוחה?</label>
+-                
++
+                 {isNewCustomer ? (
+                   <div className="bg-primary/5 p-4 rounded-2xl border-2 border-primary/20 space-y-4 animate-in zoom-in-95">
+                     <div className="flex justify-between items-center">
+                       <h3 className="font-bold text-primary flex items-center gap-2">
+                         <User className="h-4 w-4" /> פרטי לקוחה חדשה
+                       </h3>
+-                      <Button 
+-                        type="button" 
+-                        variant="ghost" 
+-                        size="icon" 
++                      <Button
++                        type="button"
++                        variant="ghost"
++                        size="icon"
+                         onClick={() => setIsNewCustomer(false)}
+                         className="h-8 w-8 rounded-full"
+                       >
+                         <X className="h-4 w-4" />
+                       </Button>
+                     </div>
+-                    
++
+                     <div className="flex justify-end">
+-                      <ContactPicker 
++                      <ContactPicker
+                         onContactSelect={(contact) => {
+                           setNewCustomerDetails({
+                             name: contact.name,
+@@ -444,18 +455,18 @@ export default function NewTransactionPage() {
+                     <div className="space-y-3">
+                       <div className="space-y-1">
+                         <label className="text-xs font-medium">שם מלא</label>
+-                        <Input 
++                        <Input
+                           value={newCustomerDetails.name}
+-                          onChange={(e) => setNewCustomerDetails({...newCustomerDetails, name: e.target.value})}
++                          onChange={(e) => setNewCustomerDetails({ ...newCustomerDetails, name: e.target.value })}
+                           className="bg-white"
+                           placeholder="שם הלקוחה"
+                         />
+                       </div>
+                       <div className="space-y-1">
+                         <label className="text-xs font-medium">טלפון</label>
+-                        <Input 
++                        <Input
+                           value={newCustomerDetails.phone}
+-                          onChange={(e) => setNewCustomerDetails({...newCustomerDetails, phone: normalizePhoneInput(e.target.value)})}
++                          onChange={(e) => setNewCustomerDetails({ ...newCustomerDetails, phone: normalizePhoneInput(e.target.value) })}
+                           className="bg-white text-left"
+                           placeholder="050-0000000"
+                           dir="ltr"
+@@ -463,9 +474,9 @@ export default function NewTransactionPage() {
+                       </div>
+                       <div className="space-y-1">
+                         <label className="text-xs font-medium">אימייל (אופציונלי)</label>
+-                        <Input 
++                        <Input
+                           value={newCustomerDetails.email}
+-                          onChange={(e) => setNewCustomerDetails({...newCustomerDetails, email: e.target.value})}
++                          onChange={(e) => setNewCustomerDetails({ ...newCustomerDetails, email: e.target.value })}
+                           className="bg-white text-left"
+                           placeholder="email@example.com"
+                           dir="ltr"
+@@ -491,9 +502,9 @@ export default function NewTransactionPage() {
+                       <button
+                         key={c.id}
+                         type="button"
+-                        onClick={() => { 
+-                          setCustomerId(c.id.toString()); 
+-                          setCustomerSearch(c.name); 
++                        onClick={() => {
++                          setCustomerId(c.id.toString());
++                          setCustomerSearch(c.name);
+                           setIsNewCustomer(false);
+                         }}
+                         className={cn(
+@@ -592,15 +603,20 @@ export default function NewTransactionPage() {
+                 <label className="text-xs font-bold text-red-700 uppercase">שיוך לחיוב</label>
+                 {!orderId ? (
+                   <div className="grid gap-2 max-h-40 overflow-y-auto">
+-                    {recentOrders.slice(0, 5).map(o => (
++                    {recentOrders.map(o => (
+                       <button
+                         key={o.id}
+                         type="button"
+                         onClick={() => { setOrderId(o.id.toString()); setCustomerId(o.customer_id.toString()); setCustomerSearch(o.customer_name); }}
+-                        className="p-3 bg-white border-2 rounded-xl text-right hover:border-red-300 transition-all"
++                        className="p-3 bg-white border-2 rounded-xl text-right hover:border-red-300 transition-all flex justify-between"
+                       >
+-                        <p className="font-bold text-red-600 text-sm">{o.customer_name}</p>
+-                        <p className="text-[10px] text-muted-foreground">הזמנה #{o.id}</p>
++                        <div>
++                          <p className="font-bold text-red-600 text-sm">{o.customer_name}</p>
++                          <p className="text-[10px] text-muted-foreground">הזמנה #{o.id}</p>
++                        </div>
++                        <div className="text-left flex flex-col items-end">
++                          <span className="text-xs font-bold text-red-700 bg-red-50 px-2 py-0.5 rounded-md">₪{o.total_price - o.paid_amount} חסר</span>
++                        </div>
+                       </button>
+                     ))}
+                   </div>
+@@ -609,8 +625,18 @@ export default function NewTransactionPage() {
+                     <div>
+                       <p className="text-[10px] font-black text-red-600">הזמנה #{orderId}</p>
+                       <p className="font-bold">{customerSearch}</p>
++                      {(() => {
++                        const order = recentOrders.find(o => o.id.toString() === orderId);
++                        if (!order) return null;
++                        const balance = order.total_price - order.paid_amount;
++                        return (
++                          <p className="text-[10px] font-bold text-red-700 mt-1 flex items-center gap-1">
++                            <Wallet className="h-3 w-3" /> יתרה נוכחית: ₪{balance}
++                          </p>
++                        );
++                      })()}
+                     </div>
+-                    <Button type="button" variant="ghost" size="icon" onClick={() => setOrderId("")} className="text-red-600"><X /></Button>
++                    <Button type="button" variant="ghost" size="icon" onClick={() => { setOrderId(""); setCustomerId(""); }} className="text-red-600"><X /></Button>
+                   </div>
+                 )}
+                 {expenseAllocation === "split" && (
+@@ -629,7 +655,7 @@ export default function NewTransactionPage() {
+ 
+         {/* Global Fields */}
+         <section className="space-y-4">
+-          
++
+           {/* Payment Details - Conditional Fields */}
+           {type === "income" && paymentMethod === "credit" && (
+             <div className="grid grid-cols-3 gap-2 animate-in fade-in slide-in-from-top-2">
+@@ -639,22 +665,22 @@ export default function NewTransactionPage() {
+               </div>
+               <div className="space-y-1">
+                 <label className="text-[10px] font-bold text-muted-foreground uppercase">4 ספרות</label>
+-                <Input 
+-                  value={lastFourDigits} 
+-                  onChange={(e) => setLastFourDigits(e.target.value)} 
+-                  placeholder="****" 
++                <Input
++                  value={lastFourDigits}
++                  onChange={(e) => setLastFourDigits(e.target.value)}
++                  placeholder="****"
+                   maxLength={4}
+-                  className="h-10 text-center" 
++                  className="h-10 text-center"
+                 />
+               </div>
+               <div className="space-y-1">
+                 <label className="text-[10px] font-bold text-muted-foreground uppercase">תשלומים</label>
+-                <Input 
+-                  type="number" 
++                <Input
++                  type="number"
+                   min="1"
+-                  value={installments} 
+-                  onChange={(e) => setInstallments(e.target.value)} 
+-                  className="h-10 text-center" 
++                  value={installments}
++                  onChange={(e) => setInstallments(e.target.value)}
++                  className="h-10 text-center"
+                 />
+               </div>
+             </div>
+@@ -740,14 +766,14 @@ export default function NewTransactionPage() {
+       {/* Sticky Bottom Bar */}
+       <div className="fixed bottom-0 left-0 right-0 p-4 bg-background/80 backdrop-blur-lg border-t z-40">
+         <div className="max-w-2xl mx-auto flex gap-3">
+-          <Button 
+-            variant="outline" 
++          <Button
++            variant="outline"
+             className="flex-1 h-14 rounded-2xl text-lg font-bold border-2"
+             onClick={() => router.back()}
+           >
+             ביטול
+           </Button>
+-          <Button 
++          <Button
+             className={cn(
+               "flex-[2] h-14 rounded-2xl text-lg font-bold shadow-xl transition-all",
+               type === "income" ? "bg-green-600 hover:bg-green-700" : "bg-red-600 hover:bg-red-700"
+diff --git a/frontend/src/app/dashboard/transactions/page.tsx b/frontend/src/app/dashboard/transactions/page.tsx
+index c6843d0..78a9c48 100644
+--- a/frontend/src/app/dashboard/transactions/page.tsx
++++ b/frontend/src/app/dashboard/transactions/page.tsx
+@@ -31,6 +31,8 @@ import {
+   Trash2,
+   Search,
+   X,
++  ChevronRight,
++  ChevronLeft,
+ } from "lucide-react";
+ 
+ interface Transaction {
+@@ -77,7 +79,11 @@ export default function TransactionsPage() {
+   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
+   const [dateFrom, setDateFrom] = useState<string | null>(null);
+   const [dateTo, setDateTo] = useState<string | null>(null);
+-  
++
++  // Pagination State
++  const [currentPage, setCurrentPage] = useState(1);
++  const itemsPerPage = 500;
++
+   // Customer Filter
+   const [customerId, setCustomerId] = useState<number | null>(null);
+   const [customerSearch, setCustomerSearch] = useState("");
+@@ -130,7 +136,7 @@ export default function TransactionsPage() {
+         .reduce((sum, item) => sum + item.price, 0);
+ 
+       if (matchedItemsPrice === 0) return 0;
+-      
++
+       const ratio = matchedItemsPrice / t.order_total_price;
+       return t.amount * ratio;
+     } catch (e) {
+@@ -146,16 +152,16 @@ export default function TransactionsPage() {
+         startDate: dateFrom || undefined,
+         endDate: dateTo || undefined,
+         customer_id: customerId || undefined,
+-        limit: 1000,
++        limit: 100000, // Fetch all to calculate accurate profit summary
+       });
+       if (response.success && response.data) {
+         const data = response.data as { transactions: Transaction[] };
+-        
++
+         // Apply the relative amount calculation to the transactions
+         const processedTransactions = data.transactions.map(t => ({
+           ...t,
+           displayAmount: calculateDisplayAmount(t)
+-        })).filter(t => (t as any).displayAmount > 0);
++        })).filter(t => (t as any).displayAmount !== 0);
+ 
+         setTransactions(processedTransactions as any);
+ 
+@@ -165,7 +171,7 @@ export default function TransactionsPage() {
+         const expenses = processedTransactions
+           .filter((t) => t.type === "expense")
+           .reduce((sum, t) => sum + (t as any).displayAmount, 0);
+-        
++
+         setSummary({
+           totalIncome: income,
+           totalExpenses: expenses,
+@@ -185,9 +191,16 @@ export default function TransactionsPage() {
+   }, [typeFilter, selectedCategories, dateFrom, dateTo, customerId, toast, calculateDisplayAmount]);
+ 
+   useEffect(() => {
++    setCurrentPage(1); // Reset page on filter change
+     fetchTransactions();
+   }, [fetchTransactions]);
+ 
++  const totalPages = Math.ceil(transactions.length / itemsPerPage);
++  const paginatedTransactions = transactions.slice(
++    (currentPage - 1) * itemsPerPage,
++    currentPage * itemsPerPage
++  );
++
+   const handleDelete = async (transaction: Transaction) => {
+     if (!confirm("האם לבטל את העסקה?")) return;
+ 
+@@ -322,7 +335,7 @@ export default function TransactionsPage() {
+                 </button>
+               )}
+             </div>
+-            
++
+             {customers.length > 0 && !customerId && (
+               <div className="absolute top-full right-0 w-full mt-1 bg-popover border rounded-md shadow-md z-50 overflow-hidden">
+                 {customers.map(c => (
+@@ -344,52 +357,52 @@ export default function TransactionsPage() {
+ 
+           <div className="flex flex-wrap gap-2">
+             <select
+-            value={typeFilter}
+-            onChange={(e) => setTypeFilter(e.target.value)}
+-            className="h-10 px-3 border rounded-md bg-background"
+-          >
+-            <option value="">כל הסוגים</option>
+-            <option value="income">הכנסות</option>
+-            <option value="expense">הוצאות</option>
+-          </select>
+-          
+-          <div className="flex flex-wrap gap-2 p-1 bg-muted/30 rounded-lg">
+-            {[...INCOME_CATEGORIES, ...EXPENSE_CATEGORIES]
+-              .filter((cat, index, self) => self.findIndex(c => c.value === cat.value) === index)
+-              .map((cat) => (
++              value={typeFilter}
++              onChange={(e) => setTypeFilter(e.target.value)}
++              className="h-10 px-3 border rounded-md bg-background"
++            >
++              <option value="">כל הסוגים</option>
++              <option value="income">הכנסות</option>
++              <option value="expense">הוצאות</option>
++            </select>
++
++            <div className="flex flex-wrap gap-2 p-1 bg-muted/30 rounded-lg">
++              {[...INCOME_CATEGORIES, ...EXPENSE_CATEGORIES]
++                .filter((cat, index, self) => self.findIndex(c => c.value === cat.value) === index)
++                .map((cat) => (
++                  <button
++                    key={cat.value}
++                    type="button"
++                    onClick={() => {
++                      setSelectedCategories(prev =>
++                        prev.includes(cat.value)
++                          ? prev.filter(v => v !== cat.value)
++                          : [...prev, cat.value]
++                      );
++                    }}
++                    className={cn(
++                      "px-3 py-1.5 text-xs font-bold rounded-full border transition-all",
++                      selectedCategories.includes(cat.value)
++                        ? "bg-primary text-white border-primary shadow-sm"
++                        : "bg-background text-muted-foreground border-input hover:border-primary/50"
++                    )}
++                  >
++                    {cat.label}
++                  </button>
++                ))}
++              {selectedCategories.length > 0 && (
+                 <button
+-                  key={cat.value}
+                   type="button"
+-                  onClick={() => {
+-                    setSelectedCategories(prev => 
+-                      prev.includes(cat.value) 
+-                        ? prev.filter(v => v !== cat.value) 
+-                        : [...prev, cat.value]
+-                    );
+-                  }}
+-                  className={cn(
+-                    "px-3 py-1.5 text-xs font-bold rounded-full border transition-all",
+-                    selectedCategories.includes(cat.value)
+-                      ? "bg-primary text-white border-primary shadow-sm"
+-                      : "bg-background text-muted-foreground border-input hover:border-primary/50"
+-                  )}
++                  onClick={() => setSelectedCategories([])}
++                  className="px-2 py-1.5 text-xs font-bold text-destructive hover:underline"
+                 >
+-                  {cat.label}
++                  ניקוי
+                 </button>
+-              ))}
+-            {selectedCategories.length > 0 && (
+-              <button 
+-                type="button"
+-                onClick={() => setSelectedCategories([])}
+-                className="px-2 py-1.5 text-xs font-bold text-destructive hover:underline"
+-              >
+-                ניקוי
+-              </button>
+-            )}
++              )}
++            </div>
+           </div>
+         </div>
+       </div>
+-    </div>
+ 
+       <Card>
+         <CardContent className="p-0">
+@@ -407,7 +420,7 @@ export default function TransactionsPage() {
+                 </tr>
+               </thead>
+               <tbody>
+-                {transactions.map((transaction) => {
++                {paginatedTransactions.map((transaction) => {
+                   const displayAmt = (transaction as any).displayAmount ?? transaction.amount;
+                   const isPartial = displayAmt !== transaction.amount;
+ 
+@@ -483,6 +496,33 @@ export default function TransactionsPage() {
+         </CardContent>
+       </Card>
+ 
++      {/* Pagination Controls */}
++      {totalPages > 1 && (
++        <div className="flex items-center justify-between border-t border-muted pt-4 px-2">
++          <Button
++            variant="outline"
++            size="sm"
++            onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
++            disabled={currentPage === 1}
++            className="gap-1"
++          >
++            <ChevronRight className="h-4 w-4" /> הקודם
++          </Button>
++          <div className="text-sm text-muted-foreground font-medium">
++            עמוד {currentPage} מתוך {totalPages}
++          </div>
++          <Button
++            variant="outline"
++            size="sm"
++            onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
++            disabled={currentPage === totalPages}
++            className="gap-1"
++          >
++            הבא <ChevronLeft className="h-4 w-4" />
++          </Button>
++        </div>
++      )}
++
+       {
+         transactions.length === 0 && !loading && (
+           <div className="text-center py-12">
+diff --git a/frontend/src/components/ui/date-range-filter.tsx b/frontend/src/components/ui/date-range-filter.tsx
+index 3c02d86..7f7f9b4 100644
+--- a/frontend/src/components/ui/date-range-filter.tsx
++++ b/frontend/src/components/ui/date-range-filter.tsx
+@@ -14,6 +14,7 @@ import { useState, useCallback } from "react";
+ import { Button } from "@/components/ui/button";
+ import { Input } from "@/components/ui/input";
+ import { Calendar, X } from "lucide-react";
++import { formatDateInput } from "@/lib/utils";
+ 
+ interface DateRangeFilterProps {
+     onDateChange: (dateFrom: string | null, dateTo: string | null) => void;
+@@ -31,7 +32,7 @@ const presets = [
+ 
+ // Helper functions to calculate date ranges
+ function getToday(): { from: string; to: string } {
+-    const today = new Date().toISOString().split("T")[0];
++    const today = formatDateInput(new Date());
+     return { from: today, to: today };
+ }
+ 
+@@ -45,8 +46,8 @@ function getThisWeek(): { from: string; to: string } {
+     endOfWeek.setDate(startOfWeek.getDate() + 6);
+ 
+     return {
+-        from: startOfWeek.toISOString().split("T")[0],
+-        to: endOfWeek.toISOString().split("T")[0],
++        from: formatDateInput(startOfWeek),
++        to: formatDateInput(endOfWeek),
+     };
+ }
+ 
+@@ -56,8 +57,8 @@ function getThisMonth(): { from: string; to: string } {
+     const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+ 
+     return {
+-        from: startOfMonth.toISOString().split("T")[0],
+-        to: endOfMonth.toISOString().split("T")[0],
++        from: formatDateInput(startOfMonth),
++        to: formatDateInput(endOfMonth),
+     };
+ }
+ 
+@@ -67,8 +68,8 @@ function getLastMonth(): { from: string; to: string } {
+     const endOfLastMonth = new Date(today.getFullYear(), today.getMonth(), 0);
+ 
+     return {
+-        from: startOfLastMonth.toISOString().split("T")[0],
+-        to: endOfLastMonth.toISOString().split("T")[0],
++        from: formatDateInput(startOfLastMonth),
++        to: formatDateInput(endOfLastMonth),
+     };
+ }
+ 
+diff --git a/frontend/src/lib/api.ts b/frontend/src/lib/api.ts
+index 92d3d01..44a4bb0 100644
+--- a/frontend/src/lib/api.ts
++++ b/frontend/src/lib/api.ts
+@@ -149,9 +149,11 @@ export const authApi = {
+ 
+ // Customers API
+ export const customersApi = {
+-  list: (params?: { search?: string; page?: number; limit?: number }) => {
++  list: (params?: { search?: string; sortBy?: string; sortOrder?: string; page?: number; limit?: number }) => {
+     const searchParams = new URLSearchParams();
+     if (params?.search) searchParams.set('search', params.search);
++    if (params?.sortBy) searchParams.set('sortBy', params.sortBy);
++    if (params?.sortOrder) searchParams.set('sortOrder', params.sortOrder);
+     if (params?.page) searchParams.set('page', params.page.toString());
+     if (params?.limit) searchParams.set('limit', params.limit.toString());
+     return api.get(`/customers?${searchParams.toString()}`);
+@@ -296,12 +298,14 @@ export const agreementsApi = {
+ 
+ // Orders API
+ export const ordersApi = {
+-  list: (params?: { status?: string; customer_id?: number; startDate?: string; endDate?: string; page?: number; limit?: number }) => {
++  list: (params?: { status?: string; customer_id?: number; startDate?: string; endDate?: string; sortBy?: string; sortOrder?: string; page?: number; limit?: number }) => {
+     const searchParams = new URLSearchParams();
+     if (params?.status) searchParams.set('status', params.status);
+     if (params?.customer_id) searchParams.set('customer_id', params.customer_id.toString());
+     if (params?.startDate) searchParams.set('startDate', params.startDate);
+     if (params?.endDate) searchParams.set('endDate', params.endDate);
++    if (params?.sortBy) searchParams.set('sortBy', params.sortBy);
++    if (params?.sortOrder) searchParams.set('sortOrder', params.sortOrder);
+     if (params?.page) searchParams.set('page', params.page.toString());
+     if (params?.limit) searchParams.set('limit', params.limit.toString());
+     return api.get(`/orders?${searchParams.toString()}`);
+@@ -314,7 +318,7 @@ export const ordersApi = {
+   addPayment: (id: number, data: { amount: number; payment_method?: string; payment_date?: string; notes?: string }) =>
+     api.post(`/orders/${id}/payment`, data),
+   delete: (id: number) => api.delete(`/orders/${id}`),
+-  
++
+   merge: (targetOrderId: number, sourceOrderId: number, updatedOrderData?: any) =>
+     api.post('/orders/merge', { targetOrderId, sourceOrderId, updatedOrderData }),
+ };
+diff --git a/frontend/src/lib/utils.ts b/frontend/src/lib/utils.ts
+index c29c352..8fa75b5 100644
+--- a/frontend/src/lib/utils.ts
++++ b/frontend/src/lib/utils.ts
+@@ -55,7 +55,11 @@ export function formatDateShort(date: string | Date | null | undefined): string
+ export function formatDateInput(date: string | Date | null | undefined): string {
+   if (!date) return '';
+   const d = typeof date === 'string' ? new Date(date) : date;
+-  return d.toISOString().split('T')[0];
++  if (isNaN(d.getTime())) return '';
++  const year = d.getFullYear();
++  const month = String(d.getMonth() + 1).padStart(2, '0');
++  const day = String(d.getDate()).padStart(2, '0');
++  return `${year}-${month}-${day}`;
+ }
+ 
+ /**
+@@ -97,15 +101,15 @@ export function getRelativeDate(date: string | Date): string {
+   today.setHours(0, 0, 0, 0);
+   const targetDate = new Date(d);
+   targetDate.setHours(0, 0, 0, 0);
+-  
++
+   const diffDays = Math.ceil((targetDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+-  
++
+   if (diffDays === 0) return 'היום';
+   if (diffDays === 1) return 'מחר';
+   if (diffDays === -1) return 'אתמול';
+   if (diffDays > 1 && diffDays <= 7) return `בעוד ${diffDays} ימים`;
+   if (diffDays < -1 && diffDays >= -7) return `לפני ${Math.abs(diffDays)} ימים`;
+-  
++
+   return formatDateShort(d);
+ }
+ 
+@@ -116,14 +120,12 @@ export const statusLabels: Record<string, string> = {
+   // Order statuses
+   active: 'פעילה',
+   cancelled: 'בוטלה',
+-  
++
+   // Dress statuses
+   available: 'פנויה',
+-  rented: 'הוזמנה',
+   sold: 'נמכרה',
+-  damaged: 'פגומה',
+   retired: 'הוצאה מהמלאי',
+-  
++
+   // Appointment statuses
+   scheduled: 'מתוזמן',
+   no_show: 'לא הגיע',
+@@ -144,9 +146,7 @@ export function getStatusColor(status: string): string {
+     active: 'badge-success',
+     cancelled: 'badge-error',
+     available: 'badge-success',
+-    rented: 'badge-warning',
+     sold: 'badge-default',
+-    damaged: 'badge-error',
+     retired: 'badge-default',
+     scheduled: 'badge-info',
+     no_show: 'badge-error',
+@@ -162,7 +162,7 @@ export const categoryLabels: Record<string, string> = {
+   order: 'הזמנה',
+   repair: 'תיקונים',
+   other: 'אחר',
+-  
++
+   // Expense categories
+   materials: 'חומרים',
+   overhead: 'תקורה',
+@@ -273,7 +273,7 @@ export function debounce<T extends (...args: unknown[]) => void>(
+   wait: number
+ ): (...args: Parameters<T>) => void {
+   let timeout: NodeJS.Timeout | null = null;
+-  
++
+   return (...args: Parameters<T>) => {
+     if (timeout) clearTimeout(timeout);
+     timeout = setTimeout(() => func(...args), wait);

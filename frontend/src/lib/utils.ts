@@ -55,7 +55,11 @@ export function formatDateShort(date: string | Date | null | undefined): string 
 export function formatDateInput(date: string | Date | null | undefined): string {
   if (!date) return '';
   const d = typeof date === 'string' ? new Date(date) : date;
-  return d.toISOString().split('T')[0];
+  if (isNaN(d.getTime())) return '';
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 /**
@@ -97,15 +101,15 @@ export function getRelativeDate(date: string | Date): string {
   today.setHours(0, 0, 0, 0);
   const targetDate = new Date(d);
   targetDate.setHours(0, 0, 0, 0);
-  
+
   const diffDays = Math.ceil((targetDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-  
+
   if (diffDays === 0) return 'היום';
   if (diffDays === 1) return 'מחר';
   if (diffDays === -1) return 'אתמול';
   if (diffDays > 1 && diffDays <= 7) return `בעוד ${diffDays} ימים`;
   if (diffDays < -1 && diffDays >= -7) return `לפני ${Math.abs(diffDays)} ימים`;
-  
+
   return formatDateShort(d);
 }
 
@@ -116,14 +120,12 @@ export const statusLabels: Record<string, string> = {
   // Order statuses
   active: 'פעילה',
   cancelled: 'בוטלה',
-  
+
   // Dress statuses
   available: 'פנויה',
-  rented: 'הוזמנה',
   sold: 'נמכרה',
-  damaged: 'פגומה',
   retired: 'הוצאה מהמלאי',
-  
+
   // Appointment statuses
   scheduled: 'מתוזמן',
   no_show: 'לא הגיע',
@@ -144,9 +146,7 @@ export function getStatusColor(status: string): string {
     active: 'badge-success',
     cancelled: 'badge-error',
     available: 'badge-success',
-    rented: 'badge-warning',
     sold: 'badge-default',
-    damaged: 'badge-error',
     retired: 'badge-default',
     scheduled: 'badge-info',
     no_show: 'badge-error',
@@ -162,7 +162,7 @@ export const categoryLabels: Record<string, string> = {
   order: 'הזמנה',
   repair: 'תיקונים',
   other: 'אחר',
-  
+
   // Expense categories
   materials: 'חומרים',
   overhead: 'תקורה',
@@ -273,7 +273,7 @@ export function debounce<T extends (...args: unknown[]) => void>(
   wait: number
 ): (...args: Parameters<T>) => void {
   let timeout: NodeJS.Timeout | null = null;
-  
+
   return (...args: Parameters<T>) => {
     if (timeout) clearTimeout(timeout);
     timeout = setTimeout(() => func(...args), wait);

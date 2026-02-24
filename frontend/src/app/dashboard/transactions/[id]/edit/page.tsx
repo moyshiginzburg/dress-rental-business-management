@@ -10,12 +10,12 @@
 
 import { useState, useEffect } from "react";
 import { useRouter, useParams } from "next/navigation";
-import { 
-  ArrowRight, 
-  Calendar, 
-  CreditCard, 
-  Camera, 
-  X, 
+import {
+  ArrowRight,
+  Calendar,
+  CreditCard,
+  Camera,
+  X,
   ShoppingBag,
   Plus,
   Search,
@@ -58,10 +58,10 @@ export default function EditTransactionPage() {
   const params = useParams();
   const transactionId = params.id as string;
   const { toast } = useToast();
-  
+
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  
+
   const [type, setType] = useState<"income" | "expense">("income");
   const [uiCategory, setUiCategory] = useState("");
   const [amount, setAmount] = useState("");
@@ -71,19 +71,19 @@ export default function EditTransactionPage() {
   const [notes, setNotes] = useState("");
   const [fileBase64, setFileBase64] = useState<string | undefined>();
   const [fileName, setFileName] = useState<string | undefined>();
-  
+
   const [customerId, setCustomerId] = useState("");
   const [customerSearch, setCustomerSearch] = useState("");
   const [customers, setCustomers] = useState<{ id: number; name: string; phone: string }[]>([]);
-  
+
   const [orderId, setOrderId] = useState("");
   const [recentOrders, setRecentOrders] = useState<any[]>([]);
   const [expenseAllocation, setExpenseAllocation] = useState<"business" | "customer" | "split">("business");
   const [customerChargeAmount, setCustomerChargeAmount] = useState("");
-  
+
   const [supplier, setSupplier] = useState("");
   const [product, setProduct] = useState("");
-  
+
   // Payment Details State
   const [bankNumber, setBankNumber] = useState("");
   const [branchNumber, setBranchNumber] = useState("");
@@ -100,7 +100,7 @@ export default function EditTransactionPage() {
         if (res.success && res.data) {
           const t = (res.data as any).transaction; // Corrected access to .transaction
           if (!t) throw new Error("Transaction not found");
-          
+
           setType(t.type);
           setAmount(t.amount.toString());
           setCategory(t.category);
@@ -110,7 +110,7 @@ export default function EditTransactionPage() {
           setCustomerId(t.customer_id?.toString() || "");
           setCustomerSearch(t.customer_name || "");
           setOrderId(t.order_id?.toString() || "");
-          
+
           if (t.supplier) setSupplier(t.supplier);
           if (t.product) setProduct(t.product);
           if (t.check_number) setCheckNumber(t.check_number);
@@ -123,9 +123,9 @@ export default function EditTransactionPage() {
               setBankNumber(bankData.bank || "");
               setBranchNumber(bankData.branch || "");
               setAccountNumber(bankData.account || "");
-            } catch (e) {}
+            } catch (e) { }
           }
-          
+
           if (t.type === "income") {
             if (t.order_id) setUiCategory("existing_order");
             else if (t.category === "repair") setUiCategory("repair");
@@ -156,10 +156,10 @@ export default function EditTransactionPage() {
   useEffect(() => {
     const loadData = async () => {
       if (type === "income" && uiCategory === "existing_order") {
-        const res = await ordersApi.list({ limit: 10 } as any);
+        const res = await ordersApi.list({ limit: 50, sortBy: 'event_date', sortOrder: 'desc' } as any);
         if (res.success) setRecentOrders((res.data as any).orders || []);
       } else if (type === "expense" && (expenseAllocation === "customer" || expenseAllocation === "split")) {
-        const res = await ordersApi.list({ limit: 10 } as any);
+        const res = await ordersApi.list({ limit: 50, sortBy: 'event_date', sortOrder: 'desc' } as any);
         if (res.success) setRecentOrders((res.data as any).orders || []);
       }
     };
@@ -185,7 +185,7 @@ export default function EditTransactionPage() {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      if (file.size > 5 * 1024 * 1024) { 
+      if (file.size > 5 * 1024 * 1024) {
         toast({ title: "שגיאה", description: "הקובץ גדול מדי", variant: "destructive" });
         return;
       }
@@ -221,7 +221,7 @@ export default function EditTransactionPage() {
         check_number: checkNumber || undefined,
         last_four_digits: lastFourDigits || undefined,
         installments: installments ? parseInt(installments) : 1,
-        bank_details: (bankNumber || branchNumber || accountNumber) ? 
+        bank_details: (bankNumber || branchNumber || accountNumber) ?
           JSON.stringify({ bank: bankNumber, branch: branchNumber, account: accountNumber }) : undefined,
         customer_id: customerId ? parseInt(customerId) : undefined,
         order_id: orderId ? parseInt(orderId) : undefined,
@@ -259,13 +259,13 @@ export default function EditTransactionPage() {
       </div>
 
       <form onSubmit={handleSubmit} className="max-w-2xl mx-auto p-4 sm:p-6 space-y-8">
-        
+
         {/* Type Info (Non-editable for safety) */}
         <div className="bg-muted p-4 rounded-2xl flex items-center justify-center gap-2">
-           <span className="text-sm font-bold text-muted-foreground uppercase tracking-widest">סוג התנועה:</span>
-           <span className={cn("font-black px-4 py-1 rounded-full text-white", type === 'income' ? 'bg-green-600' : 'bg-red-600')}>
-             {type === 'income' ? 'הכנסה' : 'הוצאה'}
-           </span>
+          <span className="text-sm font-bold text-muted-foreground uppercase tracking-widest">סוג התנועה:</span>
+          <span className={cn("font-black px-4 py-1 rounded-full text-white", type === 'income' ? 'bg-green-600' : 'bg-red-600')}>
+            {type === 'income' ? 'הכנסה' : 'הוצאה'}
+          </span>
         </div>
 
         {/* Amount Input */}
@@ -290,9 +290,9 @@ export default function EditTransactionPage() {
             <label className="text-xs font-bold text-muted-foreground flex items-center gap-1">
               <Calendar className="h-3 w-3" /> תאריך
             </label>
-            <Input 
-              type="date" 
-              value={date} 
+            <Input
+              type="date"
+              value={date}
               onChange={(e) => setDate(e.target.value)}
               className="h-12 rounded-xl border-2"
             />
@@ -477,7 +477,7 @@ export default function EditTransactionPage() {
                 <label className="text-xs font-bold text-red-700 uppercase">שיוך לחיוב</label>
                 {!orderId ? (
                   <div className="grid gap-2 max-h-40 overflow-y-auto">
-                    {recentOrders.slice(0, 5).map(o => (
+                    {recentOrders.map(o => (
                       <button
                         key={o.id}
                         type="button"
@@ -510,11 +510,12 @@ export default function EditTransactionPage() {
               </Card>
             )}
           </div>
-        )}
+        )
+        }
 
         {/* Global Fields */}
         <section className="space-y-4">
-          
+
           {/* Payment Details - Conditional Fields */}
           {type === "income" && paymentMethod === "credit" && (
             <div className="grid grid-cols-3 gap-2 animate-in fade-in slide-in-from-top-2">
@@ -524,22 +525,22 @@ export default function EditTransactionPage() {
               </div>
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-muted-foreground uppercase">4 ספרות</label>
-                <Input 
-                  value={lastFourDigits} 
-                  onChange={(e) => setLastFourDigits(e.target.value)} 
-                  placeholder="****" 
+                <Input
+                  value={lastFourDigits}
+                  onChange={(e) => setLastFourDigits(e.target.value)}
+                  placeholder="****"
                   maxLength={4}
-                  className="h-10 text-center" 
+                  className="h-10 text-center"
                 />
               </div>
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-muted-foreground uppercase">תשלומים</label>
-                <Input 
-                  type="number" 
+                <Input
+                  type="number"
                   min="1"
-                  value={installments} 
-                  onChange={(e) => setInstallments(e.target.value)} 
-                  className="h-10 text-center" 
+                  value={installments}
+                  onChange={(e) => setInstallments(e.target.value)}
+                  className="h-10 text-center"
                 />
               </div>
             </div>
@@ -620,19 +621,19 @@ export default function EditTransactionPage() {
           )}
         </section>
 
-      </form>
+      </form >
 
       {/* Sticky Bottom Bar */}
-      <div className="fixed bottom-0 left-0 right-0 p-4 bg-background/80 backdrop-blur-lg border-t z-40">
+      < div className="fixed bottom-0 left-0 right-0 p-4 bg-background/80 backdrop-blur-lg border-t z-40" >
         <div className="max-w-2xl mx-auto flex gap-3">
-          <Button 
-            variant="outline" 
+          <Button
+            variant="outline"
             className="flex-1 h-14 rounded-2xl text-lg font-bold border-2"
             onClick={() => router.back()}
           >
             ביטול
           </Button>
-          <Button 
+          <Button
             className={cn(
               "flex-[2] h-14 rounded-2xl text-lg font-bold shadow-xl transition-all",
               type === "income" ? "bg-green-600 hover:bg-green-700" : "bg-red-600 hover:bg-red-700"
@@ -643,7 +644,7 @@ export default function EditTransactionPage() {
             {saving ? "מעדכן..." : "שמרי שינויים 🎉"}
           </Button>
         </div>
-      </div>
-    </div>
+      </div >
+    </div >
   );
 }

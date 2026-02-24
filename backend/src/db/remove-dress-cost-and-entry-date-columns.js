@@ -31,7 +31,7 @@ try {
       const totalIncomeExpr = existingColumns.has('total_income') ? 'COALESCE(total_income, 0)' : '0';
       const rentalCountExpr = existingColumns.has('rental_count') ? 'COALESCE(rental_count, 0)' : '0';
       const statusExpr = existingColumns.has('status')
-        ? "CASE WHEN status IN ('available', 'rented', 'sold', 'damaged', 'retired') THEN status ELSE 'available' END"
+        ? "CASE WHEN status IN ('available', 'sold', 'retired') THEN status ELSE 'available' END"
         : "'available'";
       const intendedUseExpr = existingColumns.has('intended_use')
         ? "CASE WHEN intended_use IN ('rental', 'sale') THEN intended_use ELSE 'rental' END"
@@ -55,7 +55,7 @@ try {
             base_price REAL DEFAULT 0,
             total_income REAL DEFAULT 0,
             rental_count INTEGER DEFAULT 0,
-            status TEXT DEFAULT 'available' CHECK(status IN ('available', 'rented', 'sold', 'damaged', 'retired')),
+            status TEXT DEFAULT 'available' CHECK(status IN ('available', 'sold', 'retired')),
             intended_use TEXT DEFAULT 'rental' CHECK(intended_use IN ('rental', 'sale')),
             photo_url TEXT,
             thumbnail_url TEXT,
