@@ -7,11 +7,15 @@
 #
 # How it works:
 #   1. Checks that rclone is installed and the remote is configured
-#   2. Stops Docker containers if running (to prevent DB locks)
+#   2. Stops the running app (Docker or pm2) to prevent DB locks
 #   3. Uses rclone copy (not sync) to download from Drive to local_data/
 #      - "copy" is safer than "sync" because it won't delete local files
 #        that don't exist on Drive (e.g., newly created logs)
-#   4. Restarts Docker containers if they were running
+#   4. Restarts the app if it was running
+#
+# Supports both deployment modes:
+#   - Docker: stops/starts docker compose
+#   - Direct Install: stops/starts pm2 backend
 #
 # Prerequisites:
 #   - rclone installed and configured with a remote named "gdrive:"
@@ -62,13 +66,20 @@ if ! rclone lsd "${RCLONE_REMOTE}:${DRIVE_PATH}" &>/dev/null; then
     fi
 fi
 
-# --- Stop Docker if running (prevent DB lock conflicts) ---
-DOCKER_WAS_RUNNING=false
+# --- Stop app if running (prevent DB lock) ---
+# Detect deployment mode: check Docker first, then pm2
+RESTART_AFTER=""
+
 if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -q "business-mgmt-app"; then
     log "Stopping Docker container before restore..."
     cd "$PROJECT_DIR"
     docker compose down 2>/dev/null || true
-    DOCKER_WAS_RUNNING=true
+    RESTART_AFTER="docker"
+    sleep 2
+elif command -v pm2 &>/dev/null && pm2 list 2>/dev/null | grep -q "dress-backend"; then
+    log "Stopping pm2 backend before restore..."
+    pm2 stop dress-backend 2>/dev/null || true
+    RESTART_AFTER="pm2"
     sleep 2
 fi
 
@@ -93,11 +104,14 @@ else
     exit $RCLONE_EXIT
 fi
 
-# --- Restart Docker if it was running ---
-if [ "$DOCKER_WAS_RUNNING" = true ]; then
+# --- Restart app if we stopped it ---
+if [ "$RESTART_AFTER" = "docker" ]; then
     log "Restarting Docker container..."
     cd "$PROJECT_DIR"
     docker compose up -d
+elif [ "$RESTART_AFTER" = "pm2" ]; then
+    log "Restarting pm2 backend..."
+    pm2 start dress-backend 2>/dev/null || (cd "$PROJECT_DIR" && pm2 start scripts/pm2-ecosystem.config.js)
 fi
 
 log "Done. You can now start the application."

@@ -3,33 +3,32 @@
 # Complete Server Migration Script - Dress Rental Business Management
 #
 # Purpose: Fully automated setup on any fresh Ubuntu server (VPS or physical).
-# Installs all dependencies, clones code, restores data from Google Drive,
-# builds and runs the app, sets up public HTTPS access, and installs
-# automatic updates and backups.
+# Supports TWO installation modes chosen by the user:
+#   A) Docker Install  — Runs frontend + backend in a Docker container
+#   B) Direct Install  — Runs backend via pm2; frontend on Vercel (lighter)
 #
 # How it works:
-#   1. Installs system packages (Docker, Tailscale, rclone, Git, sqlite3)
-#   2. Adds swap if RAM < 3GB (needed for Docker build)
-#   3. Creates SSH deploy key for GitHub and waits for user to add it
-#   4. Clones the repository
-#   5. Copies secrets from user input (.env and rclone.conf)
-#   6. Restores data backup from Google Drive
-#   7. Builds and starts Docker container
-#   8. Authenticates Tailscale and starts Funnel
-#   9. Installs cron jobs (auto-update every minute, backup every hour)
-#  10. Runs health checks to verify everything works
+#   1. Asks user to choose installation mode (Docker or Direct Install)
+#   2. Installs system packages according to chosen mode
+#   3. Adds swap if RAM < 3GB
+#   4. Creates SSH deploy key for GitHub
+#   5. Clones the repository
+#   6. Copies secrets from user input (.env and rclone.conf)
+#   7. Restores data backup from Google Drive
+#   8. Builds/starts the app (Docker or pm2 depending on mode)
+#   9. Authenticates Tailscale and starts Funnel
+#  10. Installs cron jobs (auto-update every minute, backup every hour)
 #
 # Prerequisites:
 #   - Fresh Ubuntu 22.04+ with root/sudo access
 #   - Internet access
 #   - Your .env file content ready to paste
-#   - Your rclone.conf content ready to paste (run 'rclone config file' to find it)
+#   - Your rclone.conf content ready to paste
 #   - Access to GitHub repo settings (to add deploy key)
 #
 # Usage:
-#   wget -qO- https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME/master/scripts/setup-new-server.sh | bash
-#   OR
-#   bash scripts/setup-new-server.sh
+#   wget -qO setup.sh https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME/master/scripts/setup-new-server.sh
+#   bash setup.sh
 #
 # Estimated time: ~5-10 minutes (depends on internet speed)
 # =============================================================================
@@ -43,7 +42,6 @@ INSTALL_DIR="$HOME/YOUR_REPO_NAME"
 RCLONE_CONF_DIR="$HOME/.config/rclone"
 RCLONE_CONF="$RCLONE_CONF_DIR/rclone.conf"
 TAILSCALE_HOSTNAME="your-vps-hostname"
-FUNNEL_PORT=3000
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -60,12 +58,44 @@ header() { echo -e "\n${BLUE}${BOLD}══════════════�
 ask()    { echo -en "${YELLOW}[??]${NC} $1 "; }
 
 # =============================================================================
+header "Installation Mode Selection"
+# =============================================================================
+
+echo -e "${BOLD}Choose your installation method:${NC}"
+echo ""
+echo -e "  ${GREEN}1) Docker Install${NC}"
+echo -e "     Runs frontend + backend in a Docker container."
+echo -e "     Pros: Self-contained, includes frontend locally."
+echo -e "     Cons: Higher disk (~2-4 GB) and RAM usage."
+echo ""
+echo -e "  ${GREEN}2) Direct Install${NC}"
+echo -e "     Backend runs via pm2; frontend deployed on Vercel."
+echo -e "     Pros: Lightweight (~70 MB RAM), faster updates."
+echo -e "     Cons: Frontend must be deployed separately on Vercel."
+echo ""
+ask "Enter 1 or 2:"
+read -r INSTALL_MODE
+
+if [[ "$INSTALL_MODE" != "1" && "$INSTALL_MODE" != "2" ]]; then
+    error "Invalid choice. Please run the script again and enter 1 or 2."
+    exit 1
+fi
+
+if [ "$INSTALL_MODE" = "1" ]; then
+    log "Selected: Docker Install"
+    FUNNEL_PORT=3000  # Frontend + Backend in container
+else
+    log "Selected: Direct Install (Backend Only, Frontend on Vercel)"
+    FUNNEL_PORT=3001  # Backend only
+fi
+
+# =============================================================================
 header "Step 1/10: System packages"
 # =============================================================================
 
 sudo apt-get update -qq
 
-# Git
+# Common packages
 if command -v git &>/dev/null; then
     log "Git: $(git --version)"
 else
@@ -73,21 +103,42 @@ else
     sudo apt-get install -y -qq git
 fi
 
-# Docker
-if command -v docker &>/dev/null; then
-    log "Docker: $(docker --version)"
-else
-    log "Installing Docker..."
-    curl -fsSL https://get.docker.com | sudo sh
-    sudo usermod -aG docker "$USER" 2>/dev/null || true
-fi
+if [ "$INSTALL_MODE" = "1" ]; then
+    # --- Docker Mode: Install Docker + Docker Compose ---
+    if command -v docker &>/dev/null; then
+        log "Docker: $(docker --version)"
+    else
+        log "Installing Docker..."
+        curl -fsSL https://get.docker.com | sudo sh
+        sudo usermod -aG docker "$USER" 2>/dev/null || true
+    fi
 
-# Docker Compose
-if docker compose version &>/dev/null 2>&1; then
-    log "Docker Compose: $(docker compose version 2>/dev/null)"
+    if docker compose version &>/dev/null 2>&1; then
+        log "Docker Compose: $(docker compose version 2>/dev/null)"
+    else
+        log "Installing Docker Compose..."
+        sudo apt-get install -y -qq docker-compose-plugin
+    fi
 else
-    log "Installing Docker Compose..."
-    sudo apt-get install -y -qq docker-compose-plugin
+    # --- Direct Install Mode: Install Node.js, Chromium, fonts, pm2 ---
+    log "Installing Chromium, Hebrew fonts, build tools..."
+    sudo apt-get install -y -qq chromium fonts-noto-core fonts-noto-color-emoji culmus fonts-dejavu-core curl sqlite3 build-essential
+
+    log "Installing Node.js 20 (NodeSource)..."
+    if command -v node &>/dev/null; then
+        NODE_VER=$(node -v 2>/dev/null | sed 's/v//' | cut -d. -f1)
+        if [ "$NODE_VER" -ge 20 ] 2>/dev/null; then
+            log "Node.js already installed: $(node -v)"
+        else
+            curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash -
+            sudo apt-get install -y -qq nodejs
+        fi
+    else
+        curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash -
+        sudo apt-get install -y -qq nodejs
+    fi
+    fc-cache -f -v 2>/dev/null || true
+    log "Node: $(node -v)"
 fi
 
 # Tailscale
@@ -95,7 +146,7 @@ if command -v tailscale &>/dev/null; then
     log "Tailscale: installed"
 else
     log "Installing Tailscale..."
-    curl -fsSL https://tailscale.com/install.sh | sh
+    curl -fsSL https://tailscale.com/install.sh | sh 2>/dev/null || log "Tailscale may already be installed"
 fi
 
 # rclone
@@ -103,7 +154,7 @@ if command -v rclone &>/dev/null; then
     log "rclone: $(rclone version 2>/dev/null | head -1)"
 else
     log "Installing rclone..."
-    curl -fsSL https://rclone.org/install.sh | sudo bash
+    curl -fsSL https://rclone.org/install.sh | sudo bash 2>/dev/null || log "rclone may already be installed"
 fi
 
 # sqlite3
@@ -123,7 +174,7 @@ if [ "$TOTAL_RAM_MB" -lt 3000 ]; then
     if swapon --show | grep -q "/swapfile"; then
         log "Swap already active: $(swapon --show | tail -1)"
     else
-        log "RAM is ${TOTAL_RAM_MB}MB (< 3GB). Adding 2GB swap for Docker builds..."
+        log "RAM is ${TOTAL_RAM_MB}MB (< 3GB). Adding 2GB swap..."
         sudo fallocate -l 2G /swapfile 2>/dev/null || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048 2>/dev/null
         sudo chmod 600 /swapfile
         sudo mkswap /swapfile
@@ -163,7 +214,6 @@ else
     echo ""
     cat "${SSH_KEY}.pub"
     echo ""
-    echo -e "  ${BOLD}Steps:${NC}"
     echo "  1. Go to: https://github.com/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME/settings/keys"
     echo "  2. Click 'Add deploy key'"
     echo "  3. Paste the key above"
@@ -287,47 +337,79 @@ else
 fi
 
 # =============================================================================
-header "Step 8/10: Build and start Docker"
+header "Step 8/10: Build and start application"
 # =============================================================================
 
 cd "$INSTALL_DIR"
-log "Building Docker image (this may take 5-10 minutes on first run)..."
 
-docker compose up -d --build 2>&1 | tail -5
+if [ "$INSTALL_MODE" = "1" ]; then
+    # --- Docker Mode ---
+    log "Building Docker image (this may take 5-10 minutes on first run)..."
+    docker compose up -d --build 2>&1 | tail -5
 
-log "Waiting for services to start..."
-sleep 15
+    log "Waiting for services to start..."
+    sleep 15
 
-# Health checks
-BACKEND_OK=false
-FRONTEND_OK=false
+    # Health checks
+    BACKEND_OK=false
+    FRONTEND_OK=false
 
-for i in 1 2 3; do
-    if curl -sf http://localhost:3001/api/health > /dev/null 2>&1; then
-        BACKEND_OK=true
-        break
+    for i in 1 2 3; do
+        if curl -sf http://localhost:3001/api/health > /dev/null 2>&1; then
+            BACKEND_OK=true
+            break
+        fi
+        sleep 5
+    done
+
+    for i in 1 2 3; do
+        if curl -sf http://localhost:3000 > /dev/null 2>&1; then
+            FRONTEND_OK=true
+            break
+        fi
+        sleep 5
+    done
+
+    if [ "$BACKEND_OK" = true ]; then
+        log "Backend: healthy (port 3001)"
+    else
+        error "Backend: not responding! Check logs: docker compose logs"
     fi
-    sleep 5
-done
 
-for i in 1 2 3; do
-    if curl -sf http://localhost:3000 > /dev/null 2>&1; then
-        FRONTEND_OK=true
-        break
+    if [ "$FRONTEND_OK" = true ]; then
+        log "Frontend: healthy (port 3000)"
+    else
+        error "Frontend: not responding! Check logs: docker compose logs"
     fi
+else
+    # --- Direct Install Mode ---
+    log "Installing pm2..."
+    npm install -g pm2 2>/dev/null || sudo npm install -g pm2
+
+    log "Installing backend dependencies..."
+    cd "$INSTALL_DIR/backend"
+    npm install
+
+    log "Starting backend with pm2..."
+    cd "$INSTALL_DIR"
+    bash "$INSTALL_DIR/scripts/start-app.sh"
+
+    # Health check
+    BACKEND_OK=false
     sleep 5
-done
+    for i in 1 2 3; do
+        if curl -sf http://localhost:3001/api/health > /dev/null 2>&1; then
+            BACKEND_OK=true
+            break
+        fi
+        sleep 5
+    done
 
-if [ "$BACKEND_OK" = true ]; then
-    log "Backend: healthy (port 3001)"
-else
-    error "Backend: not responding! Check logs: docker compose logs"
-fi
-
-if [ "$FRONTEND_OK" = true ]; then
-    log "Frontend: healthy (port 3000)"
-else
-    error "Frontend: not responding! Check logs: docker compose logs"
+    if [ "$BACKEND_OK" = true ]; then
+        log "Backend: healthy (port 3001)"
+    else
+        error "Backend not responding! Check: pm2 logs dress-backend"
+    fi
 fi
 
 # =============================================================================
@@ -364,11 +446,18 @@ fi
 header "Step 10/10: Cron jobs (auto-update + backup)"
 # =============================================================================
 
+# Select the correct auto-update script based on install mode
+if [ "$INSTALL_MODE" = "1" ]; then
+    AUTO_UPDATE_SCRIPT="$INSTALL_DIR/scripts/auto-update.sh"
+else
+    AUTO_UPDATE_SCRIPT="$INSTALL_DIR/scripts/auto-update-direct.sh"
+fi
+
 # Remove old entries and add new ones (idempotent)
 (
-    crontab -l 2>/dev/null | grep -v "auto-update.sh" | grep -v "sync-to-cloud.sh"
-    echo "* * * * * $INSTALL_DIR/scripts/auto-update.sh >> /dev/null 2>&1"
-    echo "0 * * * * $INSTALL_DIR/scripts/sync-to-cloud.sh >> /dev/null 2>&1"
+    crontab -l 2>/dev/null | grep -v "auto-update" | grep -v "sync-to-cloud.sh"
+    echo "* * * * * $AUTO_UPDATE_SCRIPT >> /dev/null 2>&1"
+    echo "0 * * * * HOME=/root RCLONE_CONFIG=/root/.config/rclone/rclone.conf $INSTALL_DIR/scripts/sync-to-cloud.sh >> /dev/null 2>&1"
 ) | crontab -
 
 log "Auto-update: every minute (checks GitHub for new commits)"
@@ -379,29 +468,58 @@ header "SETUP COMPLETE!"
 # =============================================================================
 
 echo ""
-echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}${BOLD}║       Dress Rental Business Management - Server Ready!         ║${NC}"
-echo -e "${GREEN}${BOLD}╠══════════════════════════════════════════════════════════════╣${NC}"
-echo -e "${GREEN}${BOLD}║                                                              ║${NC}"
-echo -e "${GREEN}${BOLD}║  Public URL:  ${PUBLIC_URL}${NC}"
-echo -e "${GREEN}${BOLD}║  Frontend:    http://localhost:3000                           ║${NC}"
-echo -e "${GREEN}${BOLD}║  Backend:     http://localhost:3001                           ║${NC}"
-echo -e "${GREEN}${BOLD}║  Project:     $INSTALL_DIR${NC}"
-echo -e "${GREEN}${BOLD}║                                                              ║${NC}"
-echo -e "${GREEN}${BOLD}║  Auto-update: ON (every minute from GitHub)                  ║${NC}"
-echo -e "${GREEN}${BOLD}║  Auto-backup: ON (every hour to Google Drive)                ║${NC}"
-echo -e "${GREEN}${BOLD}║                                                              ║${NC}"
-echo -e "${GREEN}${BOLD}║  Commands:                                                   ║${NC}"
-echo -e "${GREEN}${BOLD}║    docker compose logs -f        # View live logs            ║${NC}"
-echo -e "${GREEN}${BOLD}║    docker compose restart         # Restart                   ║${NC}"
-echo -e "${GREEN}${BOLD}║    ./scripts/sync-to-cloud.sh     # Manual backup            ║${NC}"
-echo -e "${GREEN}${BOLD}║    ./scripts/sync-from-cloud.sh   # Restore from backup      ║${NC}"
-echo -e "${GREEN}${BOLD}║                                                              ║${NC}"
-echo -e "${GREEN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
-echo ""
+if [ "$INSTALL_MODE" = "1" ]; then
+    echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}${BOLD}║  Dress Rental Business Management - Docker Install Ready!    ║${NC}"
+    echo -e "${GREEN}${BOLD}╠══════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${GREEN}${BOLD}║                                                              ║${NC}"
+    echo -e "${GREEN}${BOLD}║  Public URL:  ${PUBLIC_URL}${NC}"
+    echo -e "${GREEN}${BOLD}║  Frontend:    http://localhost:3000                           ║${NC}"
+    echo -e "${GREEN}${BOLD}║  Backend:     http://localhost:3001                           ║${NC}"
+    echo -e "${GREEN}${BOLD}║  Project:     $INSTALL_DIR${NC}"
+    echo -e "${GREEN}${BOLD}║                                                              ║${NC}"
+    echo -e "${GREEN}${BOLD}║  Auto-update: ON (every minute from GitHub)                  ║${NC}"
+    echo -e "${GREEN}${BOLD}║  Auto-backup: ON (every hour to Google Drive)                ║${NC}"
+    echo -e "${GREEN}${BOLD}║                                                              ║${NC}"
+    echo -e "${GREEN}${BOLD}║  Commands:                                                   ║${NC}"
+    echo -e "${GREEN}${BOLD}║    docker compose logs -f        # View live logs            ║${NC}"
+    echo -e "${GREEN}${BOLD}║    docker compose restart         # Restart                   ║${NC}"
+    echo -e "${GREEN}${BOLD}║    ./scripts/sync-to-cloud.sh     # Manual backup            ║${NC}"
+    echo -e "${GREEN}${BOLD}║    ./scripts/sync-from-cloud.sh   # Restore from backup      ║${NC}"
+    echo -e "${GREEN}${BOLD}║                                                              ║${NC}"
+    echo -e "${GREEN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
 
-if [ "$BACKEND_OK" = true ] && [ "$FRONTEND_OK" = true ]; then
-    log "All health checks passed. System is ready to use!"
+    if [ "$BACKEND_OK" = true ] && [ "$FRONTEND_OK" = true ]; then
+        log "All health checks passed. System is ready to use!"
+    else
+        warn "Some services may not be running. Check: docker compose logs -f"
+    fi
 else
-    warn "Some services may not be running. Check: docker compose logs -f"
+    echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}${BOLD}║  Dress Rental Business Management - Direct Install Ready!    ║${NC}"
+    echo -e "${GREEN}${BOLD}╠══════════════════════════════════════════════════════════════╣${NC}"
+    echo -e "${GREEN}${BOLD}║                                                              ║${NC}"
+    echo -e "${GREEN}${BOLD}║  Backend:  http://localhost:3001                              ║${NC}"
+    echo -e "${GREEN}${BOLD}║  Public:   ${PUBLIC_URL}${NC}"
+    echo -e "${GREEN}${BOLD}║  Frontend: Deploy to Vercel (see README.md)                  ║${NC}"
+    echo -e "${GREEN}${BOLD}║                                                              ║${NC}"
+    echo -e "${GREEN}${BOLD}║  Vercel: Set NEXT_PUBLIC_API_URL = ${PUBLIC_URL}/api${NC}"
+    echo -e "${GREEN}${BOLD}║                                                              ║${NC}"
+    echo -e "${GREEN}${BOLD}║  Auto-update: ON (every minute from GitHub)                  ║${NC}"
+    echo -e "${GREEN}${BOLD}║  Auto-backup: ON (every hour to Google Drive)                ║${NC}"
+    echo -e "${GREEN}${BOLD}║                                                              ║${NC}"
+    echo -e "${GREEN}${BOLD}║  Commands:                                                   ║${NC}"
+    echo -e "${GREEN}${BOLD}║    pm2 logs dress-backend         # View logs                ║${NC}"
+    echo -e "${GREEN}${BOLD}║    pm2 restart dress-backend      # Restart                  ║${NC}"
+    echo -e "${GREEN}${BOLD}║    ./scripts/sync-to-cloud.sh     # Manual backup            ║${NC}"
+    echo -e "${GREEN}${BOLD}║    ./scripts/sync-from-cloud.sh   # Restore from backup      ║${NC}"
+    echo -e "${GREEN}${BOLD}║                                                              ║${NC}"
+    echo -e "${GREEN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
+
+    if [ "$BACKEND_OK" = true ]; then
+        log "Backend health check passed. System is ready!"
+    else
+        warn "Backend may not be running. Check: pm2 logs dress-backend"
+    fi
 fi
+echo ""

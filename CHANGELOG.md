@@ -1,6 +1,28 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to the Dress Rental Business Management System will be documented in this file.
+
+## [1.2.0] - 2026-02-26
+
+### Added - Direct Install Option (Backend-Only via pm2)
+
+- **Dual installation support**: `setup-new-server.sh` now asks users to choose between Docker Install (frontend + backend in container) or Direct Install (backend via pm2, frontend on Vercel).
+- **New scripts for Direct Install**:
+  - `scripts/setup-direct-install.sh` — Install system packages (Node.js 20, Chromium, fonts, build tools)
+  - `scripts/pm2-ecosystem.config.js` — pm2 process config for backend (`dress-backend`)
+  - `scripts/start-app.sh` — Create directories, run migrations, start pm2
+  - `scripts/start-backend.sh` — Startup wrapper that waits for port before launching Node
+  - `scripts/wait-for-port.sh` — Block until TCP port is free (prevents EADDRINUSE)
+  - `scripts/auto-update-direct.sh` — Git poll + npm install + pm2 restart (with log rotation)
+
+### Changed
+
+- **`setup-new-server.sh`**: Complete rewrite with installation mode selection. Both Docker and Direct Install share common steps (SSH key, clone, secrets, restore, Tailscale, cron) with mode-specific build/start logic.
+- **`sync-from-cloud.sh`**: Now detects both Docker and pm2 deployments; stops/restarts the appropriate service during restore.
+- **`configure.sh`**: Added new Direct Install scripts to placeholder replacement list.
+- **Documentation**: `README.md`, `SETUP.md`, `ARCHITECTURE.md` updated to document both deployment modes with parallel instructions, diagrams, and troubleshooting.
+
+---
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).

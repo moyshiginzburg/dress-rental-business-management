@@ -395,7 +395,43 @@ extractReceiptDetails(fileBuffer, mimeType)
 
 ## 🚀 Deployment Architecture
 
-### Production Environment
+### Production Environment — Two Deployment Modes
+
+The system supports two deployment modes. Choose one during `setup-new-server.sh`.
+
+#### Option A: Docker Install (Frontend + Backend in Container)
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  Developer Machine (Local)                                          │
+│  ├── Code editing + local dev (npm run dev)                         │
+│  ├── git push → GitHub                                              │
+│  └── local_data/ (old snapshot, NOT used for business)              │
+└─────────────────────┬───────────────────────────────────────────────┘
+                      │ Git push
+                      ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  GitHub (YOUR_GITHUB_USERNAME/YOUR_REPO_NAME)              │
+└─────┬───────────────────────────────────────────┬───────────────────┘
+      │ Vercel auto-deploy (optional)             │ VPS cron poll (1 min)
+      ▼                                           ▼
+┌──────────────────────┐    ┌─────────────────────────────────────────┐
+│  Vercel (optional)   │    │  VPS (Ubuntu 24.04)                    │
+│  Frontend only       │───▶│  Docker Container: business-mgmt-app        │
+│                      │    │  ├── Next.js Frontend  :3000            │
+│                      │    │  ├── Express Backend   :3001            │
+└──────────────────────┘    │  ├── Chromium (PDF generation)          │
+                            │  └── Hebrew fonts (Noto, Culmus)        │
+                            │                                         │
+                            │  Host Services:                         │
+                            │  ├── Tailscale Funnel → :3000 (HTTPS)   │
+                            │  ├── cron: auto-update.sh (every 1 min) │
+                            │  ├── cron: sync-to-cloud.sh (hourly)    │
+                            │  └── rclone → Google Drive               │
+                            └─────────────────────────────────────────┘
+```
+
+#### Option B: Direct Install (Backend via pm2, Frontend on Vercel)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -412,25 +448,18 @@ extractReceiptDetails(fileBuffer, mimeType)
       │ Vercel auto-deploy                        │ VPS cron poll (1 min)
       ▼                                           ▼
 ┌──────────────────────┐    ┌─────────────────────────────────────────┐
-│  Vercel              │    │  VPS (YOUR_VPS_IP, Ubuntu 24.04)       │
-│  YOUR_APP_NAME.vercel.app│    │                                         │
-│  (Frontend only)     │───▶│  Docker Container: business-mgmt-app        │
-│  NEXT_PUBLIC_API_URL │    │  ├── Next.js Frontend  :3000            │
-│  → VPS backend       │    │  ├── Express Backend   :3001            │
-└──────────────────────┘    │  ├── Chromium (PDF generation)          │
-                            │  └── Hebrew fonts (Noto, Culmus)        │
-                            │                                         │
+│  Vercel              │    │  VPS (Ubuntu 24.04, pm2)               │
+│  YOUR_APP_NAME       │    │                                         │
+│  .vercel.app         │    │  pm2: dress-backend                     │
+│  (Frontend)          │───▶│  ├── Express Backend   :3001            │
+│  NEXT_PUBLIC_API_URL │    │  ├── Chromium (system package)          │
+│  → VPS backend       │    │  └── Hebrew fonts (system packages)     │
+└──────────────────────┘    │                                         │
                             │  Host Services:                         │
-                            │  ├── Tailscale Funnel → :3000 (HTTPS)   │
-                            │  ├── cron: auto-update.sh (every 1 min) │
+                            │  ├── Tailscale Funnel → :3001 (HTTPS)   │
+                            │  ├── cron: auto-update-direct.sh (1 min)│
                             │  ├── cron: sync-to-cloud.sh (hourly)    │
                             │  └── rclone → Google Drive               │
-                            │                                         │
-                            │  Persistent Data (./local_data):        │
-                            │  ├── .env (secrets)                     │
-                            │  ├── backend_data/business.db       │
-                            │  ├── uploads/ (images, signatures)      │
-                            │  └── logs/                              │
                             └─────────────────────────────────────────┘
 ```
 
@@ -442,15 +471,25 @@ extractReceiptDetails(fileBuffer, mimeType)
 | `https://your-vps.YOUR_TAILSCALE_DOMAIN.ts.net` | Direct VPS access (Tailscale) | Technical access, API calls from Vercel |
 | `https://YOUR_APP_NAME.vercel.app/agreement?token=...` | Customer agreement signing | Customers (sent via WhatsApp) |
 
-### Docker Configuration
+### Docker Configuration (Docker Install only)
 
 - **Dockerfile**: Multi-stage build (builder + runtime), installs Chromium + Hebrew fonts
 - **docker-compose.yml**: `network_mode: host`, mounts `./local_data`, `restart: always`
 - **entrypoint.sh**: Starts backend and frontend, handles graceful shutdown
 - **Environment**: `CHROME_BIN=/usr/bin/chromium`, `NODE_ENV=production`
 
+### Direct Install Configuration (Direct Install only)
+
+- **pm2-ecosystem.config.js**: pm2 config for backend process (`dress-backend`)
+- **start-backend.sh**: Startup wrapper that waits for port 3001 before launching Node
+- **wait-for-port.sh**: Utility that blocks until a TCP port is free
+- **start-app.sh**: Creates directories, runs migrations, starts pm2
+- **setup-direct-install.sh**: Installs Node.js 20, Chromium, fonts, build tools
+- **Environment**: `CHROME_BIN=/usr/bin/chromium-browser`, `NODE_ENV=production`
+
 ### Auto-Update Flow
 
+#### Docker Mode (`auto-update.sh`)
 ```
 cron (every 1 min) → auto-update.sh
     ├── git fetch origin master
@@ -460,6 +499,20 @@ cron (every 1 min) → auto-update.sh
     │   ├── git pull origin master
     │   ├── docker compose up -d --build --force-recreate
     │   └── Health check
+    └── If same: exit silently
+```
+
+#### Direct Install Mode (`auto-update-direct.sh`)
+```
+cron (every 1 min) → auto-update-direct.sh
+    ├── git fetch origin master
+    ├── Compare local HEAD vs remote HEAD
+    ├── If different:
+    │   ├── sync-to-cloud.sh (safety backup)
+    │   ├── git pull origin master
+    │   ├── cd backend && npm install
+    │   ├── pm2 stop → wait for port → pm2 start
+    │   └── Health check (retries up to 60s)
     └── If same: exit silently
 ```
 

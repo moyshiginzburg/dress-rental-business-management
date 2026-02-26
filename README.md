@@ -7,6 +7,7 @@ Replace spreadsheets and paper records with a modern, mobile-friendly app — co
 [![Next.js](https://img.shields.io/badge/Next.js-15-black?logo=next.js)](https://nextjs.org/)
 [![SQLite](https://img.shields.io/badge/SQLite-3-blue?logo=sqlite)](https://sqlite.org/)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker)](https://docker.com/)
+[![pm2](https://img.shields.io/badge/pm2-Direct_Install-2B037A?logo=pm2)](https://pm2.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
@@ -57,12 +58,25 @@ wget -qO setup.sh https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO_NAME
 bash setup.sh
 ```
 
-The setup script handles everything automatically (~10 min):
-- Installs Docker, Tailscale, rclone, Git
-- Clones your repo and starts the app
-- Sets up free HTTPS via Tailscale Funnel
-- Installs auto-update cron (pulls from GitHub every minute)
-- Installs hourly backup to Google Drive
+The script asks you to choose an installation method:
+
+| | Docker Install | Direct Install |
+|---|---|---|
+| **What runs on VPS** | Frontend + Backend in container | Backend only (pm2) |
+| **Frontend** | Included in container | Deployed separately on Vercel |
+| **RAM** | ~150+ MB | ~70 MB |
+| **Disk** | ~2-4 GB | ~200 MB |
+| **Update speed** | Docker rebuild (~1 min) | npm install + pm2 restart (~5s) |
+| **Process isolation** | Full (containerized) | Shared with host |
+
+**Docker** — Fully containerized. Avoids dependency conflicts with other software on the server. Good for shared environments with multiple services.
+
+**Direct Install** — Lower resource usage, faster updates, no Docker overhead. Suitable for a dedicated VPS running only this application.
+
+Both options include:
+- Free HTTPS via Tailscale Funnel
+- Auto-update cron (pulls from GitHub every minute)
+- Hourly backup to Google Drive
 
 ### Step 4 — Create your admin account
 
@@ -86,7 +100,7 @@ That's it. Your app is live at `https://your-vps.YOUR_TAILSCALE_DOMAIN.ts.net`.
 | PDF Generation | Headless Chromium (Hebrew/RTL support) |
 | AI (receipts) | Google Gemini Vision API |
 | Email / Google | Apps Script Web App (no SMTP needed) |
-| Deployment | Docker, Tailscale Funnel |
+| Deployment | Docker **or** Direct Install (pm2), Tailscale Funnel |
 | Backup | rclone → Google Drive |
 | Auto-Update | Cron job polling GitHub every minute |
 
@@ -136,28 +150,40 @@ The system uses Google Apps Script to send emails and create Calendar events —
 
 ## 🏗️ Deployment Architecture
 
+Two deployment modes are supported:
+
+### Option A: Docker Install
+
 ```
-Your Computer
-    │  git push
-    ▼
-GitHub (your repo)
-    │  ← VPS cron polls every 1 min
-    │  ← Vercel auto-deploys frontend (optional)
-    ▼
 VPS (Ubuntu 24.04, Docker)
     ├── Docker Container
     │   ├── Next.js Frontend  → :3000
     │   ├── Express Backend   → :3001
     │   └── Chromium (for PDF generation)
     │
-    ├── Tailscale Funnel → public HTTPS (free, no domain needed)
-    ├── cron: auto-update.sh  (every 1 min)
-    └── cron: sync-to-cloud.sh (every hour → Google Drive)
+    ├── Tailscale Funnel → :3000 (HTTPS)
+    ├── cron: auto-update.sh  (Docker rebuild)
+    └── cron: sync-to-cloud.sh (hourly → Google Drive)
+```
+
+### Option B: Direct Install
+
+```
+VPS (Ubuntu 24.04, pm2)
+    ├── pm2: dress-backend (Express)  → :3001
+    ├── Chromium + Hebrew fonts (system packages)
+    │
+    ├── Tailscale Funnel → :3001 (HTTPS, backend only)
+    ├── cron: auto-update-direct.sh (git pull + pm2 restart)
+    └── cron: sync-to-cloud.sh (hourly → Google Drive)
+
+Vercel (separate)
+    └── Next.js Frontend (NEXT_PUBLIC_API_URL → VPS backend)
 ```
 
 ### Recommended VPS Specs
 - **OS**: Ubuntu 22.04 or 24.04 LTS
-- **RAM**: 2GB minimum (4GB recommended)
+- **RAM**: 1GB minimum (Docker needs 2GB+)
 - **Storage**: 20GB+
 - **CPU**: 1 vCPU minimum
 
@@ -166,9 +192,11 @@ VPS (Ubuntu 24.04, Docker)
 [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) gives your VPS a permanent public HTTPS URL at no cost — no domain, no reverse proxy, no SSL certificates to manage.
 
 ```bash
-# On your VPS after Tailscale is connected:
+# Docker mode (frontend + backend):
 tailscale funnel --bg 3000
-# → https://your-hostname.tail1234.ts.net
+
+# Direct Install mode (backend only, frontend on Vercel):
+tailscale funnel --bg 3001
 ```
 
 ### Optional: Vercel Frontend
@@ -214,11 +242,24 @@ The backup scripts use `RCLONE_REMOTE=gdrive` and `DRIVE_PATH=YOUR_REPO_NAME` by
 ```
 dress-rental-business-management/
 ├── scripts/
-│   ├── configure.sh         ← Run this first!
-│   ├── setup-new-server.sh  ← Full VPS setup (10 steps, ~10 min)
-│   ├── auto-update.sh       ← Git poll + Docker rebuild (runs via cron)
-│   ├── sync-to-cloud.sh     ← Backup to Google Drive
-│   └── sync-from-cloud.sh   ← Restore from Google Drive
+│   ├── configure.sh              ← Run this first!
+│   ├── setup-new-server.sh       ← Full VPS setup (choose Docker or Direct)
+│   │
+│   ├── # Docker mode:
+│   ├── auto-update.sh            ← Git poll + Docker rebuild (cron)
+│   ├── entrypoint.sh             ← Docker container entrypoint
+│   │
+│   ├── # Direct Install mode:
+│   ├── setup-direct-install.sh   ← System deps (Node, Chromium, fonts)
+│   ├── auto-update-direct.sh     ← Git poll + pm2 restart (cron)
+│   ├── pm2-ecosystem.config.js   ← pm2 configuration
+│   ├── start-app.sh              ← Create dirs + migrate + pm2 start
+│   ├── start-backend.sh          ← Port-wait wrapper for Node
+│   ├── wait-for-port.sh          ← Block until TCP port is free
+│   │
+│   ├── # Shared:
+│   ├── sync-to-cloud.sh          ← Backup to Google Drive
+│   └── sync-from-cloud.sh        ← Restore from Google Drive
 │
 ├── backend/src/
 │   ├── index.js             ← Express entry point (port 3001)
@@ -237,7 +278,7 @@ dress-rental-business-management/
 │   └── Code.js              ← Google Apps Script (email + Calendar + Tasks)
 │
 ├── env.example              ← Environment variable template
-├── Dockerfile               ← Multi-stage build (frontend + backend + Chromium)
+├── Dockerfile               ← Multi-stage build (Docker mode only)
 ├── docker-compose.yml       ← Production Docker config
 │
 └── local_data/              ← ⚠️ PERSISTENT DATA (not in Git)

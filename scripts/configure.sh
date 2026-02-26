@@ -118,6 +118,7 @@ ALL_SCRIPTS=(
     "$PROJECT_DIR/scripts/setup-new-server.sh"
     "$PROJECT_DIR/scripts/setup-vps.sh"
     "$PROJECT_DIR/scripts/auto-update.sh"
+    "$PROJECT_DIR/scripts/auto-update-direct.sh"
     "$PROJECT_DIR/scripts/sync-to-cloud.sh"
     "$PROJECT_DIR/scripts/sync-from-cloud.sh"
     "$PROJECT_DIR/apps_script/Code.js"

@@ -1,6 +1,7 @@
 # Setup & Deployment Guide
 
-> **Production**: Your VPS running Docker, accessible via Tailscale Funnel (and optionally Vercel).
+> **Two deployment options available:**  
+> **Docker Install** (frontend + backend in container) or **Direct Install** (backend via pm2, frontend on Vercel).
 
 ---
 
@@ -55,9 +56,11 @@ cd backend && npm run db:migrate
 
 ## VPS Production Deployment
 
+### Docker Install
+
 The production system runs in Docker on a VPS with Tailscale Funnel for HTTPS access.
 
-### Architecture
+#### Architecture
 
 ```
 VPS (Ubuntu 24.04, Docker)
@@ -70,7 +73,7 @@ VPS (Ubuntu 24.04, Docker)
 ├── Volume Mount: ./local_data → /app/local_data
 │   ├── .env (secrets)
 │   ├── backend_data/business.db (SQLite)
-│   ├── uploads/ (signatures, receipts, dresses, agreements)
+│   ├── uploads/ (signatures, dresses, agreements, expenses)
 │   └── logs/
 │
 ├── Tailscale Funnel → port 3000 (public HTTPS)
@@ -78,7 +81,7 @@ VPS (Ubuntu 24.04, Docker)
 └── Cron: sync-to-cloud.sh (every hour)
 ```
 
-### Docker Commands
+#### Docker Commands
 
 ```bash
 # SSH into VPS
@@ -101,6 +104,56 @@ docker compose up -d --build --force-recreate
 
 # Stop the container
 docker compose down
+```
+
+### Direct Install
+
+The production system runs backend via pm2; frontend is deployed on Vercel.
+
+#### Architecture
+
+```
+VPS (Ubuntu 24.04, pm2)
+├── pm2: dress-backend (Express Backend → port 3001)
+├── Chromium + Hebrew fonts (installed as system packages)
+│
+├── local_data/
+│   ├── .env (secrets)
+│   ├── backend_data/business.db (SQLite)
+│   ├── uploads/ (signatures, dresses, agreements, expenses)
+│   └── logs/
+│
+├── Tailscale Funnel → port 3001 (public HTTPS, backend only)
+├── Cron: auto-update-direct.sh (every minute)
+└── Cron: sync-to-cloud.sh (every hour)
+
+Vercel (separate)
+└── Next.js Frontend (NEXT_PUBLIC_API_URL → VPS)
+```
+
+#### pm2 Commands
+
+```bash
+# SSH into VPS
+ssh root@YOUR_VPS_IP
+
+# Go to project directory
+cd /root/YOUR_REPO_NAME
+
+# View pm2 status
+pm2 status
+
+# View live logs
+pm2 logs dress-backend
+
+# Restart backend
+pm2 restart dress-backend
+
+# Start backend (if stopped)
+bash scripts/start-app.sh
+
+# Stop backend
+pm2 stop dress-backend
 ```
 
 ### Key Files on VPS
@@ -126,31 +179,31 @@ wget -qO setup.sh https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/YOUR_RE
 bash setup.sh
 ```
 
-The script handles all 10 steps:
+The script asks you to choose: **Docker** or **Direct Install**, then handles all 10 steps:
 
-1. Install Docker, Tailscale, rclone, Git, sqlite3
+1. Install system packages (Docker **or** Node.js + Chromium + pm2)
 2. Add swap if RAM < 3GB
 3. Create SSH key for GitHub (you add it as Deploy Key)
 4. Clone the repository
 5. Paste `.env` content (from old server's `local_data/.env`)
 6. Paste `rclone.conf` content (from old server's `~/.config/rclone/rclone.conf`)
 7. Restore data from Google Drive backup
-8. Build and start Docker
+8. Build and start app (Docker compose **or** pm2)
 9. Connect Tailscale and start Funnel
 10. Install auto-update and backup cron jobs
 
 ### After Migration
 
-1. Update `NEXT_PUBLIC_API_URL` in Vercel to the new Tailscale URL
+1. Update `NEXT_PUBLIC_API_URL` in Vercel to the new Tailscale URL (if using Vercel)
 2. Redeploy on Vercel
-3. Verify `https://YOUR_APP_NAME.vercel.app` works with the new backend
+3. Verify everything works with the new backend
 4. Decommission the old server
 
 ---
 
 ## Vercel Frontend Setup
 
-The Vercel deployment serves the frontend for nice customer-facing URLs.
+The Vercel deployment serves the frontend for nice customer-facing URLs. **Required for Direct Install mode; optional for Docker mode.**
 
 ### Environment Variables (Vercel Dashboard)
 
@@ -203,7 +256,7 @@ ssh root@YOUR_VPS_IP "cd /root/YOUR_REPO_NAME && ./scripts/sync-to-cloud.sh"
 
 ```bash
 ssh root@YOUR_VPS_IP "cd /root/YOUR_REPO_NAME && ./scripts/sync-from-cloud.sh"
-# This stops Docker, copies data from Drive, and restarts Docker
+# This stops Docker/pm2, copies data from Drive, and restarts automatically
 ```
 
 ### Local Machine Backup (Legacy)
@@ -216,15 +269,28 @@ The local machine has a separate backup script (`~/.your_sync_script.sh`) that b
 
 ### How It Works
 
-1. Cron runs `scripts/auto-update.sh` every minute
-2. Script does `git fetch origin master`
-3. Compares local HEAD with remote HEAD
-4. If different:
-   - Runs cloud backup (safety net)
+Both modes poll GitHub for new commits every minute via cron.
+
+#### Docker Mode (`auto-update.sh`)
+
+1. `git fetch origin master`
+2. If local != remote:
+   - Pre-update backup (safety net)
    - `git pull origin master`
    - `docker compose up -d --build --force-recreate`
    - Health check after rebuild
-5. If same: exits silently
+3. **Downtime**: ~1-2 minutes (Docker rebuild)
+
+#### Direct Install Mode (`auto-update-direct.sh`)
+
+1. `git fetch origin master`
+2. If local != remote:
+   - Pre-update backup (safety net)
+   - `git pull origin master`
+   - `cd backend && npm install`
+   - pm2 stop → wait for port → pm2 start
+   - Health check
+3. **Downtime**: ~5 seconds (no rebuild needed)
 
 ### Logs
 
@@ -232,15 +298,11 @@ The local machine has a separate backup script (`~/.your_sync_script.sh`) that b
 ssh root@YOUR_VPS_IP "cat /root/YOUR_REPO_NAME/local_data/logs/auto-update.log"
 ```
 
-### Downtime
-
-Each auto-update causes ~1-2 minutes of downtime while Docker rebuilds. If only the entrypoint or scripts changed (not Dockerfile/dependencies), the rebuild uses cached layers and takes ~10 seconds.
-
 ---
 
 ## Logs & Debugging
 
-### Container Logs (stdout/stderr)
+### Docker Mode — Container Logs
 
 ```bash
 # Live tail
@@ -248,6 +310,16 @@ ssh root@YOUR_VPS_IP "docker compose -f /root/YOUR_REPO_NAME/docker-compose.yml 
 
 # Last 100 lines
 ssh root@YOUR_VPS_IP "docker compose -f /root/YOUR_REPO_NAME/docker-compose.yml logs --tail 100"
+```
+
+### Direct Install Mode — pm2 Logs
+
+```bash
+# Live tail
+ssh root@YOUR_VPS_IP "pm2 logs dress-backend"
+
+# Last 100 lines
+ssh root@YOUR_VPS_IP "pm2 logs dress-backend --lines 100"
 ```
 
 ### Application Log Files
@@ -284,7 +356,7 @@ Apps Script logs are sent to the backend at `/api/apps-script-logs/batch`. View 
 
 ## Troubleshooting
 
-### Container Keeps Restarting
+### Docker: Container Keeps Restarting
 
 ```bash
 # Check exit code and logs
@@ -294,6 +366,21 @@ ssh root@YOUR_VPS_IP "docker logs business-mgmt-app --tail 50"
 
 Common causes: missing `.env`, corrupted database, broken dependency install.
 
+### Direct Install: Backend Not Starting
+
+```bash
+# Check pm2 status
+ssh root@YOUR_VPS_IP "pm2 status"
+
+# Check pm2 error logs
+ssh root@YOUR_VPS_IP "pm2 logs dress-backend --err --lines 50"
+
+# Port conflict? Check what's on port 3001
+ssh root@YOUR_VPS_IP "fuser 3001/tcp"
+```
+
+Common causes: missing `.env`, port still in use (EADDRINUSE), missing Node.js dependencies.
+
 ### Frontend Not Loading via Vercel
 
 1. Check `NEXT_PUBLIC_API_URL` in Vercel env vars
@@ -302,15 +389,18 @@ Common causes: missing `.env`, corrupted database, broken dependency install.
 
 ### PDF Generation Fails
 
-- Chromium must be installed in the Docker image (see `Dockerfile`)
+- Chromium must be installed (Docker: in the image; Direct: as system package)
 - Hebrew fonts must be present (`fonts-noto-core`, `culmus`)
-- Check `CHROME_BIN` env var points to `/usr/bin/chromium`
+- Check `CHROME_BIN` env var points to chromium binary
 
 ### Database Locked
 
 ```bash
-# Restart container (releases all locks)
+# Docker: restart container
 ssh root@YOUR_VPS_IP "docker compose -f /root/YOUR_REPO_NAME/docker-compose.yml restart"
+
+# Direct Install: restart pm2
+ssh root@YOUR_VPS_IP "pm2 restart dress-backend"
 ```
 
 ### Auto-Update Not Working
@@ -319,8 +409,11 @@ ssh root@YOUR_VPS_IP "docker compose -f /root/YOUR_REPO_NAME/docker-compose.yml 
 # Check cron is installed
 ssh root@YOUR_VPS_IP "crontab -l"
 
-# Check the script can run
+# Check the script can run (Docker mode)
 ssh root@YOUR_VPS_IP "cd /root/YOUR_REPO_NAME && bash scripts/auto-update.sh"
+
+# Check the script can run (Direct Install mode)
+ssh root@YOUR_VPS_IP "cd /root/YOUR_REPO_NAME && bash scripts/auto-update-direct.sh"
 
 # Check Git can fetch (SSH key must be a Deploy Key on GitHub)
 ssh root@YOUR_VPS_IP "cd /root/YOUR_REPO_NAME && git fetch origin master"
@@ -331,6 +424,18 @@ ssh root@YOUR_VPS_IP "cd /root/YOUR_REPO_NAME && git fetch origin master"
 ```bash
 ssh root@YOUR_VPS_IP "tailscale status"
 ssh root@YOUR_VPS_IP "tailscale funnel status"
-# Re-enable:
-ssh root@YOUR_VPS_IP "tailscale funnel --bg 3000"
+# Re-enable (Docker: port 3000, Direct Install: port 3001):
+ssh root@YOUR_VPS_IP "tailscale funnel --bg 3000"  # Docker
+ssh root@YOUR_VPS_IP "tailscale funnel --bg 3001"  # Direct Install
+```
+
+### Backup Troubleshooting
+
+If backup (`sync-to-cloud.sh`) fails from cron:
+```bash
+# Check the rclone config is accessible
+ssh root@YOUR_VPS_IP "RCLONE_CONFIG=/root/.config/rclone/rclone.conf rclone listremotes"
+
+# Run backup manually with verbose output
+ssh root@YOUR_VPS_IP "cd /root/YOUR_REPO_NAME && HOME=/root RCLONE_CONFIG=/root/.config/rclone/rclone.conf bash scripts/sync-to-cloud.sh"
 ```
