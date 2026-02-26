@@ -15,7 +15,7 @@ import multer from 'multer';
 import { processDressImage } from '../services/image.js';
 
 const router = Router();
-const validStatuses = ['available', 'sold', 'retired'];
+const validStatuses = ['available', 'sold', 'retired', 'custom_sewing'];
 const validIntendedUses = ['rental', 'sale'];
 
 function normalizeUploadedImagePath(value) {
@@ -99,16 +99,22 @@ router.get('/', (req, res, next) => {
 
     // Add status filter
     if (status) {
+      if (!validStatuses.includes(status)) {
+        throw new ApiError(400, 'סטטוס לא תקין');
+      }
       sql += ' AND status = ?';
       params.push(status);
     }
 
     if (intended_use) {
-      if (!validIntendedUses.includes(intended_use)) {
+      if (intended_use === '__empty__') {
+        sql += ' AND intended_use IS NULL';
+      } else if (!validIntendedUses.includes(intended_use)) {
         throw new ApiError(400, 'ייעוד שמלה לא תקין');
+      } else {
+        sql += ' AND intended_use = ?';
+        params.push(intended_use);
       }
-      sql += ' AND intended_use = ?';
-      params.push(intended_use);
     }
 
     // Add sorting
@@ -138,8 +144,12 @@ router.get('/', (req, res, next) => {
       countParams.push(status);
     }
     if (intended_use) {
-      countSql += ' AND intended_use = ?';
-      countParams.push(intended_use);
+      if (intended_use === '__empty__') {
+        countSql += ' AND intended_use IS NULL';
+      } else {
+        countSql += ' AND intended_use = ?';
+        countParams.push(intended_use);
+      }
     }
     const { total } = get(countSql, countParams);
 
@@ -164,14 +174,14 @@ router.get('/', (req, res, next) => {
 /**
  * GET /api/dresses/available
  * Get bookable dresses with future booking details.
- * Dresses stay bookable unless sold or retired.
+ * Only dresses marked as `available` are bookable.
  */
 router.get('/available', (req, res, next) => {
   try {
     const dresses = all(
       `SELECT id, name, base_price, photo_url, thumbnail_url, rental_count, total_income, status, intended_use
        FROM dresses 
-       WHERE is_active = 1 AND status NOT IN ('sold', 'retired')
+       WHERE is_active = 1 AND status = 'available'
        ORDER BY name`
     );
 
@@ -329,7 +339,8 @@ router.post('/', (req, res, next) => {
       throw new ApiError(400, 'סטטוס לא תקין');
     }
 
-    if (intended_use && !validIntendedUses.includes(intended_use)) {
+    const normalizedIntendedUse = intended_use === '' || intended_use === null ? null : intended_use;
+    if (normalizedIntendedUse && !validIntendedUses.includes(normalizedIntendedUse)) {
       throw new ApiError(400, 'ייעוד שמלה לא תקין');
     }
 
@@ -341,7 +352,7 @@ router.post('/', (req, res, next) => {
         name.trim(),
         parseFloat(base_price) || 0,
         status || 'available',
-        intended_use || 'rental',
+        normalizedIntendedUse,
         normalizedPhotoUrl,
         normalizedThumbnailUrl,
         notes || null
@@ -398,9 +409,12 @@ router.put('/:id', (req, res, next) => {
       throw new ApiError(400, 'סטטוס לא תקין');
     }
 
-    if (intended_use && !validIntendedUses.includes(intended_use)) {
+    const normalizedIntendedUse = intended_use === '' || intended_use === null ? null : intended_use;
+    if (normalizedIntendedUse !== null && !validIntendedUses.includes(normalizedIntendedUse)) {
       throw new ApiError(400, 'ייעוד שמלה לא תקין');
     }
+
+    const finalIntendedUse = normalizedIntendedUse !== undefined ? normalizedIntendedUse : (existing.intended_use || null);
 
     // Update dress
     run(
@@ -411,7 +425,7 @@ router.put('/:id', (req, res, next) => {
         name.trim(),
         parseFloat(base_price) || 0,
         status || 'available',
-        intended_use || existing.intended_use || 'rental',
+        finalIntendedUse,
         normalizedPhotoUrl,
         normalizedThumbnailUrl,
         notes || null,

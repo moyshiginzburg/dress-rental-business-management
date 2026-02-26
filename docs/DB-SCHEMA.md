@@ -50,8 +50,8 @@
 | base_price | REAL | YES | 0 | | |
 | total_income | REAL | YES | 0 | | Sum of all rental/sale income |
 | rental_count | INTEGER | YES | 0 | | Count of rental/sale transactions |
-| status | TEXT | YES | 'available' | | CHECK: `available`, `rented`, `sold`, `retired` |
-| intended_use | TEXT | YES | 'rental' | | CHECK: `rental`, `sale` |
+| status | TEXT | YES | 'available' | | CHECK: `available`, `sold`, `retired`, `custom_sewing` |
+| intended_use | TEXT | YES | NULL | | CHECK: `rental`, `sale` — nullable for dresses without designation |
 | photo_url | TEXT | YES | NULL | | |
 | thumbnail_url | TEXT | YES | NULL | | |
 | notes | TEXT | YES | NULL | | |

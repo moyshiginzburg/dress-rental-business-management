@@ -247,15 +247,15 @@ router.post('/', async (req, res, next) => {
       if (!new_customer.name || !new_customer.name.trim()) {
         throw new ApiError(400, 'נא להזין שם לקוחה');
       }
-      if (!new_customer.phone || !new_customer.phone.trim()) {
-        throw new ApiError(400, 'נא להזין מספר טלפון');
-      }
 
       const normalizedNewCustomerPhone = normalizePhoneNumber(new_customer.phone);
-      const existingCustomer = get(
-        'SELECT id, name, phone, email FROM customers WHERE phone = ?',
-        [normalizedNewCustomerPhone]
-      );
+      const normalizedNewCustomerEmail = new_customer.email?.trim() || null;
+      const existingCustomer = normalizedNewCustomerPhone
+        ? get(
+            'SELECT id, name, phone, email FROM customers WHERE phone = ?',
+            [normalizedNewCustomerPhone]
+          )
+        : null;
 
       if (existingCustomer) {
         finalCustomerId = existingCustomer.id;
@@ -265,16 +265,16 @@ router.post('/', async (req, res, next) => {
           'INSERT INTO customers (name, phone, email) VALUES (?, ?, ?)',
           [
             new_customer.name.trim(),
-            normalizedNewCustomerPhone,
-            new_customer.email || null
+            normalizedNewCustomerPhone || null,
+            normalizedNewCustomerEmail
           ]
         );
         finalCustomerId = customerResult.lastInsertRowid;
         customerData = {
           id: finalCustomerId,
           name: new_customer.name.trim(),
-          phone: normalizedNewCustomerPhone,
-          email: new_customer.email || null
+          phone: normalizedNewCustomerPhone || null,
+          email: normalizedNewCustomerEmail
         };
       }
     } else {

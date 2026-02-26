@@ -59,7 +59,7 @@ router.get('/summary', (req, res, next) => {
         (SELECT COUNT(*) FROM orders WHERE status = 'active') as active_orders,
         (SELECT COUNT(*) FROM customers) as total_customers,
         (SELECT COUNT(*) FROM customers WHERE created_at >= ? AND created_at < ?) as new_customers_month,
-        (SELECT COUNT(*) FROM dresses WHERE status NOT IN ('sold', 'retired')) as available_dresses,
+        (SELECT COUNT(*) FROM dresses WHERE status = 'available') as available_dresses,
         (SELECT COUNT(*) FROM dresses) as total_dresses`,
       [monthStart, nextMonthStart]
     );

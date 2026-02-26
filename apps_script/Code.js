@@ -61,78 +61,78 @@ let cachedBackendUrl = null;
  * @returns {ContentService.TextOutput} JSON response
  */
 function doPost(e) {
-  try {
-    let payload;
-    
-    if (e.postData && e.postData.contents) {
-      payload = JSON.parse(e.postData.contents);
-    } else {
-      return ContentService.createTextOutput(
-        JSON.stringify({ success: false, error: 'No payload received' })
-      ).setMimeType(ContentService.MimeType.JSON);
+    try {
+        let payload;
+
+        if (e.postData && e.postData.contents) {
+            payload = JSON.parse(e.postData.contents);
+        } else {
+            return ContentService.createTextOutput(
+                JSON.stringify({ success: false, error: 'No payload received' })
+            ).setMimeType(ContentService.MimeType.JSON);
+        }
+
+        log('INFO', 'doPost', `Received POST: type=${payload.type}`);
+
+        // Check for email sending requests (new capability for VPS)
+        if (payload.type === 'send_email') {
+            const result = handleSendEmail(payload);
+            flushLogs();
+            return ContentService.createTextOutput(
+                JSON.stringify(result)
+            ).setMimeType(ContentService.MimeType.JSON);
+        }
+
+        // Route to the appropriate handler
+        const result = processPayload(payload);
+
+        flushLogs();
+
+        return ContentService.createTextOutput(
+            JSON.stringify(result)
+        ).setMimeType(ContentService.MimeType.JSON);
+
+    } catch (error) {
+        log('ERROR', 'doPost', error.message, { stack: error.stack });
+        flushLogs();
+        return ContentService.createTextOutput(
+            JSON.stringify({ success: false, error: error.message })
+        ).setMimeType(ContentService.MimeType.JSON);
     }
-
-    log('INFO', 'doPost', `Received POST: type=${payload.type}`);
-
-    // Check for email sending requests (new capability for VPS)
-    if (payload.type === 'send_email') {
-      const result = handleSendEmail(payload);
-      flushLogs();
-      return ContentService.createTextOutput(
-        JSON.stringify(result)
-      ).setMimeType(ContentService.MimeType.JSON);
-    }
-
-    // Route to the appropriate handler
-    const result = processPayload(payload);
-
-    flushLogs();
-
-    return ContentService.createTextOutput(
-      JSON.stringify(result)
-    ).setMimeType(ContentService.MimeType.JSON);
-
-  } catch (error) {
-    log('ERROR', 'doPost', error.message, { stack: error.stack });
-    flushLogs();
-    return ContentService.createTextOutput(
-      JSON.stringify({ success: false, error: error.message })
-    ).setMimeType(ContentService.MimeType.JSON);
-  }
 }
 
 /**
  * Route a payload to the appropriate handler based on its type.
  */
 function processPayload(payload) {
-  if (!payload || !payload.type) {
-    return { success: false, error: 'No payload type' };
-  }
+    if (!payload || !payload.type) {
+        return { success: false, error: 'No payload type' };
+    }
 
-  switch (payload.type) {
-    case 'calendar_wedding':
-      return handleWeddingCalendar(payload.data);
-    case 'task_wedding':
-      return handleWeddingTask(payload.data);
-    case 'calendar':
-      return handleCalendarEvent(payload);
-    case 'task':
-      return handleTask(payload);
-    case 'sheets':
-      return handleSheetsAppend(payload);
-    case 'drive':
-      return handleDriveUpload(payload, null);
-    case 'income_notification':
-      return handleIncomeDetailed(payload);
-    case 'expense_notification':
-      return handleNotificationGeneric(payload, 'expense');
-    case 'income_detailed':
-      return handleIncomeDetailed(payload);
-    case 'order_notification':
-      return handleOrderNotification(payload);
-    default:
-      return { success: false, error: 'Unknown type: ' + payload.type };
-  }
+    switch (payload.type) {
+        case 'calendar_wedding':
+            return handleWeddingCalendar(payload.data);
+        case 'task_wedding':
+            return handleWeddingTask(payload.data);
+        case 'calendar':
+            return handleCalendarEvent(payload);
+        case 'task':
+            return handleTask(payload);
+        case 'sheets':
+            return handleSheetsAppend(payload);
+        case 'drive':
+            return handleDriveUpload(payload, null);
+        case 'income_notification':
+            return handleIncomeDetailed(payload);
+        case 'expense_notification':
+            return handleNotificationGeneric(payload, 'expense');
+        case 'income_detailed':
+            return handleIncomeDetailed(payload);
+        case 'order_notification':
+            return handleOrderNotification(payload);
+        default:
+            return { success: false, error: 'Unknown type: ' + payload.type };
+    }
 }
 
 /**
@@ -145,41 +145,41 @@ function processPayload(payload) {
  * @param {Object} payload - { type: 'send_email', to, subject, htmlBody, textBody, attachments? }
  */
 function handleSendEmail(payload) {
-  try {
-    const to = payload.to;
-    const subject = payload.subject;
-    const htmlBody = payload.htmlBody || '';
-    const textBody = payload.textBody || 'הודעה ממערכת ניהול העסק';
+    try {
+        const to = payload.to;
+        const subject = payload.subject;
+        const htmlBody = payload.htmlBody || '';
+        const textBody = payload.textBody || 'הודעה ממערכת ניהול העסק';
 
-    if (!to || !subject) {
-      return { success: false, error: 'Missing "to" or "subject"' };
+        if (!to || !subject) {
+            return { success: false, error: 'Missing "to" or "subject"' };
+        }
+
+        const options = {
+            name: 'Your Business Name',
+            htmlBody: htmlBody,
+        };
+
+        // Handle base64 attachments if present
+        if (payload.attachments && Array.isArray(payload.attachments)) {
+            options.attachments = payload.attachments.map(att => {
+                return Utilities.newBlob(
+                    Utilities.base64Decode(att.content),
+                    att.contentType || 'application/pdf',
+                    att.filename || 'attachment'
+                );
+            });
+        }
+
+        GmailApp.sendEmail(to, subject, textBody, options);
+
+        log('INFO', 'send_email', `Email sent to ${to}: ${subject}`);
+        return { success: true, messageId: `gas-${Date.now()}` };
+
+    } catch (error) {
+        log('ERROR', 'send_email', `Failed: ${error.message}`);
+        return { success: false, error: error.message };
     }
-
-    const options = {
-      name: 'Your Business Name',
-      htmlBody: htmlBody,
-    };
-
-    // Handle base64 attachments if present
-    if (payload.attachments && Array.isArray(payload.attachments)) {
-      options.attachments = payload.attachments.map(att => {
-        return Utilities.newBlob(
-          Utilities.base64Decode(att.content),
-          att.contentType || 'application/pdf',
-          att.filename || 'attachment'
-        );
-      });
-    }
-
-    GmailApp.sendEmail(to, subject, textBody, options);
-    
-    log('INFO', 'send_email', `Email sent to ${to}: ${subject}`);
-    return { success: true, messageId: `gas-${Date.now()}` };
-    
-  } catch (error) {
-    log('ERROR', 'send_email', `Failed: ${error.message}`);
-    return { success: false, error: error.message };
-  }
 }
 
 function getPaymentMethodLabel(method) {
@@ -655,7 +655,7 @@ function handleIncomeDetailed(payload) {
         const email = data.customerEmail || 'לא צוין';
         const paymentMethodCode = data.paymentMethod || 'cash';
         const paymentMethod = getPaymentMethodLabel(paymentMethodCode);
-        
+
         let confirmationNumber = data.confirmationNumber;
         let lastFourDigits = data.lastFourDigits;
         let checkNumber = data.checkNumber;
@@ -981,7 +981,7 @@ function handleNotificationGeneric(payload, type) {
                 if (type === 'expense') {
                     // Specific logic for expenses: [Year]/הוצאות/הוצאות מוכרות [Year]
                     folderPath = `${year}/הוצאות/הוצאות מוכרות ${year}`;
-                    
+
                     // Format file name: [yymmdd] [שם החנות/ספק] [סכום] [₪]
                     const data = payload.data || {};
                     const transactionDate = data.transactionDate ? new Date(data.transactionDate) : new Date();
@@ -989,14 +989,14 @@ function handleNotificationGeneric(payload, type) {
                     const mm = (transactionDate.getMonth() + 1).toString().padStart(2, '0');
                     const dd = transactionDate.getDate().toString().padStart(2, '0');
                     const datePrefix = `${yy}${mm}${dd}`;
-                    
+
                     const supplier = data.supplier || data.customerName || 'ספק_לא_ידוע';
                     const amount = data.amount || 0;
-                    
+
                     // Get extension from original filename
                     const extMatch = (payload.fileName || '').match(/\.[^.]+$/);
                     const ext = extMatch ? extMatch[0] : '.jpg';
-                    
+
                     fileName = `${datePrefix} ${supplier} ${amount}₪${ext}`;
                     console.log(`Formatted expense filename: ${fileName}`);
                 }

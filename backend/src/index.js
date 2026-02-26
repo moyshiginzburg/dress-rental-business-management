@@ -181,7 +181,7 @@ app.use(errorHandler);
 
 const PORT = serverConfig.port;
 
-app.listen(PORT, async () => {
+const server = app.listen(PORT, async () => {
   console.log('');
   console.log('╔════════════════════════════════════════════════════════════╗');
   console.log('║       Dress Rental Business Management - Backend           ║');
@@ -218,15 +218,15 @@ app.listen(PORT, async () => {
   console.log('');
 });
 
-// Graceful shutdown
-process.on('SIGINT', () => {
+// Graceful shutdown: close server (releases port) before exit
+function shutdown() {
   console.log('\nShutting down server...');
-  process.exit(0);
-});
-
-process.on('SIGTERM', () => {
-  console.log('\nShutting down server...');
-  process.exit(0);
-});
+  server.close(() => {
+    process.exit(0);
+  });
+  setTimeout(() => process.exit(1), 5000);  // Force exit if close hangs
+}
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
 
 export default app;

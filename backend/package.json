@@ -10,11 +10,6 @@
     "start": "node src/index.js",
     "build": "echo 'No build step needed for backend'",
     "db:migrate": "node src/db/migrate.js",
-    "db:add-google-columns": "node src/db/add-google-columns.js",
-    "db:add-order-items": "node src/db/add-order-items-table.js",
-    "db:add-dress-intended-use": "node src/db/add-dress-intended-use-column.js",
-    "db:remove-dress-cost-date": "node src/db/remove-dress-cost-and-entry-date-columns.js",
-    "db:add-performance-indexes": "node src/db/add-performance-indexes.js",
     "db:seed": "node src/db/seed.js",
     "import:dresses": "node src/scripts/import-dresses.js",
     "create-admin": "node src/scripts/create-admin.js",
@@ -35,7 +30,6 @@
     "pdf-lib": "^1.17.1",
     "pdfkit": "^0.17.2",
     "sharp": "^0.34.5",
-    "tesseract.js": "^7.0.0",
     "uuid": "^11.0.4"
   },
   "devDependencies": {

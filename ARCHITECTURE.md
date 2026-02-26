@@ -254,10 +254,6 @@ services/email.js
     ├── Uses: config/index.js (businessConfig, appsScriptConfig)
     └── Exports: sendToAppsScript, sendNewOrderNotification, sendNewIncomeNotification
 
-services/ocr.js
-    ├── Uses: tesseract.js
-    └── Legacy fallback parser (not primary flow)
-
 services/ai.js
     ├── Uses: Gemini Vision API
     ├── Runtime: calls `models.list` and filters configured model candidates

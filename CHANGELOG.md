@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-02-26
+
+### Changed - Migration Cleanup
+
+- **Removed legacy migration scripts:** Deleted `remove-dress-cost-and-entry-date-columns.js` and removed dead npm script references (`db:add-google-columns`, `db:add-order-items`, `db:add-dress-intended-use`, `db:add-performance-indexes`). The system uses a single initial migration (`schema.js` + `migrate.js`) for one-time installation.
+- **entrypoint.sh:** Removed `add-performance-indexes.js` run; indexes are created by `migrate.js` from schema.
+
+### Changed - Customer Creation
+
+- **Optional phone and email:** New customer creation now requires only `name`. Phone and email are optional in: Customers management, New order flow, New transaction flow.
+- Backend validation updated for `POST /api/orders` and transactions with `new_customer`.
+
+### Added - Dress Status & Intended Use
+
+- **Custom sewing status:** New dress status `custom_sewing` (תפירה אישית) for dresses in progress.
+- **Nullable intended_use:** Dresses can have no designation (`ללא ייעוד`). Schema updated; `intended_use` is nullable.
+- **Filtering:** Dresses list supports status filter including `custom_sewing`, and intended-use filter including `ללא ייעוד`.
+- **Booking logic:** Only dresses with `status = 'available'` are bookable. Dashboard "available dresses" count reflects this.
+
+### Changed - UX Improvements
+
+- **Dress create/edit as separate pages:** Replaced modal forms with dedicated pages `/dashboard/dresses/new` and `/dashboard/dresses/[id]/edit`.
+- **Mobile layout:** Hamburger menu aligned to the right (RTL).
+- **Toast swipe:** Swipe-to-dismiss changed from horizontal to vertical (swipe up).
+
+### Fixed - Vercel Image Loading
+
+- **next.config.js:** Rewrites derive backend URL from `NEXT_PUBLIC_API_URL` when set (single env var). Enables correct image proxying on Vercel when backend is on a separate host.
+- **resolveFileUrl():** Returns relative paths (`/uploads/...`) so images are requested same-origin; rewrites proxy to the backend. No extra env vars needed.
+- Dress images, agreement PDFs, and signatures now load correctly when frontend is on Vercel.
+
+### Removed
+
+- **Tesseract OCR:** Deleted unused `backend/src/services/ocr.js`. Receipt extraction uses only Gemini AI. Reduces node_modules size (~44 MB).
+
+### Changed - Server Robustness
+
+- **Graceful shutdown:** Backend now calls `server.close()` before exit on SIGTERM/SIGINT, releasing the port cleanly. Prevents `EADDRINUSE` on restart.
+
+---
+
 ## [1.0.0] - 2026-02-21
 
 ### Added

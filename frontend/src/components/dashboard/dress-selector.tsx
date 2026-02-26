@@ -13,7 +13,7 @@ import { Search, X, ShoppingBag, Check, Sparkles, LayoutGrid, List } from "lucid
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
-import { cn, formatCurrency, getStatusLabel } from "@/lib/utils";
+import { cn, formatCurrency, getStatusLabel, resolveFileUrl } from "@/lib/utils";
 
 interface Dress {
   id: number;
@@ -36,7 +36,8 @@ interface DressSelectorProps {
 
 function getIntendedUseLabel(value: string | null | undefined) {
   if (value === "sale") return "למכירה";
-  return "להשכרה";
+  if (value === "rental") return "להשכרה";
+  return "ללא ייעוד";
 }
 
 type IntendedUseFilter = "all" | "rental" | "sale";
@@ -49,7 +50,8 @@ function getDefaultIntendedUseFilter(itemType: string | undefined): IntendedUseF
 
 function matchesIntendedUseFilter(dress: Dress, filter: IntendedUseFilter) {
   if (filter === "all") return true;
-  const intendedUse = dress.intended_use || "rental";
+  const intendedUse = dress.intended_use;
+  if (!intendedUse) return false;
   return intendedUse === filter;
 }
 
@@ -110,7 +112,7 @@ export function DressSelector({
         <div className="flex items-center gap-3 overflow-hidden">
           {(selectedDress?.thumbnail_url || selectedDress?.photo_url) ? (
             <div className="h-10 w-10 rounded-lg overflow-hidden flex-shrink-0 border border-primary/20">
-              <img src={selectedDress.thumbnail_url || selectedDress.photo_url || ""} alt="" className="h-full w-full object-cover" />
+              <img src={resolveFileUrl(selectedDress.thumbnail_url ?? selectedDress.photo_url ?? "") || (selectedDress.thumbnail_url ?? selectedDress.photo_url ?? "")} alt="" className="h-full w-full object-cover" />
             </div>
           ) : (
             <div className="h-10 w-10 rounded-lg bg-muted flex items-center justify-center flex-shrink-0">
@@ -254,7 +256,7 @@ export function DressSelector({
                         <div className="order-1 h-9 w-9 rounded-lg overflow-hidden border border-border/60 bg-muted flex items-center justify-center shrink-0">
                           {(dress.thumbnail_url || dress.photo_url) ? (
                             <img
-                              src={dress.thumbnail_url || dress.photo_url || ""}
+                              src={resolveFileUrl(dress.thumbnail_url || dress.photo_url) || dress.thumbnail_url || dress.photo_url || ""}
                               alt={dress.name}
                               className="h-full w-full object-cover"
                             />
@@ -298,7 +300,7 @@ export function DressSelector({
                       <div className="relative aspect-[4/5] overflow-hidden bg-muted">
                         {(dress.thumbnail_url || dress.photo_url) ? (
                           <img
-                            src={dress.thumbnail_url || dress.photo_url || ""}
+                            src={resolveFileUrl(dress.thumbnail_url || dress.photo_url) || dress.thumbnail_url || dress.photo_url || ""}
                             alt={dress.name}
                             className="w-full h-full object-cover transition-transform group-hover:scale-110"
                           />

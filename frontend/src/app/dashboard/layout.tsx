@@ -58,10 +58,6 @@ export default function DashboardLayout({
     <div className="min-h-screen bg-transparent">
       {/* Mobile Header */}
       <div className="lg:hidden fixed top-0 left-0 right-0 h-16 px-4 flex items-center justify-between bg-white/80 backdrop-blur-md border-b z-40">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 bg-primary rounded-full flex items-center justify-center text-white text-sm">👗</div>
-          <span className="font-bold text-sm">ניהול עסק שמלות</span>
-        </div>
         <Button
           variant="ghost"
           size="icon"
@@ -70,6 +66,10 @@ export default function DashboardLayout({
         >
           {sidebarOpen ? <X className="h-6 w-6 text-primary" /> : <Menu className="h-6 w-6 text-primary" />}
         </Button>
+        <div className="flex items-center gap-2">
+          <span className="font-bold text-sm">ניהול עסק שמלות</span>
+          <div className="w-8 h-8 bg-primary rounded-full flex items-center justify-center text-white text-sm">👗</div>
+        </div>
       </div>
 
       {/* Global Search - visible on desktop */}

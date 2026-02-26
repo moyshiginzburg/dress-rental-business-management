@@ -1,6 +1,6 @@
 # 🗺️ PROJECT MAP: dress-rental-business-management
 
-**Generated:** 2026-02-18 01:42:24
+**Generated:** 2026-02-26 15:34:25
 
 > **Note:** This map shows the project structure and code signatures (classes, functions, methods).
 > Run `python3 dev_tools/generate_repo_map.py` to regenerate after significant changes.
@@ -10,19 +10,20 @@
 ## 📁 / (root)
 - 📄 .dockerignore
 - 📄 .gitignore
-- 📄 AGENTS.md
 - 📄 ARCHITECTURE.md
 - 📄 CHANGELOG.md
+- 📄 CONTRIBUTING.md
 - 📄 Dockerfile
+- 📄 LICENSE
 - 📄 PROJECT_MAP.md
 - 📄 README.md
+- 📄 SECURITY.md
 - 📄 SETUP.md
 - 📄 docker-compose.yml
 - 📄 env.example
 - 📄 package.json
 
 ### 📁 apps_script/
-  - 📄 .clasp.json
   #### 📄 Code.js
   ```
   function doPost(e)
@@ -57,11 +58,11 @@
 ### 📁 backend/
   - 📄 package.json
 
-  ### 📁 local_data/
-
   ### 📁 src/
     #### 📄 index.js
-    *(no signatures found)*
+    ```
+    function shutdown()
+    ```
 
     ### 📁 config/
       #### 📄 index.js
@@ -72,20 +73,6 @@
       *(no signatures found)*
 
     ### 📁 db/
-      #### 📄 add-customer-charge-column.js
-      *(no signatures found)*
-      #### 📄 add-dress-intended-use-column.js
-      *(no signatures found)*
-      #### 📄 add-google-columns.js
-      *(no signatures found)*
-      #### 📄 add-installments-column.js
-      *(no signatures found)*
-      #### 📄 add-order-items-table.js
-      *(no signatures found)*
-      #### 📄 add-performance-indexes.js
-      *(no signatures found)*
-      #### 📄 add-transaction-details.js
-      *(no signatures found)*
       #### 📄 database.js
       ```
       export function run(sql, params = [])
@@ -95,11 +82,6 @@
       export function close()
       ```
       #### 📄 migrate.js
-      *(no signatures found)*
-      #### 📄 migration-cleanup-tables.js
-      *(no signatures found)*
-      - 📄 migration-cleanup.sql
-      #### 📄 remove-dress-cost-and-entry-date-columns.js
       *(no signatures found)*
       #### 📄 schema.js
       *(no signatures found)*
@@ -167,8 +149,6 @@
       function rowsToCsv(rows, columns)
       function buildDatasetMeta(datasetKey, config)
       ```
-      #### 📄 google.js
-      *(no signatures found)*
       #### 📄 orders.js
       ```
       function getMimeTypeFromFileName(fileName = '')
@@ -212,7 +192,6 @@
       ```
       #### 📄 email.js
       ```
-      function getTransporter()
       export function isEmailEnabled()
       async function postToAppsScriptWebApp(payload)
       async function sendEmail(options)
@@ -224,37 +203,6 @@
       export async function sendTaskToGoogle({ listName = 'לקוחות', title, dueDate })
       export async function sendFileToDrive({ fileName, folder, fileBuffer })
       export async function sendToEmailList({ email, name })
-      ```
-      #### 📄 googleAuth.js
-      ```
-      export function getOAuth2Client()
-      export function isGoogleConfigured()
-      export function getAuthUrl()
-      export async function exchangeCodeForTokens(code)
-      export async function testConnection()
-      ```
-      #### 📄 googleCalendar.js
-      ```
-      function getCalendarClient()
-      export async function createWeddingEvent(eventData)
-      export async function createEventDateEvent(eventData)
-      export async function createPickupReturnEvents()
-      function formatTime(date)
-      export async function listCalendars()
-      ```
-      #### 📄 googleTasks.js
-      ```
-      function getTasksClient()
-      async function getTaskListId()
-      export async function createTask(title, notes = '', dueDate = null)
-      export async function createWeddingTask(customerName, customerPhone, eventDate, orderSummary = '')
-      export async function createPickupReminderTask()
-      export async function createReturnReminderTask()
-      export async function createFollowUpTask(customerName, customerPhone, eventDate)
-      export async function createPaymentReminderTask(customerName, customerPhone, amount, dueDate)
-      export async function listTasks(showCompleted = false)
-      export async function completeTask(taskId)
-      export async function deleteTask(taskId)
       ```
       #### 📄 image.js
       ```
@@ -269,7 +217,8 @@
       export function getExpenseCategories(year = new Date().getFullYear())
       function formatDateForFolder(date = new Date())
       function cleanForFilename(str)
-      export function saveExpenseReceipt(receiptData, category, description, expenseDate = new Date(), extension = 'jpg')
+      function formatDateYYMMDD(date = new Date())
+      export function saveExpenseReceipt(receiptData, category, description, supplier, amount, expenseDate = new Date(), extension = 'jpg')
       export function saveAgreementPdf(pdfBuffer, customerName, agreementDate = new Date(), orderId = null)
       export function isExpensesFolderAccessible()
       export function isAgreementsFolderAccessible()
@@ -288,12 +237,6 @@
       export function logUserAction(req, action, category, entityType = null, entityId = null, entityName = null, details = null)
       export function logError(req, error, category = LogCategory.ERROR)
       export function logLogin(email, success, userId = null, userName = null, ipAddress = null, userAgent = null, errorMessage = null)
-      ```
-      #### 📄 ocr.js
-      ```
-      async function extractText(image)
-      export async function extractReceiptData(image, paymentMethod)
-      export async function testOcr(imagePath, paymentMethod = 'ביט')
       ```
       #### 📄 paymentDetails.js
       ```
@@ -349,7 +292,6 @@
   - 📄 DB-SCHEMA.md
 
 ### 📁 frontend/
-  - 📄 .eslintrc.json
   #### 📄 next-env.d.ts
   *(no signatures found)*
   #### 📄 next.config.js
@@ -420,7 +362,6 @@
           #### 📄 page.tsx
           ```
           interface AgreementRecord
-          function resolveFileUrl(pathOrUrl: string | null): string | null
           export default function AgreementsPage()
             const openLink = (url: string | null, label: string) =>
           ```
@@ -433,8 +374,12 @@
           export default function CustomersPage()
             const resetForm = () =>
             const handleEdit = (customer: Customer) =>
+            const toggleSelection = (id: number) =>
+            const handleMergeClick = () =>
+            const executeMerge = async () =>
             const handleSubmit = async (e: React.FormEvent) =>
             const handleDelete = async (customer: Customer) =>
+          function CheckIcon(props: any)
           ```
 
         ### 📁 dresses/
@@ -443,17 +388,32 @@
           interface Dress
           interface RentalHistory
           interface DressDetailData
-          interface DressFormData
           function getIntendedUseLabel(intendedUse: "rental" | "sale" | null | undefined)
           function isDressBookable(status: string)
           export default function DressesPage()
             const viewDress = async (id: number) =>
-            const resetForm = () =>
-            const handleEdit = (e: React.MouseEvent, dress: Dress) =>
-            const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) =>
-            const handleSubmit = async (e: React.FormEvent) =>
             const handleDelete = async (e: React.MouseEvent, dress: Dress) =>
           ```
+
+          ### 📁 [id]/
+
+            ### 📁 edit/
+              #### 📄 page.tsx
+              ```
+              export default function EditDressPage()
+                      const fetchDress = async () =>
+                  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) =>
+                  const handleSubmit = async (e: React.FormEvent) =>
+              ```
+
+          ### 📁 new/
+            #### 📄 page.tsx
+            ```
+            export default function NewDressPage()
+                        const uploadSharedImage = async () =>
+                const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) =>
+                const handleSubmit = async (e: React.FormEvent) =>
+            ```
 
         ### 📁 export/
           #### 📄 page.tsx
@@ -476,6 +436,9 @@
           interface OrderDetailData
           const getItemTypeLabel = (type: string) =>
           export default function OrdersPage()
+            const toggleSelection = (id: number) =>
+            const handleMergeClick = () =>
+            const executeMerge = async () =>
             const handleStatusUpdate = async (orderId: number, status: string) =>
             const handleDelete = async (order: Order) =>
             const viewOrder = async (orderId: number) =>
@@ -688,6 +651,7 @@
       #### 📄 utils.ts
       ```
       export function cn(...inputs: ClassValue[])
+      export function resolveFileUrl(pathOrUrl: string | null | undefined): string | null
       export function formatCurrency(amount: number | null | undefined): string
       export function formatDate(date: string | Date | null | undefined): string
       export function formatDateShort(date: string | Date | null | undefined): string
@@ -705,17 +669,22 @@
       export function createWhatsAppLink(phone: string, message?: string): string
       ```
 
-    ### 📁 styles/
-
 ### 📁 local_data/
 
   ### 📁 backend_data/
-    - 📄 business.db
 
 ### 📁 scripts/
   #### 📄 auto-update.sh
   ```
   log() {
+  ```
+  #### 📄 configure.sh
+  ```
+  header() {
+  log()   {
+  warn()  {
+  ask()   {
+  replace_in_files() {
   ```
   #### 📄 entrypoint.sh
   ```
@@ -751,11 +720,8 @@
   ```
   log() {
   ```
+  #### 📄 view-logs.sh
+  *(no signatures found)*
 
 ### 📁 temp_cache/
-  - 📄 backend.log
-  - 📄 debug_server.log
-  #### 📄 square_image.py
-  ```
-  def make_square(image_path)
-  ```
+  - 📄 uncommitted.diff

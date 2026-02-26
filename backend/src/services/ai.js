@@ -5,7 +5,7 @@
  */
 
 import fetch from 'node-fetch';
-import { aiConfig, businessConfig } from '../config/index.js';
+import { aiConfig } from '../config/index.js';
 import { normalizeMethodCode } from './paymentDetails.js';
 
 const API_KEY = aiConfig.apiKey;
@@ -215,15 +215,15 @@ export async function extractReceiptDetails(fileBuffer, mimeType, expectedPaymen
           const rawBankDetails = pick('bankDetails', 'bank_details');
           const normalizedBankDetails = rawBankDetails && typeof rawBankDetails === 'object'
             ? {
-                bank: rawBankDetails.bank ?? rawBankDetails.bank_number ?? null,
-                branch: rawBankDetails.branch ?? rawBankDetails.branch_number ?? null,
-                account: rawBankDetails.account ?? rawBankDetails.account_number ?? null
-              }
+              bank: rawBankDetails.bank ?? rawBankDetails.bank_number ?? null,
+              branch: rawBankDetails.branch ?? rawBankDetails.branch_number ?? null,
+              account: rawBankDetails.account ?? rawBankDetails.account_number ?? null
+            }
             : null;
 
           const rawInstallments = pick('installments', 'num_installments', 'number_of_installments');
           const installments = parseInt(rawInstallments, 10);
-          
+
           let confirmationNumber = pick('confirmationNumber', 'confirmation_number', 'reference', 'reference_number');
           if (confirmationNumber) {
             // Force removal of hyphens as requested

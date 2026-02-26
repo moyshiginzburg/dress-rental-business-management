@@ -46,6 +46,9 @@ export const businessConfig = {
   email: process.env.BUSINESS_EMAIL || 'your-email@example.com',
   phone: process.env.BUSINESS_PHONE || 'YOUR_PHONE_NUMBER',
   address: process.env.BUSINESS_ADDRESS || 'YOUR_BUSINESS_ADDRESS',
+  bankNumber: process.env.BUSINESS_BANK_NUMBER || '',
+  bankBranch: process.env.BUSINESS_BANK_BRANCH || '',
+  bankAccount: process.env.BUSINESS_BANK_ACCOUNT || '',
 };
 
 // Apps Script Web App configuration.

@@ -349,8 +349,8 @@ export default function NewOrderPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (customerMode === "new" && (!newCustomer.name || !newCustomer.phone)) {
-      toast({ title: "שגיאה", description: "נא למלא שם וטלפון של הלקוחה החדשה", variant: "destructive" });
+    if (customerMode === "new" && !newCustomer.name?.trim()) {
+      toast({ title: "שגיאה", description: "נא להזין שם לקוחה", variant: "destructive" });
       return;
     }
     if (customerMode === "search" && !selectedCustomerId) {

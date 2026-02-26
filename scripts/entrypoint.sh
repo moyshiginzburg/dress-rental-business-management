@@ -35,10 +35,6 @@ echo "[entrypoint] Running database migrations..."
 cd /app/backend
 node src/db/migrate.js 2>/dev/null || echo "[entrypoint] No pending migrations (or migrate.js not found)"
 
-# Apply performance indexes (safe to run repeatedly - uses IF NOT EXISTS)
-echo "[entrypoint] Applying performance indexes..."
-node src/db/add-performance-indexes.js 2>/dev/null || echo "[entrypoint] Performance indexes skipped (script not found or error)"
-
 # Start the backend server in the background
 echo "[entrypoint] Starting backend on port 3001..."
 cd /app/backend

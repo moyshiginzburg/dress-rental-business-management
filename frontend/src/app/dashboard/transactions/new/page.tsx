@@ -223,8 +223,8 @@ export default function NewTransactionPage() {
       };
 
       if (isNewCustomer) {
-        if (!newCustomerDetails.name || !newCustomerDetails.phone) {
-          toast({ title: "שגיאה", description: "נא למלא שם וטלפון ללקוחה החדשה", variant: "destructive" });
+        if (!newCustomerDetails.name?.trim()) {
+          toast({ title: "שגיאה", description: "נא להזין שם לקוחה", variant: "destructive" });
           setSaving(false);
           return;
         }

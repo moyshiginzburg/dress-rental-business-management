@@ -156,7 +156,11 @@ The Vercel deployment serves the frontend for nice customer-facing URLs.
 
 | Variable | Value | Purpose |
 |----------|-------|---------|
-| `NEXT_PUBLIC_API_URL` | `https://your-vps.YOUR_TAILSCALE_DOMAIN.ts.net/api` | Points to VPS backend |
+| `NEXT_PUBLIC_API_URL` | `https://your-vps.YOUR_TAILSCALE_DOMAIN.ts.net/api` | Points to VPS backend. Used for: (1) API calls; (2) rewrites—`next.config.js` derives backend base URL from this to proxy `/api/*` and `/uploads/*` (images, agreements) to the VPS. |
+
+**This is the only required variable.** Images use relative paths (`/uploads/...`); rewrites proxy them to the VPS. No extra env vars needed.
+
+**After changing env vars**: Trigger a new deployment (Deployments → Redeploy). If images still don't load, use "Clear cache and deploy" or set `VERCEL_FORCE_NO_BUILD_CACHE=1` to force a clean build.
 
 ### How It Works
 
@@ -164,7 +168,8 @@ The Vercel deployment serves the frontend for nice customer-facing URLs.
 2. Vercel serves the Next.js frontend
 3. Frontend JavaScript calls `NEXT_PUBLIC_API_URL` for API requests
 4. VPS backend processes the request and returns data
-5. CORS allows the configured `PUBLIC_FRONTEND_URL` origin
+5. Dress images and agreement files use relative paths (`/uploads/...`); `next.config.js` rewrites proxy them to the backend
+6. CORS allows the configured `PUBLIC_FRONTEND_URL` origin
 
 ### Agreement Signing Flow
 

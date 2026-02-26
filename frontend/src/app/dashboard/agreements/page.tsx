@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/use-toast";
 import { ExternalLink, FileSignature, FileText, Loader2, PenLine } from "lucide-react";
-import { formatDateTime } from "@/lib/utils";
+import { formatDateTime, resolveFileUrl } from "@/lib/utils";
 
 interface AgreementRecord {
   id: number;
@@ -19,20 +19,6 @@ interface AgreementRecord {
   signature_url: string | null;
   pdf_url: string | null;
   created_at: string;
-}
-
-function resolveFileUrl(pathOrUrl: string | null): string | null {
-  if (!pathOrUrl) return null;
-  if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
-  if (!pathOrUrl.startsWith("/")) return null;
-
-  const apiBase = process.env.NEXT_PUBLIC_API_URL || "/api";
-  if (/^https?:\/\//i.test(apiBase)) {
-    const backendOrigin = apiBase.replace(/\/api\/?$/, "");
-    return `${backendOrigin}${pathOrUrl}`;
-  }
-
-  return pathOrUrl;
 }
 
 export default function AgreementsPage() {

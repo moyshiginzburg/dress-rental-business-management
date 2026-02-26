@@ -15,6 +15,19 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 /**
+ * Resolves a file path for display (e.g. dress images, agreement PDFs).
+ * Returns relative paths (/uploads/...) so the browser requests same-origin;
+ * Next.js rewrites proxy /uploads/* to the backend. Single env var (NEXT_PUBLIC_API_URL)
+ * suffices for rewrites—no extra build-time deps for image URLs.
+ */
+export function resolveFileUrl(pathOrUrl: string | null | undefined): string | null {
+  if (!pathOrUrl) return null;
+  if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
+  if (!pathOrUrl.startsWith("/")) return null;
+  return pathOrUrl;
+}
+
+/**
  * Format a number as Israeli Shekel currency
  */
 export function formatCurrency(amount: number | null | undefined): string {
@@ -125,6 +138,7 @@ export const statusLabels: Record<string, string> = {
   available: 'פנויה',
   sold: 'נמכרה',
   retired: 'הוצאה מהמלאי',
+  custom_sewing: 'תפירה אישית',
 
   // Appointment statuses
   scheduled: 'מתוזמן',
@@ -148,6 +162,7 @@ export function getStatusColor(status: string): string {
     available: 'badge-success',
     sold: 'badge-default',
     retired: 'badge-default',
+    custom_sewing: 'badge-default',
     scheduled: 'badge-info',
     no_show: 'badge-error',
   };

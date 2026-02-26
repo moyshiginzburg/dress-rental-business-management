@@ -32,9 +32,10 @@ const ORDER_TYPE_OPTIONS = [
 ];
 
 const DRESS_STATUS_OPTIONS = [
-  { value: 'available', label: 'זמינה' },
+  { value: 'available', label: 'פנויה' },
   { value: 'sold', label: 'נמכרה' },
-  { value: 'retired', label: 'יצאה ממלאי' },
+  { value: 'retired', label: 'הוצאה מהמלאי' },
+  { value: 'custom_sewing', label: 'תפירה אישית' },
 ];
 
 const DRESS_INTENDED_USE_OPTIONS = [
