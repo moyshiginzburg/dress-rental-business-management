@@ -191,8 +191,12 @@ export default function EditDressPage() {
                                 <label className="text-sm font-bold text-gray-700">מחיר בסיס</label>
                                 <Input
                                     type="number"
+                                    step="1"
                                     value={formData.base_price}
                                     onChange={(e) => setFormData({ ...formData, base_price: e.target.value })}
+                                    onKeyDown={(e) => {
+                                        if (e.key === '.' || e.key === '-') e.preventDefault();
+                                    }}
                                     className="h-14 rounded-2xl bg-muted/30 border-transparent"
                                     placeholder="₪"
                                 />

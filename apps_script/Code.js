@@ -733,7 +733,7 @@ function handleIncomeDetailed(payload) {
                     </tr>
                     <tr>
                         <td style="padding: 8px; border-bottom: 1px solid #eee; font-weight: bold;">סכום ששולם:</td>
-                        <td style="padding: 8px; border-bottom: 1px solid #eee; font-size: 1.2em; color: #28a745; font-weight: bold;">₪${amount.toLocaleString()}</td>
+                        <td style="padding: 8px; border-bottom: 1px solid #eee; font-size: 1.2em; color: #28a745; font-weight: bold;">₪${amount.toLocaleString('en-US')}</td>
                     </tr>
                     ${installments > 1 ? `
                     <tr>

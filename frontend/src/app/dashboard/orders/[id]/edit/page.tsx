@@ -9,11 +9,11 @@
 
 import { useState, useEffect } from "react";
 import { useRouter, useParams } from "next/navigation";
-import { 
-  ArrowRight, 
-  ShoppingBag, 
-  Calendar, 
-  Plus, 
+import {
+  ArrowRight,
+  ShoppingBag,
+  Calendar,
+  Plus,
   Trash2,
   Link2,
   MessageCircle,
@@ -39,7 +39,7 @@ interface OrderItem {
   dress_name: string;
   item_type: string;
   base_price: string;
-  additional_payments: string; 
+  additional_payments: string;
   wearer_name: string;
   notes: string;
 }
@@ -55,7 +55,7 @@ export default function EditOrderPage() {
 
   // Data lists
   const [dresses, setDresses] = useState<{ id: number; name: string; base_price?: number }[]>([]);
-  
+
   // Form State
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
   const [customerName, setCustomerName] = useState("");
@@ -71,14 +71,14 @@ export default function EditOrderPage() {
           dressesApi.available(),
           ordersApi.get(parseInt(orderId))
         ]);
-        
+
         if (dresRes.success) {
           const dData = (dresRes.data as any).dresses;
           setDresses(dData || []);
         } else {
           console.error("Dresses load failed:", dresRes.message);
         }
-        
+
         if (orderRes.success && orderRes.data) {
           const data = orderRes.data as any;
           const order = data.order;
@@ -87,7 +87,7 @@ export default function EditOrderPage() {
           setCustomerPhone(order.customer_phone || "");
           setEventDate(order.event_date ? order.event_date.split("T")[0] : "");
           setNotes(order.notes || "");
-          
+
           if (data.items && Array.isArray(data.items)) {
             setItems(data.items.map((it: any) => ({
               id: it.id,
@@ -214,7 +214,7 @@ export default function EditOrderPage() {
     }
   };
 
-  const totalPrice = items.reduce((sum, item) => 
+  const totalPrice = items.reduce((sum, item) =>
     sum + (parseFloat(item.base_price) || 0) + (parseFloat(item.additional_payments) || 0), 0
   );
 
@@ -239,7 +239,7 @@ export default function EditOrderPage() {
       </div>
 
       <form onSubmit={handleSubmit} className="max-w-4xl mx-auto p-4 sm:p-6 space-y-8">
-        
+
         {/* Date Section */}
         <section className="space-y-4">
           <div className="flex items-center gap-2 text-green-600">
@@ -370,11 +370,11 @@ export default function EditOrderPage() {
                     </div>
 
                     <div className="space-y-2">
-                      <label className="text-sm font-bold text-muted-foreground uppercase tracking-widest text-[10px]">שם הלובשת (אופציונלי)</label>
+                      <label className="text-sm font-bold text-muted-foreground uppercase tracking-widest text-[10px]">שם הלובשת - שם מלא (אופציונלי)</label>
                       <Input
                         value={item.wearer_name}
                         onChange={(e) => updateItem(index, "wearer_name", e.target.value)}
-                        placeholder="מי תלבש את השמלה?"
+                        placeholder="שם מלא (חובה)"
                         className="h-12 rounded-xl border-2"
                       />
                     </div>
@@ -384,8 +384,12 @@ export default function EditOrderPage() {
                         <label className="text-sm font-bold text-muted-foreground uppercase tracking-widest text-[10px]">מחיר בסיס</label>
                         <Input
                           type="number"
+                          step="1"
                           value={item.base_price}
                           onChange={(e) => updateItem(index, "base_price", e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === '.' || e.key === '-') e.preventDefault();
+                          }}
                           placeholder="0"
                           className="h-12 rounded-xl border-2 text-center text-lg font-bold"
                           dir="ltr"
@@ -395,8 +399,12 @@ export default function EditOrderPage() {
                         <label className="text-sm font-bold text-muted-foreground uppercase tracking-widest text-[10px]">תוספות</label>
                         <Input
                           type="number"
+                          step="1"
                           value={item.additional_payments}
                           onChange={(e) => updateItem(index, "additional_payments", e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === '.' || e.key === '-') e.preventDefault();
+                          }}
                           placeholder="0"
                           className="h-12 rounded-xl border-2 text-center text-lg font-bold"
                           dir="ltr"
@@ -447,14 +455,14 @@ export default function EditOrderPage() {
             <p className="text-2xl font-black text-green-600">{formatCurrency(totalPrice)}</p>
           </div>
           <div className="flex-1 flex gap-3">
-            <Button 
-              variant="outline" 
+            <Button
+              variant="outline"
               className="flex-1 h-14 rounded-2xl text-lg font-bold border-2"
               onClick={() => router.back()}
             >
               ביטול
             </Button>
-            <Button 
+            <Button
               className="flex-[2] h-14 rounded-2xl text-lg font-bold shadow-xl shadow-green-500/20 bg-green-600 hover:bg-green-700"
               onClick={handleSubmit}
               disabled={saving}

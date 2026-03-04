@@ -225,13 +225,9 @@ STEP=1
 echo -e "  ${BOLD}${STEP}. Commit and push to GitHub${NC}"
 ((STEP++))
 if [[ -n "$GITHUB_USER" && -n "$GITHUB_REPO" ]]; then
-    echo -e "     ${YELLOW}git init && git add . && git commit -m \"Initial commit\"${NC}"
-    echo -e "     ${YELLOW}git remote add origin git@github.com:${GITHUB_USER}/${GITHUB_REPO}.git${NC}"
-    echo -e "     ${YELLOW}git push -u origin master${NC}"
-else
-    echo -e "     ${YELLOW}git init && git add . && git commit -m \"Initial commit\"${NC}"
-    echo -e "     ${YELLOW}git remote add origin git@github.com:YOUR_USER/YOUR_REPO.git${NC}"
-    echo -e "     ${YELLOW}git push -u origin master${NC}"
+    echo -e "     ${YELLOW}git add .${NC}"
+    echo -e "     ${YELLOW}git commit -m \"Configure for my business\"${NC}"
+    echo -e "     ${YELLOW}git push${NC}"
 fi
 
 echo ""

@@ -252,9 +252,9 @@ router.post('/', async (req, res, next) => {
       const normalizedNewCustomerEmail = new_customer.email?.trim() || null;
       const existingCustomer = normalizedNewCustomerPhone
         ? get(
-            'SELECT id, name, phone, email FROM customers WHERE phone = ?',
-            [normalizedNewCustomerPhone]
-          )
+          'SELECT id, name, phone, email FROM customers WHERE phone = ?',
+          [normalizedNewCustomerPhone]
+        )
         : null;
 
       if (existingCustomer) {
@@ -296,7 +296,7 @@ router.post('/', async (req, res, next) => {
       orderSummary = 'הזמנה';
     }
 
-    const depositAmt = parseFloat(deposit_amount) || 0;
+    const depositAmt = Math.round(parseFloat(deposit_amount)) || 0;
 
     const result = run(
       `INSERT INTO orders (customer_id, event_date, total_price, deposit_amount, paid_amount, notes, order_summary, status)
@@ -304,7 +304,7 @@ router.post('/', async (req, res, next) => {
       [
         finalCustomerId,
         event_date,
-        parseFloat(total_price),
+        Math.round(parseFloat(total_price)),
         depositAmt,
         depositAmt,
         notes || null,
@@ -316,9 +316,9 @@ router.post('/', async (req, res, next) => {
 
     if (items && items.length > 0) {
       for (const item of items) {
-        const basePrice = parseFloat(item.base_price) || 0;
-        const additionalPayments = parseFloat(item.additional_payments) || 0;
-        const finalPrice = parseFloat(item.final_price) || (basePrice + additionalPayments);
+        const basePrice = Math.round(parseFloat(item.base_price)) || 0;
+        const additionalPayments = Math.round(parseFloat(item.additional_payments)) || 0;
+        const finalPrice = Math.round(parseFloat(item.final_price)) || (basePrice + additionalPayments);
         const resolvedItemType = item.item_type || 'rental';
 
         let resolvedWearerName = item.wearer_name || customerData.name;
@@ -365,7 +365,7 @@ router.post('/', async (req, res, next) => {
     if (deposit_payments && Array.isArray(deposit_payments)) {
 
       for (const payment of deposit_payments) {
-        const pAmt = parseFloat(payment.amount) || 0;
+        const pAmt = Math.round(parseFloat(payment.amount)) || 0;
         if (pAmt > 0) {
           let paymentMethod = payment.payment_method || null;
           let confirmationNumber = payment.confirmation_number || null;
@@ -565,9 +565,9 @@ router.put('/:id', (req, res, next) => {
         [
           customer_id || existing.customer_id,
           event_date || existing.event_date,
-          parseFloat(total_price) || existing.total_price,
-          parseFloat(deposit_amount) || existing.deposit_amount,
-          parseFloat(paid_amount) || existing.paid_amount,
+          Math.round(parseFloat(total_price)) || existing.total_price,
+          Math.round(parseFloat(deposit_amount)) || existing.deposit_amount,
+          Math.round(parseFloat(paid_amount)) || existing.paid_amount,
           status || existing.status,
           notes || null,
           id
@@ -593,9 +593,9 @@ router.put('/:id', (req, res, next) => {
         const itemSummaries = [];
 
         for (const item of items) {
-          const basePrice = parseFloat(item.base_price) || 0;
-          const additionalPayments = parseFloat(item.additional_payments) || 0;
-          const finalPrice = parseFloat(item.final_price) || (basePrice + additionalPayments);
+          const basePrice = Math.round(parseFloat(item.base_price)) || 0;
+          const additionalPayments = Math.round(parseFloat(item.additional_payments)) || 0;
+          const finalPrice = Math.round(parseFloat(item.final_price)) || (basePrice + additionalPayments);
           const resolvedItemType = item.item_type || 'rental';
 
           run(

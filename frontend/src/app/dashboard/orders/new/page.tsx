@@ -12,15 +12,15 @@
 
 import { useState, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { 
-  ArrowRight, 
-  User, 
-  ShoppingBag, 
-  Calendar, 
-  Plus, 
-  X, 
-  Upload, 
-  Check, 
+import {
+  ArrowRight,
+  User,
+  ShoppingBag,
+  Calendar,
+  Plus,
+  X,
+  Upload,
+  Check,
   Search,
   CreditCard,
   Trash2,
@@ -50,7 +50,7 @@ interface OrderItem {
   dress_name: string;
   item_type: string;
   base_price: string;
-  additional_payments: string; 
+  additional_payments: string;
   wearer_name: string;
   notes: string;
 }
@@ -116,13 +116,13 @@ export default function NewOrderPage() {
   // Data lists
   const [customers, setCustomers] = useState<{ id: number; name: string; phone: string }[]>([]);
   const [dresses, setDresses] = useState<Dress[]>([]);
-  
+
   // Form State
   const [customerMode, setCustomerMode] = useState<"search" | "new">("search");
   const [customerSearch, setCustomerSearch] = useState("");
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
   const [newCustomer, setNewCustomer] = useState({ name: "", phone: "", email: "" });
-  
+
   const [eventDate, setEventDate] = useState("");
   const [notes, setNotes] = useState("");
   const [items, setItems] = useState<OrderItem[]>([
@@ -140,7 +140,7 @@ export default function NewOrderPage() {
           dressesApi.available(),
           customersApi.list({ limit: 10 })
         ]);
-        
+
         if (dresRes.success) {
           const data = (dresRes.data as any).dresses;
           console.log("Dresses loaded:", data?.length);
@@ -292,7 +292,7 @@ export default function NewOrderPage() {
   const handleDepositFileChange = (e: React.ChangeEvent<HTMLInputElement>, paymentIndex: number) => {
     const file = e.target.files?.[0];
     if (file) {
-      if (file.size > 5 * 1024 * 1024) { 
+      if (file.size > 5 * 1024 * 1024) {
         toast({ title: "שגיאה", description: "הקובץ גדול מדי (מקסימום 5MB)", variant: "destructive" });
         return;
       }
@@ -421,7 +421,7 @@ export default function NewOrderPage() {
     }
   };
 
-  const totalPrice = items.reduce((sum, item) => 
+  const totalPrice = items.reduce((sum, item) =>
     sum + (parseFloat(item.base_price) || 0) + (parseFloat(item.additional_payments) || 0), 0
   );
 
@@ -507,14 +507,14 @@ export default function NewOrderPage() {
       </div>
 
       <form onSubmit={handleSubmit} className="max-w-4xl mx-auto p-4 sm:p-6 space-y-8">
-        
+
         {/* Customer Section */}
         <section className="space-y-4">
           <div className="flex items-center gap-2 text-green-600">
             <User className="h-5 w-5" />
             <h2 className="font-bold text-lg">פרטי לקוחה</h2>
           </div>
-          
+
           <Card className="overflow-hidden border-2 focus-within:border-green-500/50 transition-colors">
             <div className="bg-muted/50 p-1 flex">
               <button
@@ -538,7 +538,7 @@ export default function NewOrderPage() {
                 לקוחה חדשה
               </button>
             </div>
-            
+
             <CardContent className="p-4 sm:p-6">
               {customerMode === "search" ? (
                 <div className="space-y-4">
@@ -551,7 +551,7 @@ export default function NewOrderPage() {
                       className="pr-10 focus:border-green-600"
                     />
                   </div>
-                  
+
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-48 overflow-y-auto p-1">
                     {customers.map(c => (
                       <button
@@ -560,8 +560,8 @@ export default function NewOrderPage() {
                         onClick={() => setSelectedCustomerId(c.id.toString())}
                         className={cn(
                           "flex items-center justify-between p-3 rounded-xl border-2 text-right transition-all",
-                          selectedCustomerId === c.id.toString() 
-                            ? "border-green-600 bg-green-50 shadow-sm" 
+                          selectedCustomerId === c.id.toString()
+                            ? "border-green-600 bg-green-50 shadow-sm"
                             : "border-transparent bg-muted/30 hover:bg-muted"
                         )}
                       >
@@ -590,7 +590,7 @@ export default function NewOrderPage() {
               ) : (
                 <div className="space-y-6">
                   <div className="flex justify-end">
-                    <ContactPicker 
+                    <ContactPicker
                       onContactSelect={(contact) => {
                         setNewCustomer({
                           name: contact.name,
@@ -606,7 +606,7 @@ export default function NewOrderPage() {
                       <label className="text-sm font-medium">שם מלא *</label>
                       <Input
                         value={newCustomer.name}
-                        onChange={(e) => setNewCustomer({...newCustomer, name: e.target.value})}
+                        onChange={(e) => setNewCustomer({ ...newCustomer, name: e.target.value })}
                         placeholder="שם הלקוחה"
                         className="focus:border-green-600"
                       />
@@ -615,7 +615,7 @@ export default function NewOrderPage() {
                       <label className="text-sm font-medium">טלפון *</label>
                       <Input
                         value={newCustomer.phone}
-                        onChange={(e) => setNewCustomer({...newCustomer, phone: normalizePhoneInput(e.target.value)})}
+                        onChange={(e) => setNewCustomer({ ...newCustomer, phone: normalizePhoneInput(e.target.value) })}
                         placeholder="050-0000000"
                         className="text-left focus:border-green-600"
                         dir="ltr"
@@ -626,7 +626,7 @@ export default function NewOrderPage() {
                       <Input
                         type="email"
                         value={newCustomer.email}
-                        onChange={(e) => setNewCustomer({...newCustomer, email: e.target.value})}
+                        onChange={(e) => setNewCustomer({ ...newCustomer, email: e.target.value })}
                         placeholder="example@mail.com"
                         className="text-left focus:border-green-600"
                         dir="ltr"
@@ -787,7 +787,7 @@ export default function NewOrderPage() {
                         <Input
                           value={item.wearer_name}
                           onChange={(e) => updateItem(index, "wearer_name", e.target.value)}
-                          placeholder="מי תלבש את השמלה?"
+                          placeholder="שם מלא (חובה)"
                           className="focus:border-green-600"
                         />
                       </div>
@@ -797,8 +797,12 @@ export default function NewOrderPage() {
                           <label className="text-sm font-bold text-muted-foreground uppercase tracking-widest text-[10px]">מחיר בסיס</label>
                           <Input
                             type="number"
+                            step="1"
                             value={item.base_price}
                             onChange={(e) => updateItem(index, "base_price", e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === '.' || e.key === '-') e.preventDefault();
+                            }}
                             placeholder="0"
                             className="text-center text-lg font-bold focus:border-green-600"
                             dir="ltr"
@@ -808,8 +812,12 @@ export default function NewOrderPage() {
                           <label className="text-sm font-bold text-muted-foreground uppercase tracking-widest text-[10px]">תוספות</label>
                           <Input
                             type="number"
+                            step="1"
                             value={item.additional_payments}
                             onChange={(e) => updateItem(index, "additional_payments", e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === '.' || e.key === '-') e.preventDefault();
+                            }}
                             placeholder="0"
                             className="text-center text-lg font-bold focus:border-green-600"
                             dir="ltr"
@@ -848,9 +856,9 @@ export default function NewOrderPage() {
               <CreditCard className="h-5 w-5" />
               <h2 className="font-bold text-lg">תשלום מקדמה</h2>
             </div>
-            <Button 
-              type="button" 
-              variant="outline" 
+            <Button
+              type="button"
+              variant="outline"
               onClick={() => setDepositPayments([...depositPayments, { amount: "", method: "cash", notes: "", confirmation_number: "", last_four_digits: "", installments: "1" }])}
               className="rounded-xl border-green-600 text-green-600"
             >
@@ -866,11 +874,15 @@ export default function NewOrderPage() {
                     <label className="text-[10px] font-bold text-muted-foreground">סכום</label>
                     <Input
                       type="number"
+                      step="1"
                       value={payment.amount}
                       onChange={(e) => {
                         const next = [...depositPayments];
                         next[index].amount = e.target.value;
                         setDepositPayments(next);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === '.' || e.key === '-') e.preventDefault();
                       }}
                       placeholder="0"
                       className="text-center font-bold focus:border-green-600"
@@ -962,9 +974,9 @@ export default function NewOrderPage() {
                   {/* Bank Transfer Details */}
                   {payment.method === "transfer" && (
                     <div className="sm:col-span-4 grid grid-cols-3 gap-2">
-                      <Input 
-                        placeholder="מס' בנק" 
-                        className="h-10 text-center focus:border-green-600" 
+                      <Input
+                        placeholder="מס' בנק"
+                        className="h-10 text-center focus:border-green-600"
                         value={payment.bank_details?.bank || ""}
                         onChange={(e) => {
                           const next = [...depositPayments];
@@ -973,9 +985,9 @@ export default function NewOrderPage() {
                           setDepositPayments(next);
                         }}
                       />
-                      <Input 
-                        placeholder="מס' סניף" 
-                        className="h-10 text-center focus:border-green-600" 
+                      <Input
+                        placeholder="מס' סניף"
+                        className="h-10 text-center focus:border-green-600"
                         value={payment.bank_details?.branch || ""}
                         onChange={(e) => {
                           const next = [...depositPayments];
@@ -984,9 +996,9 @@ export default function NewOrderPage() {
                           setDepositPayments(next);
                         }}
                       />
-                      <Input 
-                        placeholder="מס' חשבון" 
-                        className="h-10 text-center focus:border-green-600" 
+                      <Input
+                        placeholder="מס' חשבון"
+                        className="h-10 text-center focus:border-green-600"
                         value={payment.bank_details?.account || ""}
                         onChange={(e) => {
                           const next = [...depositPayments];
@@ -1001,9 +1013,9 @@ export default function NewOrderPage() {
                   {/* Check Details */}
                   {payment.method === "check" && (
                     <div className="sm:col-span-4 grid grid-cols-4 gap-2">
-                      <Input 
-                        placeholder="מס' צ'ק" 
-                        className="h-10 text-center focus:border-green-600" 
+                      <Input
+                        placeholder="מס' צ'ק"
+                        className="h-10 text-center focus:border-green-600"
                         value={payment.check_number || ""}
                         onChange={(e) => {
                           const next = [...depositPayments];
@@ -1011,9 +1023,9 @@ export default function NewOrderPage() {
                           setDepositPayments(next);
                         }}
                       />
-                      <Input 
-                        placeholder="מס' בנק" 
-                        className="h-10 text-center focus:border-green-600" 
+                      <Input
+                        placeholder="מס' בנק"
+                        className="h-10 text-center focus:border-green-600"
                         value={payment.bank_details?.bank || ""}
                         onChange={(e) => {
                           const next = [...depositPayments];
@@ -1022,9 +1034,9 @@ export default function NewOrderPage() {
                           setDepositPayments(next);
                         }}
                       />
-                      <Input 
-                        placeholder="מס' סניף" 
-                        className="h-10 text-center focus:border-green-600" 
+                      <Input
+                        placeholder="מס' סניף"
+                        className="h-10 text-center focus:border-green-600"
                         value={payment.bank_details?.branch || ""}
                         onChange={(e) => {
                           const next = [...depositPayments];
@@ -1033,9 +1045,9 @@ export default function NewOrderPage() {
                           setDepositPayments(next);
                         }}
                       />
-                      <Input 
-                        placeholder="מס' חשבון" 
-                        className="h-10 text-center focus:border-green-600" 
+                      <Input
+                        placeholder="מס' חשבון"
+                        className="h-10 text-center focus:border-green-600"
                         value={payment.bank_details?.account || ""}
                         onChange={(e) => {
                           const next = [...depositPayments];
@@ -1098,14 +1110,14 @@ export default function NewOrderPage() {
             <p className="text-2xl font-black text-green-600">{formatCurrency(totalPrice)}</p>
           </div>
           <div className="flex-1 flex gap-3">
-            <Button 
-              variant="outline" 
+            <Button
+              variant="outline"
               className="flex-1 h-14 rounded-2xl text-lg font-bold border-2"
               onClick={() => router.back()}
             >
               ביטול
             </Button>
-            <Button 
+            <Button
               className="flex-[2] h-14 rounded-2xl text-lg font-bold shadow-xl shadow-green-500/20 bg-green-600 hover:bg-green-700"
               onClick={handleSubmit}
               disabled={saving}

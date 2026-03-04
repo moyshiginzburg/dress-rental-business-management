@@ -2,6 +2,42 @@
 
 All notable changes to the Dress Rental Business Management System will be documented in this file.
 
+## [1.3.0] - 2026-03-04
+
+### Added - Order Attachments
+
+- **`order_attachments` table:** New database table for storing file attachments linked to orders (images, PDFs, documents).
+- **Backend route:** `order-attachments.js` — Full CRUD API for uploading, listing, downloading, updating description, and deleting order attachments.
+- **Frontend API:** `orderAttachmentsApi` added to `api.ts` with `list`, `upload`, `updateDescription`, `delete`, and `downloadUrl` helpers.
+
+### Added - Dress Search Enhancement
+
+- **Search by wearer name:** The dress inventory search (`GET /api/dresses`) now also searches by wearer names from `dress_history` and `order_items` tables.
+- **Updated search placeholder:** Dress search input now reads "חיפוש לפי שם שמלה או שם לובשת..." to reflect the expanded search.
+
+### Changed - Integer Enforcement for Monetary Values
+
+- **Backend:** All monetary fields (`base_price`, `total_price`, `amount`, `deposit_amount`, `paid_amount`, `additional_payments`, `final_price`, `customer_charge_amount`) are now rounded to the nearest integer using `Math.round()` before storage in `orders.js`, `transactions.js`, and `dresses.js`.
+- **Frontend:** All financial number inputs across 5 pages (orders new/edit, transactions new, dresses new/edit) now include `step="1"` and `onKeyDown` handlers that prevent entering decimal points (`.`) or minus signs (`-`).
+
+### Changed - Orders Page UI Improvements
+
+- **Notes badge:** Order cards now display an orange badge with a FileText icon showing truncated order notes, visible at a glance.
+- **WhatsApp button relocation:** The WhatsApp button is now a compact green circle next to the phone number in each order card, instead of a large separate action button.
+- **Full notes in detail modal:** The order detail modal now shows order notes in a styled orange box with `whitespace-pre-wrap` for multiline support.
+- **Action buttons cleanup:** Delete button now includes "ביטול" text label and uses `stopPropagation()` for safer event handling.
+
+### Changed - Form Labels & Placeholders
+
+- **Wearer name placeholder:** Changed from "מי תלבש את השמלה?" to "שם מלא (חובה)" in both new and edit order forms.
+- **Wearer name label (edit):** Changed from "שם הלובשת (אופציונלי)" to "שם הלובשת - שם מלא (אופציונלי)".
+
+### Fixed - Email Number Formatting
+
+- **Apps Script `Code.js`:** `amount.toLocaleString()` changed to `amount.toLocaleString('en-US')` to ensure comma separators (e.g., 1,000) instead of locale-dependent formatting in notification emails.
+
+---
+
 ## [1.2.0] - 2026-02-26
 
 ### Added - Direct Install Option (Backend-Only via pm2)

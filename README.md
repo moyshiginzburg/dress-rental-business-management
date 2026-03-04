@@ -31,11 +31,21 @@ Replace spreadsheets and paper records with a modern, mobile-friendly app — co
 
 ## 🚀 Quick Start (5 minutes to running)
 
-### Step 1 — Clone & configure
+### Step 1 — Create repository & configure
+
+1. Click the green **Use this template** button (top right of this page).
+2. Choose **Create a new repository**.
+3. Name your repository and make sure to set it as **Private**.
+4. Clone your new private repository to your machine:
 
 ```bash
 git clone https://github.com/YOUR_USERNAME/YOUR_REPO_NAME.git
 cd YOUR_REPO_NAME
+```
+
+5. Run the configuration script:
+
+```bash
 bash scripts/configure.sh
 ```
 

@@ -205,6 +205,25 @@ CREATE TABLE IF NOT EXISTS agreements (
 );
 `;
 
+// Order attachments - files (images, documents) linked to orders
+export const createOrderAttachmentsTable = `
+CREATE TABLE IF NOT EXISTS order_attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL,
+    original_name TEXT NOT NULL,
+    stored_name TEXT NOT NULL,
+    mime_type TEXT,
+    size_bytes INTEGER DEFAULT 0,
+    description TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+);
+`;
+
+export const createOrderAttachmentsIndex = `
+CREATE INDEX IF NOT EXISTS idx_order_attachments_order_id ON order_attachments(order_id);
+`;
+
 // Settings table - for system configuration
 export const createSettingsTable = `
 CREATE TABLE IF NOT EXISTS settings (
@@ -248,6 +267,8 @@ export const allSchemaItems = [
     { name: 'order_items_indexes', sql: createOrderItemsIndexes },
     { name: 'agreements', sql: createAgreementsTable },
     { name: 'agreements_indexes', sql: createAgreementsIndexes },
+    { name: 'order_attachments', sql: createOrderAttachmentsTable },
+    { name: 'order_attachments_indexes', sql: createOrderAttachmentsIndex },
     { name: 'settings', sql: createSettingsTable },
 ];
 

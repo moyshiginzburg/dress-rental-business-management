@@ -217,7 +217,7 @@ export default function DressesPage() {
           <div className="relative">
             <Search className="absolute right-4 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-foreground" />
             <Input
-              placeholder="חיפוש לפי שם..."
+              placeholder="חיפוש לפי שם שמלה או שם לובשת..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="h-12 pr-12 rounded-2xl bg-white border-none shadow-sm text-lg"

@@ -1,7 +1,7 @@
 # Database Schema – business.db (SQLite)
 
 > Auto-generated docs — keep in sync with every schema change.
-> Last updated: 2026-02-19
+> Last updated: 2026-03-04
 
 ---
 
@@ -19,6 +19,7 @@
 | transactions | order_id | orders | NO ACTION |
 | agreements | order_id | orders | NO ACTION |
 | agreements | customer_id | customers | NO ACTION |
+| order_attachments | order_id | orders | CASCADE |
 
 ---
 
@@ -178,7 +179,24 @@
 
 ---
 
-### 8. settings
+### 9. order_attachments
+
+| Column | Type | Nullable | Default | PK | Notes |
+|---|---|---|---|---|---|
+| id | INTEGER | NO | AUTOINCREMENT | PK | |
+| order_id | INTEGER | NO | — | | FK → orders (CASCADE) |
+| original_name | TEXT | NO | — | | Original uploaded filename |
+| stored_name | TEXT | NO | — | | UUID-based stored filename |
+| mime_type | TEXT | YES | NULL | | File MIME type |
+| size | INTEGER | YES | 0 | | File size in bytes |
+| description | TEXT | YES | NULL | | User-editable description |
+| created_at | DATETIME | NO | CURRENT_TIMESTAMP | | |
+
+**Indexes:** `idx_order_attachments_order_id`
+
+---
+
+### 10. settings
 
 | Column | Type | Nullable | Default | PK | Notes |
 |---|---|---|---|---|---|
@@ -192,7 +210,7 @@
 
 ---
 
-### 9. users
+### 11. users
 
 | Column | Type | Nullable | Default | PK | Notes |
 |---|---|---|---|---|---|
@@ -321,6 +339,16 @@
 - `value` — Setting value
 - `description` — Human-readable description
 - `updated_at` — Last update timestamp
+
+### order_attachments
+- `id` — Auto-increment primary key
+- `order_id` — FK to order (cascading delete removes files)
+- `original_name` — Original filename at upload
+- `stored_name` — UUID-based stored filename on disk
+- `mime_type` — File MIME type (image/jpeg, application/pdf, etc.)
+- `size` — File size in bytes
+- `description` — User-editable text description
+- `created_at` — Upload timestamp
 
 ### users
 - `id` — Auto-increment primary key

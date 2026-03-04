@@ -88,13 +88,17 @@ router.get('/', (req, res, next) => {
       sortOrder = 'asc'
     } = req.query;
 
-    let sql = 'SELECT * FROM dresses WHERE is_active = 1';
+    let sql = 'SELECT d.* FROM dresses d WHERE d.is_active = 1';
     const params = [];
 
-    // Add search filter
+    // Add search filter — searches by dress name OR wearer names from history/orders
     if (search) {
-      sql += ' AND name LIKE ?';
-      params.push(`%${search}%`);
+      sql += ` AND (d.name LIKE ? OR d.id IN (
+        SELECT DISTINCT dh.dress_id FROM dress_history dh WHERE dh.wearer_name LIKE ?
+        UNION
+        SELECT DISTINCT oi.dress_id FROM order_items oi WHERE oi.wearer_name LIKE ?
+      ))`;
+      params.push(`%${search}%`, `%${search}%`, `%${search}%`);
     }
 
     // Add status filter
@@ -102,17 +106,17 @@ router.get('/', (req, res, next) => {
       if (!validStatuses.includes(status)) {
         throw new ApiError(400, 'סטטוס לא תקין');
       }
-      sql += ' AND status = ?';
+      sql += ' AND d.status = ?';
       params.push(status);
     }
 
     if (intended_use) {
       if (intended_use === '__empty__') {
-        sql += ' AND intended_use IS NULL';
+        sql += ' AND d.intended_use IS NULL';
       } else if (!validIntendedUses.includes(intended_use)) {
         throw new ApiError(400, 'ייעוד שמלה לא תקין');
       } else {
-        sql += ' AND intended_use = ?';
+        sql += ' AND d.intended_use = ?';
         params.push(intended_use);
       }
     }
@@ -121,7 +125,7 @@ router.get('/', (req, res, next) => {
     const validSortColumns = ['name', 'total_income', 'rental_count', 'updated_at'];
     const sortColumn = validSortColumns.includes(sortBy) ? sortBy : 'name';
     const order = sortOrder.toLowerCase() === 'desc' ? 'DESC' : 'ASC';
-    sql += ` ORDER BY ${sortColumn} ${order}`;
+    sql += ` ORDER BY d.${sortColumn} ${order}`;
 
     // Add pagination
     const pageNum = parseInt(page, 10);
@@ -133,21 +137,25 @@ router.get('/', (req, res, next) => {
     const dresses = all(sql, params);
 
     // Get total count
-    let countSql = 'SELECT COUNT(*) as total FROM dresses WHERE is_active = 1';
+    let countSql = 'SELECT COUNT(*) as total FROM dresses d WHERE d.is_active = 1';
     const countParams = [];
     if (search) {
-      countSql += ' AND name LIKE ?';
-      countParams.push(`%${search}%`);
+      countSql += ` AND (d.name LIKE ? OR d.id IN (
+        SELECT DISTINCT dh.dress_id FROM dress_history dh WHERE dh.wearer_name LIKE ?
+        UNION
+        SELECT DISTINCT oi.dress_id FROM order_items oi WHERE oi.wearer_name LIKE ?
+      ))`;
+      countParams.push(`%${search}%`, `%${search}%`, `%${search}%`);
     }
     if (status) {
-      countSql += ' AND status = ?';
+      countSql += ' AND d.status = ?';
       countParams.push(status);
     }
     if (intended_use) {
       if (intended_use === '__empty__') {
-        countSql += ' AND intended_use IS NULL';
+        countSql += ' AND d.intended_use IS NULL';
       } else {
-        countSql += ' AND intended_use = ?';
+        countSql += ' AND d.intended_use = ?';
         countParams.push(intended_use);
       }
     }
@@ -350,7 +358,7 @@ router.post('/', (req, res, next) => {
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
         name.trim(),
-        parseFloat(base_price) || 0,
+        Math.round(parseFloat(base_price)) || 0,
         status || 'available',
         normalizedIntendedUse,
         normalizedPhotoUrl,
@@ -423,7 +431,7 @@ router.put('/:id', (req, res, next) => {
        WHERE id = ?`,
       [
         name.trim(),
-        parseFloat(base_price) || 0,
+        Math.round(parseFloat(base_price)) || 0,
         status || 'available',
         finalIntendedUse,
         normalizedPhotoUrl,
@@ -508,7 +516,7 @@ router.post('/:id/rental', (req, res, next) => {
         customer_id || null,
         customer_name || null,
         null,
-        parseFloat(amount),
+        Math.round(parseFloat(amount)),
         rental_type || 'rental',
         event_date || null,
         notes || null
@@ -520,7 +528,7 @@ router.post('/:id/rental', (req, res, next) => {
       `UPDATE dresses 
        SET total_income = total_income + ?, rental_count = rental_count + 1, updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
-      [parseFloat(amount), id]
+      [Math.round(parseFloat(amount)), id]
     );
 
     res.status(201).json({

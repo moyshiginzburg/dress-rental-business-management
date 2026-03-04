@@ -26,6 +26,7 @@ import customersRoutes from './routes/customers.js';
 import dressesRoutes from './routes/dresses.js';
 import transactionsRoutes from './routes/transactions.js';
 import ordersRoutes from './routes/orders.js';
+import orderAttachmentsRoutes from './routes/order-attachments.js';
 import agreementsRoutes from './routes/agreements.js';
 import dashboardRoutes from './routes/dashboard.js';
 import exportRoutes from './routes/export.js';
@@ -36,7 +37,8 @@ const uploadDirs = [
   uploadConfig.uploadsDir,
   uploadConfig.signaturesDir,
   uploadConfig.agreementsDir,
-  uploadConfig.dressesDir
+  uploadConfig.dressesDir,
+  uploadConfig.orderAttachmentsDir
 ];
 for (const dir of uploadDirs) {
   if (!existsSync(dir)) {
@@ -157,6 +159,7 @@ app.use('/api/customers', customersRoutes);
 app.use('/api/dresses', dressesRoutes);
 app.use('/api/transactions', transactionsRoutes);
 app.use('/api/orders', ordersRoutes);
+app.use('/api/orders/:orderId/attachments', orderAttachmentsRoutes);
 app.use('/api/agreements', agreementsRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/export', exportRoutes);

@@ -294,10 +294,14 @@ export default function NewTransactionPage() {
           <div className="relative inline-block w-full max-w-[240px]">
             <input
               type="number"
+              step="1"
               inputMode="decimal"
               placeholder="0"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === '.' || e.key === '-') e.preventDefault();
+              }}
               className="text-6xl font-black text-center bg-transparent border-none focus:outline-none w-full placeholder:text-muted/20"
               autoFocus
             />
@@ -642,8 +646,12 @@ export default function NewTransactionPage() {
                 {expenseAllocation === "split" && (
                   <Input
                     type="number"
+                    step="1"
                     value={customerChargeAmount}
                     onChange={(e) => setCustomerChargeAmount(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === '.' || e.key === '-') e.preventDefault();
+                    }}
                     placeholder="כמה היא משלמת?"
                     className="h-11 rounded-xl border-2"
                   />

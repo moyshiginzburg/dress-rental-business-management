@@ -89,6 +89,7 @@ export const uploadConfig = {
   signaturesDir: join(DATA_DIR, 'uploads', 'signatures'),
   agreementsDir: join(DATA_DIR, 'uploads', 'agreements'),
   dressesDir: join(DATA_DIR, 'uploads', 'dresses'),
+  orderAttachmentsDir: join(DATA_DIR, 'uploads', 'order_attachments'),
   maxFileSize: 5 * 1024 * 1024, // 5MB
   allowedImageTypes: ['image/jpeg', 'image/png', 'image/webp'],
 };

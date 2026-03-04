@@ -323,6 +323,39 @@ export const ordersApi = {
     api.post('/orders/merge', { targetOrderId, sourceOrderId, updatedOrderData }),
 };
 
+/**
+ * Order Attachments API
+ *
+ * Purpose: Manage file attachments linked to orders.
+ * Provides list, upload, update, delete, and download helpers.
+ */
+export const orderAttachmentsApi = {
+  list: (orderId: number) =>
+    api.get(`/orders/${orderId}/attachments`),
+
+  upload: async (orderId: number, files: File[]) => {
+    const formData = new FormData();
+    files.forEach(f => formData.append('files', f));
+    const res = await fetch(`${API_BASE}/orders/${orderId}/attachments`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${api.getToken()}` },
+      body: formData,
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || json.message || 'Upload failed');
+    return json;
+  },
+
+  updateDescription: (orderId: number, attachmentId: number, description: string) =>
+    api.patch(`/orders/${orderId}/attachments/${attachmentId}`, { description }),
+
+  delete: (orderId: number, attachmentId: number) =>
+    api.delete(`/orders/${orderId}/attachments/${attachmentId}`),
+
+  downloadUrl: (orderId: number, attachmentId: number) =>
+    `${API_BASE}/orders/${orderId}/attachments/${attachmentId}/download`,
+};
+
 export interface ExportFilterOption {
   value: string;
   label: string;

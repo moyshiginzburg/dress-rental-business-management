@@ -13,7 +13,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { DateRangeFilter } from "@/components/ui/date-range-filter";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ordersApi, agreementsApi } from "@/lib/api";
+import { ordersApi, agreementsApi, orderAttachmentsApi } from "@/lib/api";
 import {
   formatCurrency,
   formatDateShort,
@@ -37,6 +37,9 @@ import {
   CreditCard,
   Eye,
   Check,
+  FileText,
+  Paperclip,
+  Download,
 } from "lucide-react";
 
 interface Order {
@@ -60,6 +63,19 @@ interface Order {
 interface OrderDetailData {
   order: Order;
   items: any[];
+}
+
+interface Attachment {
+  id: number;
+  order_id: number;
+  original_name: string;
+  stored_name: string;
+  mime_type: string | null;
+  size_bytes: number;
+  description: string | null;
+  url: string;
+  download_url: string;
+  created_at: string;
 }
 
 // Helper to translate item type to Hebrew
@@ -101,6 +117,13 @@ export default function OrdersPage() {
     status: "active"
   });
   const [savingMerge, setSavingMerge] = useState(false);
+
+  // Attachments state
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [loadingAttachments, setLoadingAttachments] = useState(false);
+  const [uploadingFiles, setUploadingFiles] = useState(false);
+  const [editingDescId, setEditingDescId] = useState<number | null>(null);
+  const [editingDescText, setEditingDescText] = useState("");
 
   useEffect(() => {
     const orderId = searchParams.get("id");
@@ -207,12 +230,72 @@ export default function OrdersPage() {
       const response = await ordersApi.get(orderId);
       if (response.success && response.data) {
         setViewingOrderData(response.data as OrderDetailData);
+        fetchAttachments((response.data as OrderDetailData).order.id);
       }
     } catch (error) {
       toast({ title: "שגיאה", description: "לא ניתן לטעון פרטים", variant: "destructive" });
     } finally {
       setLoadingOrderDetails(false);
     }
+  };
+
+  // Fetch attachments when viewing an order
+  const fetchAttachments = async (orderId: number) => {
+    setLoadingAttachments(true);
+    try {
+      const res = await orderAttachmentsApi.list(orderId);
+      if (res.success && res.data) {
+        setAttachments((res.data as any).attachments || []);
+      }
+    } catch { /* silent */ } finally {
+      setLoadingAttachments(false);
+    }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!viewingOrderData || !e.target.files?.length) return;
+    const files = Array.from(e.target.files);
+    setUploadingFiles(true);
+    try {
+      await orderAttachmentsApi.upload(viewingOrderData.order.id, files);
+      toast({ title: "הצלחה", description: `${files.length} קבצים הועלו` });
+      fetchAttachments(viewingOrderData.order.id);
+    } catch (error) {
+      toast({ title: "שגיאה", description: error instanceof Error ? error.message : "שגיאה בהעלאה", variant: "destructive" });
+    } finally {
+      setUploadingFiles(false);
+      e.target.value = "";
+    }
+  };
+
+  const handleDeleteAttachment = async (attachmentId: number) => {
+    if (!viewingOrderData || !confirm("למחוק קובץ זה?")) return;
+    try {
+      await orderAttachmentsApi.delete(viewingOrderData.order.id, attachmentId);
+      setAttachments(prev => prev.filter(a => a.id !== attachmentId));
+      toast({ title: "הצלחה", description: "קובץ נמחק" });
+    } catch {
+      toast({ title: "שגיאה", description: "שגיאה במחיקה", variant: "destructive" });
+    }
+  };
+
+  const handleSaveDescription = async (attachmentId: number) => {
+    if (!viewingOrderData) return;
+    try {
+      await orderAttachmentsApi.updateDescription(viewingOrderData.order.id, attachmentId, editingDescText);
+      setAttachments(prev => prev.map(a => a.id === attachmentId ? { ...a, description: editingDescText } : a));
+      setEditingDescId(null);
+    } catch {
+      toast({ title: "שגיאה", description: "שגיאה בעדכון תיאור", variant: "destructive" });
+    }
+  };
+
+  const isImageMime = (mime: string | null) => mime?.startsWith("image/");
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
   const handleCreateSignLinkForViewedOrder = async (openWhatsapp: boolean) => {
@@ -435,10 +518,24 @@ export default function OrdersPage() {
                             </span>
                           </div>
                           <h3 className="text-2xl font-black mb-1">{order.customer_name}</h3>
-                          <p className="text-sm font-medium text-muted-foreground mb-4">{formatPhoneNumber(order.customer_phone)}</p>
+                          <div className="flex items-center gap-2 mb-4">
+                            <p className="text-sm font-medium text-muted-foreground">{formatPhoneNumber(order.customer_phone)}</p>
+                            {order.customer_phone && (
+                              <a
+                                href={createWhatsAppLink(order.customer_phone)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="h-7 w-7 bg-green-500 hover:bg-green-600 justify-center text-white rounded-full flex items-center transition-colors shadow-sm"
+                                title="שלחי הודעת וואטסאפ"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <MessageCircle className="h-3.5 w-3.5" />
+                              </a>
+                            )}
+                          </div>
                         </div>
 
-                        <div className="flex items-center gap-2 mt-auto pt-4 border-t border-muted">
+                        <div className="flex flex-wrap items-center gap-2 mt-auto pt-4 border-t border-muted">
                           {order.event_date && (
                             <div className="flex items-center gap-1.5 text-xs font-bold text-muted-foreground">
                               <Calendar className="h-3.5 w-3.5" />
@@ -447,9 +544,18 @@ export default function OrdersPage() {
                           )}
                           {order.order_summary && (
                             <>
-                              <span className="mx-1 text-muted-foreground/30">•</span>
+                              <span className="hidden sm:inline text-muted-foreground/30">•</span>
                               <div className="text-xs font-bold text-primary px-2 py-0.5 bg-primary/5 rounded-lg truncate max-w-[200px]">
                                 {order.order_summary}
+                              </div>
+                            </>
+                          )}
+                          {order.notes && (
+                            <>
+                              <span className="hidden sm:inline text-muted-foreground/30">•</span>
+                              <div className="text-xs font-bold text-orange-600 px-2 py-0.5 bg-orange-50 rounded-lg flex items-center gap-1 max-w-[150px]" title={order.notes}>
+                                <FileText className="h-3.5 w-3.5 shrink-0" />
+                                <span className="truncate">{order.notes}</span>
                               </div>
                             </>
                           )}
@@ -523,25 +629,14 @@ export default function OrdersPage() {
                           >
                             <Edit className="h-5 w-5 ml-2" /> עריכה
                           </Button>
-                          <div className="flex gap-2 w-full">
-                            {order.customer_phone && (
-                              <a
-                                href={createWhatsAppLink(order.customer_phone)}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="flex-1 lg:w-auto h-12 bg-green-500 hover:bg-green-600 text-white rounded-2xl flex items-center justify-center transition-colors shadow-lg shadow-green-500/20"
-                              >
-                                <MessageCircle className="h-6 w-6" />
-                              </a>
-                            )}
+                          <div className="flex gap-2 w-full mt-auto mb-auto lg:mt-0 lg:mb-0">
                             {order.status !== "cancelled" && (
                               <Button
                                 variant="ghost"
-                                size="icon"
-                                onClick={() => handleDelete(order)}
-                                className="h-12 w-12 rounded-2xl text-destructive hover:bg-destructive/5"
+                                onClick={(e) => { e.stopPropagation(); handleDelete(order); }}
+                                className="flex-1 lg:w-full rounded-2xl font-bold h-12 text-destructive hover:bg-destructive/5"
                               >
-                                <Trash2 className="h-5 w-5" />
+                                <Trash2 className="h-5 w-5 ml-2" /> ביטול
                               </Button>
                             )}
                           </div>
@@ -704,7 +799,18 @@ export default function OrdersPage() {
                         {getStatusLabel(viewingOrderData.order.status)}
                       </span>
                     </div>
-                    <p className="text-xs text-muted-foreground mt-2">{viewingOrderData.order.order_summary || "אין פירוט נוסף"}</p>
+                    {viewingOrderData.order.order_summary && (
+                      <p className="text-xs text-muted-foreground mt-2">{viewingOrderData.order.order_summary}</p>
+                    )}
+                    {viewingOrderData.order.notes && (
+                      <div className="mt-3 p-3 bg-orange-50 text-orange-800 rounded-xl border border-orange-100 flex items-start gap-2">
+                        <FileText className="h-4 w-4 shrink-0 mt-0.5 text-orange-600" />
+                        <p className="text-sm font-medium whitespace-pre-wrap">{viewingOrderData.order.notes}</p>
+                      </div>
+                    )}
+                    {!viewingOrderData.order.order_summary && !viewingOrderData.order.notes && (
+                      <p className="text-xs text-muted-foreground mt-2">אין טקסט חופשי</p>
+                    )}
                   </div>
                 </div>
 
@@ -801,6 +907,92 @@ export default function OrdersPage() {
                       שליחה לוואטסאפ
                     </Button>
                   </div>
+                </div>
+
+                {/* Attachments Section */}
+                <div className="p-5 bg-muted/20 rounded-[1.5rem] border-2 border-muted space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-green-700">
+                      <Paperclip className="h-4 w-4" />
+                      <h4 className="text-[10px] font-black uppercase tracking-widest">קבצים מצורפים</h4>
+                      {attachments.length > 0 && (
+                        <span className="text-[10px] font-bold bg-green-100 text-green-700 px-2 py-0.5 rounded-full">{attachments.length}</span>
+                      )}
+                    </div>
+                    <label className={cn(
+                      "cursor-pointer inline-flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold border-2 transition-all",
+                      uploadingFiles ? "opacity-50 cursor-wait" : "border-green-600 text-green-600 hover:bg-green-50"
+                    )}>
+                      <Plus className="h-3.5 w-3.5" />
+                      {uploadingFiles ? "מעלה..." : "הוסף קובץ"}
+                      <input type="file" multiple className="hidden" onChange={handleFileUpload} disabled={uploadingFiles} />
+                    </label>
+                  </div>
+
+                  {loadingAttachments ? (
+                    <p className="text-center text-xs text-muted-foreground py-4">טוען קבצים...</p>
+                  ) : attachments.length === 0 ? (
+                    <p className="text-center text-xs text-muted-foreground py-4 italic">אין קבצים מצורפים להזמנה זו</p>
+                  ) : (
+                    <div className="grid grid-cols-1 gap-2">
+                      {attachments.map((att) => (
+                        <div key={att.id} className="flex items-center gap-3 p-3 bg-white border-2 rounded-2xl">
+                          {/* Preview / Icon */}
+                          {isImageMime(att.mime_type) ? (
+                            <a href={att.url} target="_blank" rel="noopener noreferrer" className="shrink-0">
+                              <img src={att.url} alt={att.original_name} className="h-14 w-14 object-cover rounded-xl border" />
+                            </a>
+                          ) : (
+                            <div className="h-14 w-14 rounded-xl bg-muted flex items-center justify-center shrink-0">
+                              <FileText className="h-6 w-6 text-muted-foreground" />
+                            </div>
+                          )}
+
+                          {/* Name / Description */}
+                          <div className="flex-1 min-w-0">
+                            {editingDescId === att.id ? (
+                              <div className="flex items-center gap-1">
+                                <input
+                                  autoFocus
+                                  value={editingDescText}
+                                  onChange={(e) => setEditingDescText(e.target.value)}
+                                  onKeyDown={(e) => { if (e.key === "Enter") handleSaveDescription(att.id); if (e.key === "Escape") setEditingDescId(null); }}
+                                  className="flex-1 h-8 px-2 text-sm border rounded-lg"
+                                  placeholder="תיאור הקובץ..."
+                                />
+                                <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => handleSaveDescription(att.id)}><Check className="h-3.5 w-3.5" /></Button>
+                                <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setEditingDescId(null)}><X className="h-3.5 w-3.5" /></Button>
+                              </div>
+                            ) : (
+                              <p
+                                className="font-bold text-sm truncate cursor-pointer hover:text-green-600 transition-colors"
+                                title="לחצי לעריכת תיאור"
+                                onClick={() => { setEditingDescId(att.id); setEditingDescText(att.description || att.original_name); }}
+                              >
+                                {att.description || att.original_name}
+                              </p>
+                            )}
+                            <p className="text-[10px] text-muted-foreground">{formatFileSize(att.size_bytes)}</p>
+                          </div>
+
+                          {/* Actions */}
+                          <div className="flex gap-1 shrink-0">
+                            <a
+                              href={orderAttachmentsApi.downloadUrl(viewingOrderData.order.id, att.id)}
+                              download
+                              className="h-8 w-8 rounded-lg border flex items-center justify-center text-muted-foreground hover:text-green-600 hover:border-green-300 transition-colors"
+                              title="הורדה"
+                            >
+                              <Download className="h-4 w-4" />
+                            </a>
+                            <Button size="icon" variant="ghost" className="h-8 w-8 rounded-lg text-red-400 hover:text-red-600 hover:bg-red-50" onClick={() => handleDeleteAttachment(att.id)} title="מחיקה">
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             </CardContent>
