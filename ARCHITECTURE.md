@@ -52,8 +52,7 @@ graph LR
     end
     
     subgraph External ["External Services"]
-        GMAIL[Gmail SMTP / Apps Script Web App]
-        APPS[Apps Script]
+        APPS[Apps Script Web App]
         GCAL[Google Calendar]
         GTASK[Google Tasks]
     end
@@ -62,15 +61,14 @@ graph LR
     API_CLIENT -->|HTTP| ROUTES
     ROUTES --> SERVICES
     ROUTES --> DB
-    SERVICES -->|Email| GMAIL
-    SERVICES -->|Email| APPS
+    SERVICES -->|HTTP POST| APPS
     APPS -->|API| GCAL
     APPS -->|API| GTASK
 ```
 
 ---
 
-## 📊 Database Schema (9 Tables)
+## 📊 Database Schema (10 Tables)
 
 **Authoritative reference:** `docs/DB-SCHEMA.md`
 - Use that file for exact table/column/PK/FK/constraints/defaults.
@@ -252,7 +250,7 @@ app/dashboard/page.tsx
 ```
 services/email.js
     ├── Uses: config/index.js (businessConfig, appsScriptConfig)
-    └── Exports: sendToAppsScript, sendNewOrderNotification, sendNewIncomeNotification
+    └── Exports: sendToAppsScript, sendNewOrderNotification, sendDetailedIncomeNotification
 
 services/ai.js
     ├── Uses: Gemini Vision API
@@ -344,17 +342,19 @@ services/pdfGenerator.js
 ### email.js - Core Integration Hub
 The email service is central to all external integrations:
 ```javascript
-// Main function for Google integration
+// Main function for Google integration (HTTP POST — no SMTP needed)
 sendToAppsScript(payload) 
-// Sends JSON via email → Apps Script polls and executes
+// Sends JSON via HTTPS POST to Apps Script Web App
 
 // Payload types:
-// - calendar_wedding: Create calendar event
-// - task_wedding: Create Google Task
-// - notification_income: Forward income notification
-// - notification_order: Forward order notification
-// - sheets_append: Add to Google Sheets
-// - drive_upload: Upload file to Drive
+// - send_email: Relay email to customer
+// - calendar_wedding / calendar: Create calendar event
+// - task_wedding / task: Create Google Task
+// - income_detailed: Detailed income notification (handleIncomeDetailed)
+// - income_notification / expense_notification: Generic notification
+// - order_notification: New order notification (email + calendar + task)
+// - sheets: Append to Google Sheets
+// - drive: Upload file to Drive
 ```
 
 ### ai.js - Receipt Processing
@@ -416,7 +416,7 @@ The system supports two deployment modes. Choose one during `setup-new-server.sh
       │ Vercel auto-deploy (optional)             │ VPS cron poll (1 min)
       ▼                                           ▼
 ┌──────────────────────┐    ┌─────────────────────────────────────────┐
-│  Vercel (optional)   │    │  VPS (Ubuntu 24.04)                    │
+│  Vercel (optional)   │    │  VPS (Ubuntu 24.04 LTS)                │
 │  Frontend only       │───▶│  Docker Container: business-mgmt-app        │
 │                      │    │  ├── Next.js Frontend  :3000            │
 │                      │    │  ├── Express Backend   :3001            │
@@ -448,7 +448,7 @@ The system supports two deployment modes. Choose one during `setup-new-server.sh
       │ Vercel auto-deploy                        │ VPS cron poll (1 min)
       ▼                                           ▼
 ┌──────────────────────┐    ┌─────────────────────────────────────────┐
-│  Vercel              │    │  VPS (Ubuntu 24.04, pm2)               │
+│  Vercel              │    │  VPS (Ubuntu 24.04 LTS, pm2)           │
 │  YOUR_APP_NAME       │    │                                         │
 │  .vercel.app         │    │  pm2: dress-backend                     │
 │  (Frontend)          │───▶│  ├── Express Backend   :3001            │

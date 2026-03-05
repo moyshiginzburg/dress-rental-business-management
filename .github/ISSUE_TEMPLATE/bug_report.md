@@ -21,7 +21,7 @@ assignees: ''
 <!-- What actually happened? -->
 
 ## Environment
-- OS: <!-- e.g. Ubuntu 24.04 -->
+- OS: <!-- e.g. Ubuntu 24.04 LTS -->
 - Node.js version: <!-- run `node --version` -->
 - Browser: <!-- e.g. Chrome 120 -->
 - Deployment: <!-- VPS / Local -->

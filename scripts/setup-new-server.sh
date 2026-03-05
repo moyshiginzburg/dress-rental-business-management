@@ -20,7 +20,7 @@
 #  10. Installs cron jobs (auto-update every minute, backup every hour)
 #
 # Prerequisites:
-#   - Fresh Ubuntu 22.04+ with root/sudo access
+#   - Fresh Ubuntu 24.04 LTS with root/sudo access
 #   - Internet access
 #   - Your .env file content ready to paste
 #   - Your rclone.conf content ready to paste

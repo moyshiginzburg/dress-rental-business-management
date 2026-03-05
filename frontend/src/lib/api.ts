@@ -5,8 +5,11 @@
  * Handles authentication tokens and error responses.
  */
 
-// Use environment variable for API base URL, default to /api for same-origin requests
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || '/api';
+// Use relative path client-side to go through Next.js proxy and avoid CORS cookie issues.
+// Use environment variable only on server-side when running during build or SSR.
+const API_BASE = typeof window !== 'undefined'
+  ? '/api'
+  : (process.env.NEXT_PUBLIC_API_URL || '/api');
 
 interface ApiResponse<T = unknown> {
   success: boolean;
@@ -31,6 +34,10 @@ class ApiClient {
         localStorage.setItem('auth_token', token);
       } else {
         localStorage.removeItem('auth_token');
+        // Clear the auth cookie on logout.
+        // The actual HttpOnly cookie is set by the server and cannot be
+        // read by JS, but we can expire it by setting maxAge to 0.
+        document.cookie = 'auth_token=; path=/; max-age=0; samesite=lax';
       }
     }
   }
@@ -62,6 +69,7 @@ class ApiClient {
       const response = await fetch(`${API_BASE}${endpoint}`, {
         ...options,
         headers,
+        credentials: 'include',  // Always send cookies (auth_token) with requests
       });
 
       const data = await response.json();
@@ -340,6 +348,7 @@ export const orderAttachmentsApi = {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${api.getToken()}` },
       body: formData,
+      credentials: 'include',  // Send auth_token cookie
     });
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || json.message || 'Upload failed');
@@ -404,6 +413,7 @@ async function downloadCsvFile(endpoint: string): Promise<{ blob: Blob; fileName
   const response = await fetch(`${API_BASE}${endpoint}`, {
     method: 'GET',
     headers,
+    credentials: 'include',  // Send auth_token cookie
   });
 
   if (response.status === 401) {

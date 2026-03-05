@@ -16,8 +16,10 @@
     "update-admin": "node src/scripts/update-admin.js"
   },
   "dependencies": {
+    "@types/cookie-parser": "^1.4.10",
     "bcryptjs": "^2.4.3",
     "better-sqlite3": "^11.10.0",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",

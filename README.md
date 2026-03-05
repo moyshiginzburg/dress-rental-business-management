@@ -61,7 +61,7 @@ git push -u origin master
 
 ### Step 3 — Deploy to a VPS
 
-Run this **on your server** (Ubuntu 22.04+):
+Run this **on your server** (Ubuntu 24.04 LTS):
 
 ```bash
 wget -qO setup.sh https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO_NAME/master/scripts/setup-new-server.sh
@@ -91,7 +91,7 @@ Both options include:
 ### Step 4 — Create your admin account
 
 ```bash
-# On the server, inside the project directory:
+# On the server, from the project root directory:
 node backend/src/scripts/create-admin.js
 ```
 
@@ -165,7 +165,7 @@ Two deployment modes are supported:
 ### Option A: Docker Install
 
 ```
-VPS (Ubuntu 24.04, Docker)
+VPS (Ubuntu 24.04 LTS, Docker)
     ├── Docker Container
     │   ├── Next.js Frontend  → :3000
     │   ├── Express Backend   → :3001
@@ -179,7 +179,7 @@ VPS (Ubuntu 24.04, Docker)
 ### Option B: Direct Install
 
 ```
-VPS (Ubuntu 24.04, pm2)
+VPS (Ubuntu 24.04 LTS, pm2)
     ├── pm2: dress-backend (Express)  → :3001
     ├── Chromium + Hebrew fonts (system packages)
     │
@@ -192,7 +192,7 @@ Vercel (separate)
 ```
 
 ### Recommended VPS Specs
-- **OS**: Ubuntu 22.04 or 24.04 LTS
+- **OS**: Ubuntu 24.04 LTS
 - **RAM**: 1GB minimum (Docker needs 2GB+)
 - **Storage**: 20GB+
 - **CPU**: 1 vCPU minimum

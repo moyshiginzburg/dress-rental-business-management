@@ -12,7 +12,9 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import { serverConfig, uploadConfig } from './config/index.js';
+import cookieParser from 'cookie-parser';
+import jwt from 'jsonwebtoken';
+import { serverConfig, uploadConfig, authConfig } from './config/index.js';
 import { notFoundHandler, errorHandler } from './middleware/errorHandler.js';
 import { requestLogger, errorLogger } from './middleware/activityLogger.js';
 import { mkdirSync, existsSync } from 'fs';
@@ -97,8 +99,49 @@ app.use(helmet());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Static files for uploads
-app.use('/uploads', express.static(uploadConfig.uploadsDir));
+// Cookie parser - enables reading cookies from incoming requests.
+// Used to authenticate requests for static files (images, PDFs) served
+// under /uploads, since browsers cannot attach Authorization headers to
+// <img> or <a> requests automatically — only cookies travel with them.
+app.use(cookieParser());
+
+// Protected static files for uploads.
+// Verifies the JWT token from the `auth_token` cookie (or fallback
+// Authorization header) before serving any file. Returns 401 if the
+// token is missing/invalid, preventing unauthenticated access to dress
+// images, signed agreements, expense receipts, and order attachments.
+app.use('/uploads', (req, res, next) => {
+  // 1. Try to get the token from the auth_token cookie
+  let token = req.cookies?.auth_token;
+
+  // 2. Fallback: check the Authorization header (for programmatic access)
+  if (!token) {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.split(' ')[1];
+    }
+  }
+
+  // 3. No token found → deny access
+  if (!token) {
+    return res.status(401).json({
+      success: false,
+      message: 'נדרשת התחברות לצפייה בקבצים'
+    });
+  }
+
+  // 4. Verify the token signature and expiry
+  try {
+    jwt.verify(token, authConfig.jwtSecret);
+    // Token is valid — proceed to serve the static file
+    next();
+  } catch (err) {
+    return res.status(401).json({
+      success: false,
+      message: 'פג תוקף ההתחברות - נא להתחבר מחדש'
+    });
+  }
+}, express.static(uploadConfig.uploadsDir));
 
 // Request logging in development (console)
 if (serverConfig.isDevelopment) {

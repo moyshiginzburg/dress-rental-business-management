@@ -1,6 +1,6 @@
 # 🗺️ PROJECT MAP: dress-rental-business-management
 
-**Generated:** 2026-02-26 15:34:25
+**Generated:** 2026-03-05 09:46:57
 
 > **Note:** This map shows the project structure and code signatures (classes, functions, methods).
 > Run `python3 dev_tools/generate_repo_map.py` to regenerate after significant changes.
@@ -148,6 +148,11 @@
       function escapeCsvValue(value)
       function rowsToCsv(rows, columns)
       function buildDatasetMeta(datasetKey, config)
+      ```
+      #### 📄 order-attachments.js
+      ```
+      function ensureOrderDir(orderId)
+      function assertOrderExists(orderId)
       ```
       #### 📄 orders.js
       ```
@@ -434,6 +439,7 @@
           ```
           interface Order
           interface OrderDetailData
+          interface Attachment
           const getItemTypeLabel = (type: string) =>
           export default function OrdersPage()
             const toggleSelection = (id: number) =>
@@ -442,6 +448,12 @@
             const handleStatusUpdate = async (orderId: number, status: string) =>
             const handleDelete = async (order: Order) =>
             const viewOrder = async (orderId: number) =>
+            const fetchAttachments = async (orderId: number) =>
+            const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) =>
+            const handleDeleteAttachment = async (attachmentId: number) =>
+            const handleSaveDescription = async (attachmentId: number) =>
+            const isImageMime = (mime: string | null) =>
+            const formatFileSize = (bytes: number) =>
             const handleCreateSignLinkForViewedOrder = async (openWhatsapp: boolean) =>
           ```
 
@@ -672,8 +684,14 @@
 ### 📁 local_data/
 
   ### 📁 backend_data/
+    - 📄 business.db
 
 ### 📁 scripts/
+  #### 📄 auto-update-direct.sh
+  ```
+  log() {
+  rotate_auto_update_log() {
+  ```
   #### 📄 auto-update.sh
   ```
   log() {
@@ -690,6 +708,14 @@
   ```
   shutdown() {
   ```
+  #### 📄 pm2-ecosystem.config.js
+  *(no signatures found)*
+  #### 📄 setup-direct-install.sh
+  ```
+  log()  {
+  warn() {
+  error(){
+  ```
   #### 📄 setup-new-server.sh
   ```
   log()    {
@@ -705,12 +731,9 @@
   error()  {
   header() {
   ```
-  #### 📄 start-server.sh
-  ```
-  log() {
-  cleanup() {
-  ```
-  #### 📄 stop-server.sh
+  #### 📄 start-app.sh
+  *(no signatures found)*
+  #### 📄 start-backend.sh
   *(no signatures found)*
   #### 📄 sync-from-cloud.sh
   ```
@@ -721,6 +744,8 @@
   log() {
   ```
   #### 📄 view-logs.sh
+  *(no signatures found)*
+  #### 📄 wait-for-port.sh
   *(no signatures found)*
 
 ### 📁 temp_cache/

@@ -2,6 +2,34 @@
 
 All notable changes to the Dress Rental Business Management System will be documented in this file.
 
+## [1.4.0] - 2026-03-05
+
+### Added - Upload File Protection & Global Route Guard
+
+#### Security: Cookie-Based Authentication for Static Files
+- **Protected `/uploads` directory**: All files (dress images, signed agreements, expense receipts, order attachments) now require authentication. Previously, anyone who knew/guessed a file URL could access it directly without logging in.
+- **Backend: `cookie-parser` middleware** added to `index.js`. The server now reads an `auth_token` cookie on every `/uploads` request and verifies the JWT signature before serving the file. Invalid or missing tokens return `401 Unauthorized`.
+- **Backend: Cookie set on login** in `auth.js`. On successful login, the server sends the JWT as an `HttpOnly` cookie (`auth_token`) with `SameSite=Lax`, `Secure` (production), and `maxAge` matching the JWT expiry (default 7 days). This is transparent to the user — the browser sends it automatically with every request, including `<img>` tags.
+- **Frontend: `credentials: 'include'`** added to all `fetch()` calls in `api.ts` so the browser sends the cookie with every API and file request through the Vercel→VPS proxy.
+- **Frontend: Cookie cleanup on logout** in `api.ts`. When the user logs out, the cookie is expired (`max-age=0`) in addition to clearing `localStorage`.
+
+#### Security: Next.js Middleware for Global Route Protection
+- **New `frontend/src/middleware.ts`**: Intercepts every incoming request on Vercel's Edge before any page renders. Unauthenticated visitors (no `auth_token` cookie) are redirected to `/login` for **all** routes except:
+  - `/login` — public (login page)
+  - `/agreement` — public (customer agreement signing)
+  - `/_next`, `/api`, `/uploads`, static assets — handled separately
+- **Authenticated users visiting `/login`** are automatically redirected to `/dashboard`.
+- **No impact on agreement flow**: The `/agreement` page and its API endpoints remain fully public. Customers signing agreements are unaffected.
+
+#### Global Session Revocation
+- To disconnect all active sessions, change the `JWT_SECRET` value in `local_data/.env` and restart the backend. All existing tokens become invalid immediately.
+
+### Changed
+- **CORS**: `credentials: true` was already configured; no changes needed.
+- **Existing users**: After this update deploys, all logged-in users will need to log in again once to establish the new cookie. Subsequent usage is identical to before.
+
+---
+
 ## [1.3.0] - 2026-03-04
 
 ### Added - Order Attachments

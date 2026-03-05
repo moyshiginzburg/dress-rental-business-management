@@ -18,7 +18,7 @@
 #   9. Installs hourly cloud backup cron job
 #
 # Prerequisites:
-#   - Fresh Ubuntu 22.04+ VPS with root/sudo access
+#   - Fresh Ubuntu 24.04 LTS VPS with root/sudo access
 #   - Internet access
 #   - GitHub SSH key or deploy key added to repo
 #

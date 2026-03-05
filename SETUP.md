@@ -63,7 +63,7 @@ The production system runs in Docker on a VPS with Tailscale Funnel for HTTPS ac
 #### Architecture
 
 ```
-VPS (Ubuntu 24.04, Docker)
+VPS (Ubuntu 24.04 LTS, Docker)
 ├── Docker Container: business-mgmt-app
 │   ├── Next.js Frontend  → port 3000
 │   ├── Express Backend   → port 3001
@@ -113,7 +113,7 @@ The production system runs backend via pm2; frontend is deployed on Vercel.
 #### Architecture
 
 ```
-VPS (Ubuntu 24.04, pm2)
+VPS (Ubuntu 24.04 LTS, pm2)
 ├── pm2: dress-backend (Express Backend → port 3001)
 ├── Chromium + Hebrew fonts (installed as system packages)
 │
@@ -171,7 +171,7 @@ pm2 stop dress-backend
 
 ## Migrating to a New Server
 
-To move everything to a fresh Ubuntu server in ~5 minutes:
+To move everything to a fresh Ubuntu 24.04 LTS server in ~5 minutes:
 
 ```bash
 # On the new server:
@@ -231,7 +231,7 @@ The Vercel deployment serves the frontend for nice customer-facing URLs. **Requi
 3. Business owner sends link to customer via WhatsApp
 4. Customer opens link → signs digitally → backend saves agreement + PDF
 
-The agreement URL is set in `backend/src/routes/agreements.js` (`FORCED_PUBLIC_FRONTEND_URL`).
+The agreement URL is controlled by `PUBLIC_FRONTEND_URL` in your `.env`. If unset, it falls back to a hardcoded default in `backend/src/routes/agreements.js`. Set `PUBLIC_FRONTEND_URL` to your Vercel URL or Tailscale URL so customer signing links point to the correct domain.
 
 ---
 

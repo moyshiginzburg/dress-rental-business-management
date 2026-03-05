@@ -10,7 +10,7 @@
 #   2. Runs fc-cache for font discovery
 #   3. Does NOT install Docker or frontend — frontend stays on Vercel
 #
-# Prerequisites: Ubuntu 22.04+ with sudo/root
+# Prerequisites: Ubuntu 24.04 LTS with sudo/root
 #
 # Usage:
 #   sudo bash scripts/setup-direct-install.sh

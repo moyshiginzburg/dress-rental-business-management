@@ -1,7 +1,7 @@
 # Database Schema – business.db (SQLite)
 
 > Auto-generated docs — keep in sync with every schema change.
-> Last updated: 2026-03-04
+> Last updated: 2026-03-05
 
 ---
 
@@ -188,7 +188,7 @@
 | original_name | TEXT | NO | — | | Original uploaded filename |
 | stored_name | TEXT | NO | — | | UUID-based stored filename |
 | mime_type | TEXT | YES | NULL | | File MIME type |
-| size | INTEGER | YES | 0 | | File size in bytes |
+| size_bytes | INTEGER | YES | 0 | | File size in bytes |
 | description | TEXT | YES | NULL | | User-editable description |
 | created_at | DATETIME | NO | CURRENT_TIMESTAMP | | |
 
@@ -244,7 +244,7 @@
 - `base_price` — Default rental price
 - `total_income` — Cumulative income from all rentals/sales
 - `rental_count` — Number of times rented/sold
-- `status` — Current availability: available / rented / sold / retired
+- `status` — Current availability: available / sold / retired / custom_sewing
 - `intended_use` — Primary purpose: rental or sale
 - `photo_url` — Full-size photo URL
 - `thumbnail_url` — Thumbnail photo URL
@@ -346,7 +346,7 @@
 - `original_name` — Original filename at upload
 - `stored_name` — UUID-based stored filename on disk
 - `mime_type` — File MIME type (image/jpeg, application/pdf, etc.)
-- `size` — File size in bytes
+- `size_bytes` — File size in bytes
 - `description` — User-editable text description
 - `created_at` — Upload timestamp
 
