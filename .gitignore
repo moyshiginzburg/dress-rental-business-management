@@ -5,7 +5,6 @@ client_secret*.json
 
 # Dependencies
 node_modules/
-.venv/
 __pycache__/
 
 # Logs
@@ -31,3 +30,4 @@ coverage/
 # Next.js
 .next/
 out/
+venv/

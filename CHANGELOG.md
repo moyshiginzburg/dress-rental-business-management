@@ -150,3 +150,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hebrew RTL UI with Tailwind CSS + Radix UI components
 - Headless Chromium PDF generation with Hebrew font support
 - JWT authentication with bcrypt password hashing
+
+## 2026-04-15
+- Migrated environment from direnv/.venv to venv.
+- Regenerated requirements.txt from project imports and existing dependency manifests.
+- Updated .gitignore to ignore venv/ and removed obsolete direnv/.venv ignore rules.
+
