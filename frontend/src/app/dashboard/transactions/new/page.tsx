@@ -32,7 +32,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { useToast } from "@/components/ui/use-toast";
 import { transactionsApi, customersApi, ordersApi } from "@/lib/api";
 import { cn, getCategoryLabel, normalizePhoneInput, formatDateInput } from "@/lib/utils";
-import { clearSharedUploadPayload, getSharedUploadPayload } from "@/lib/shared-upload";
+import { clearSharedUploadPayload, getSharedUploadPayload, compressImageForUpload } from "@/lib/shared-upload";
+import { reportClientError } from "@/lib/error-reporter";
 import { ContactPicker } from "@/components/dashboard/contact-picker";
 
 const FORM_INCOME_CATEGORIES = [
@@ -172,27 +173,54 @@ export default function NewTransactionPage() {
     }
   }, [customerSearch]);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      if (file.size > 5 * 1024 * 1024) {
-        toast({ title: "שגיאה", description: "הקובץ גדול מדי", variant: "destructive" });
-        return;
-      }
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const base64String = reader.result as string;
-        setFileBase64(base64String.split(',')[1]);
-        setFileName(file.name);
-      };
-      reader.readAsDataURL(file);
+    if (!file) return;
+
+    // Raw file size check — PDFs are passed through as-is; images are compressed
+    // via canvas below, so only block truly huge files (>20MB raw).
+    if (file.size > 20 * 1024 * 1024) {
+      toast({ title: "הקובץ גדול מדי", description: "הגודל המרבי הוא 20MB. נסי לצלם שוב ברזולוציה נמוכה יותר.", variant: "destructive" });
+      return;
+    }
+
+    try {
+      // Compress images via canvas to avoid exceeding server body-size limits.
+      // Camera photos (8-12MB) become ~200-400KB after resize + JPEG compression.
+      // PDFs pass through unmodified inside compressImageForUpload.
+      const base64 = await compressImageForUpload(file);
+      setFileBase64(base64);
+      setFileName(file.name);
+    } catch (err) {
+      console.error('File read/compress error:', err);
+      toast({ title: "שגיאה בקריאת הקובץ", description: "לא ניתן לקרוא את הקובץ. נסי לצלם שוב.", variant: "destructive" });
+      reportClientError({
+        message: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
+        component: 'NewTransaction',
+        action: 'קריאת קובץ אסמכתא'
+      });
     }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!amount || (!category && type === "expense") || (type === "income" && !uiCategory)) {
-      toast({ title: "חסרים פרטים", description: "נא למלא את כל שדות החובה", variant: "destructive" });
+
+    // --- Specific validation with distinct error messages ---
+    if (!amount) {
+      toast({ title: "חסר סכום", description: "נא להזין את סכום התנועה.", variant: "destructive" });
+      return;
+    }
+    if (type === "income" && !uiCategory) {
+      toast({ title: "חסר סוג הכנסה", description: "נא לבחור סוג הכנסה: הזמנה, תיקונים או אחר.", variant: "destructive" });
+      return;
+    }
+    if (type === "expense" && !category) {
+      toast({ title: "חסרה קטגוריה", description: "נא לבחור קטגוריה להוצאה (חומרים, תקורה וכו').", variant: "destructive" });
+      return;
+    }
+    if (type === "income" && !customerId && !isNewCustomer) {
+      toast({ title: "חסרה לקוחה", description: "נא לחפש ולבחור לקוחה קיימת, או ליצור לקוחה חדשה.", variant: "destructive" });
       return;
     }
 
@@ -223,8 +251,8 @@ export default function NewTransactionPage() {
       };
 
       if (isNewCustomer) {
-        if (!newCustomerDetails.name?.trim()) {
-          toast({ title: "שגיאה", description: "נא להזין שם לקוחה", variant: "destructive" });
+        if (!newCustomerDetails.name.trim()) {
+          toast({ title: "חסר שם לקוחה", description: "נא למלא שם מלא ללקוחה החדשה.", variant: "destructive" });
           setSaving(false);
           return;
         }
@@ -236,7 +264,18 @@ export default function NewTransactionPage() {
       toast({ title: "הצלחה!", description: "הפעולה נרשמה בהצלחה" });
       router.push("/dashboard/transactions");
     } catch (error) {
-      toast({ title: "שגיאה", description: "לא ניתן לשמור את העסקה", variant: "destructive" });
+      // Show the server's specific error message when available,
+      // or a generic fallback if no message is present.
+      const message = error instanceof Error && error.message
+        ? error.message
+        : "לא ניתן לשמור את התנועה. בדקי את החיבור לאינטרנט ונסי שוב.";
+      toast({ title: "שגיאה בשמירה", description: message, variant: "destructive" });
+      reportClientError({
+        message,
+        stack: error instanceof Error ? error.stack : undefined,
+        component: 'NewTransaction',
+        action: 'שמירת תנועה'
+      });
     } finally {
       setSaving(false);
     }
@@ -245,32 +284,32 @@ export default function NewTransactionPage() {
   return (
     <div className="min-h-screen bg-background pb-24">
       {/* Header */}
-      <div className="bg-background/80 backdrop-blur-md border-b px-4 py-4 sticky top-0 z-30">
+      <div className="bg-background/80 backdrop-blur-md border-b px-4 py-2.5 sticky top-0 z-30">
         <div className="max-w-2xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
             <Button variant="ghost" size="icon" onClick={() => router.back()} className="rounded-full">
-              <ArrowRight className="h-6 w-6" />
+              <ArrowRight className="h-5 w-5" />
             </Button>
-            <h1 className="text-xl font-black">תנועה חדשה</h1>
+            <h1 className="text-lg font-black">תנועה חדשה</h1>
           </div>
         </div>
       </div>
 
-      <form onSubmit={handleSubmit} className="max-w-2xl mx-auto p-4 sm:p-6 space-y-8">
+      <form onSubmit={handleSubmit} className="max-w-2xl mx-auto p-3 sm:p-5 pt-3 space-y-4">
 
         {/* Type Selector */}
-        <div className="bg-muted p-1.5 rounded-2xl flex relative overflow-hidden">
+        <div className="bg-muted p-1 rounded-2xl flex relative overflow-hidden">
           <div
             className={cn(
-              "absolute inset-y-1.5 w-[calc(50%-6px)] rounded-xl bg-white shadow-sm transition-all duration-300 ease-spring",
-              type === "expense" ? "translate-x-0" : "translate-x-[calc(100%+6px)]"
+              "absolute inset-y-1 w-[calc(50%-4px)] rounded-xl bg-white shadow-sm transition-all duration-300 ease-spring",
+              type === "expense" ? "translate-x-0" : "translate-x-[calc(100%+4px)]"
             )}
           />
           <button
             type="button"
             onClick={() => setType("expense")}
             className={cn(
-              "flex-1 py-3 text-sm font-black z-10 transition-colors text-center rounded-xl",
+              "flex-1 py-2.5 text-sm font-black z-10 transition-colors text-center rounded-xl",
               type === "expense" ? "text-red-600" : "text-muted-foreground"
             )}
           >
@@ -280,7 +319,7 @@ export default function NewTransactionPage() {
             type="button"
             onClick={() => setType("income")}
             className={cn(
-              "flex-1 py-3 text-sm font-black z-10 transition-colors text-center rounded-xl",
+              "flex-1 py-2.5 text-sm font-black z-10 transition-colors text-center rounded-xl",
               type === "income" ? "text-green-600" : "text-muted-foreground"
             )}
           >
@@ -289,12 +328,11 @@ export default function NewTransactionPage() {
         </div>
 
         {/* Amount Input */}
-        <div className="text-center py-4">
-          <label className="text-xs text-muted-foreground font-bold uppercase tracking-widest mb-2 block">סכום בשקלים</label>
+        <div className="text-center py-1">
+          <label className="text-xs text-muted-foreground font-bold uppercase tracking-widest mb-0.5 block">סכום בשקלים</label>
           <div className="relative inline-block w-full max-w-[240px]">
             <input
               type="number"
-              step="1"
               inputMode="decimal"
               placeholder="0"
               value={amount}
@@ -302,46 +340,30 @@ export default function NewTransactionPage() {
               onKeyDown={(e) => {
                 if (e.key === '.' || e.key === '-') e.preventDefault();
               }}
-              className="text-6xl font-black text-center bg-transparent border-none focus:outline-none w-full placeholder:text-muted/20"
+              className="text-5xl font-black text-center bg-transparent border-none focus:outline-none w-full placeholder:text-muted/20"
               autoFocus
             />
-            <span className="absolute -right-6 top-2 text-3xl text-muted-foreground font-light">₪</span>
+            <span className="absolute -right-5 top-1 text-2xl text-muted-foreground font-light">₪</span>
           </div>
         </div>
 
-        {/* Date & Payment Method */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div className="space-y-2">
-            <label className="text-xs font-bold text-muted-foreground flex items-center gap-1">
-              <Calendar className="h-3 w-3" /> תאריך
-            </label>
-            <Input
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-              className="h-12 rounded-xl border-2"
-            />
-          </div>
-          <div className="space-y-2">
-            <label className="text-xs font-bold text-muted-foreground flex items-center gap-1">
-              <CreditCard className="h-3 w-3" /> אמצעי תשלום
-            </label>
-            <select
-              value={paymentMethod}
-              onChange={(e) => setPaymentMethod(e.target.value)}
-              className="w-full h-12 rounded-xl border-2 bg-background px-3 font-bold"
-            >
-              {PAYMENT_METHODS.map((m) => (
-                <option key={m.value} value={m.value}>{m.label}</option>
-              ))}
-            </select>
-          </div>
+        {/* Date row (compact) */}
+        <div className="flex items-center gap-2 w-fit">
+          <label className="text-xs font-bold text-muted-foreground flex items-center gap-1 whitespace-nowrap">
+            <Calendar className="h-3 w-3" /> תאריך
+          </label>
+          <Input
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            className="h-9 rounded-xl border-2 text-sm w-[160px]"
+          />
         </div>
 
         {/* Income Flow */}
         {type === "income" && (
-          <div className="space-y-6">
-            <div className="space-y-3">
+          <div className="space-y-3">
+            <div className="space-y-2">
               <label className="text-xs font-bold text-muted-foreground uppercase tracking-widest">מה סוג ההכנסה? *</label>
               <div className="grid grid-cols-3 gap-2">
                 {FORM_INCOME_CATEGORIES.map((cat) => (
@@ -356,7 +378,7 @@ export default function NewTransactionPage() {
                       setCustomerId("");
                     }}
                     className={cn(
-                      "py-3 px-1 text-xs font-bold rounded-xl border-2 transition-all",
+                      "py-2.5 px-1 text-xs font-bold rounded-xl border-2 transition-all",
                       uiCategory === cat.value ? "bg-primary text-white border-primary shadow-lg" : "bg-background hover:bg-muted"
                     )}
                   >
@@ -411,7 +433,7 @@ export default function NewTransactionPage() {
                       const balance = order.total_price - order.paid_amount;
                       return (
                         <p className="text-xs font-bold text-green-700 mt-1 flex items-center gap-1">
-                          <Wallet className="h-3 w-3" /> יתרה נוכחית בהזמנה: ₪{balance}
+                          <Wallet className="h-3 w-3" /> חוב נוכחי בהזמנה: ₪{balance}
                         </p>
                       );
                     })()}
@@ -422,11 +444,11 @@ export default function NewTransactionPage() {
             )}
 
             {(uiCategory === "repair" || uiCategory === "other") && (
-              <div className="space-y-4 animate-in fade-in slide-in-from-top-2">
+              <div className="space-y-2 animate-in fade-in slide-in-from-top-2">
                 <label className="text-xs font-bold text-muted-foreground uppercase tracking-widest">מי הלקוחה?</label>
 
                 {isNewCustomer ? (
-                  <div className="bg-primary/5 p-4 rounded-2xl border-2 border-primary/20 space-y-4 animate-in zoom-in-95">
+                  <div className="bg-primary/5 p-4 rounded-2xl border-2 border-primary/20 space-y-3 animate-in zoom-in-95">
                     <div className="flex justify-between items-center">
                       <h3 className="font-bold text-primary flex items-center gap-2">
                         <User className="h-4 w-4" /> פרטי לקוחה חדשה
@@ -548,8 +570,8 @@ export default function NewTransactionPage() {
 
         {/* Expense Flow */}
         {type === "expense" && (
-          <div className="space-y-6">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-2">
                 <label className="text-xs font-bold text-muted-foreground uppercase tracking-widest">ספק / חנות</label>
                 <Input
@@ -570,19 +592,19 @@ export default function NewTransactionPage() {
               </div>
             </div>
 
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <label className="text-xs font-bold text-muted-foreground uppercase tracking-widest">קטגוריה *</label>
               <select
                 value={category}
                 onChange={(e) => setCategory(e.target.value)}
-                className="w-full h-12 rounded-xl border-2 bg-background px-3 font-bold"
+                className="w-full h-10 rounded-xl border-2 bg-background px-3 font-bold text-sm"
               >
                 <option value="">בחרי קטגוריה...</option>
                 {EXPENSE_CATEGORIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
               </select>
             </div>
 
-            <div className="bg-muted p-1.5 rounded-2xl flex gap-1">
+            <div className="bg-muted p-1 rounded-2xl flex gap-1">
               {[
                 { id: "business", label: "עסקית" },
                 { id: "customer", label: "לקוחה" },
@@ -593,7 +615,7 @@ export default function NewTransactionPage() {
                   type="button"
                   onClick={() => setExpenseAllocation(opt.id as any)}
                   className={cn(
-                    "flex-1 py-2 text-xs font-bold rounded-xl transition-all",
+                    "flex-1 py-1.5 text-xs font-bold rounded-xl transition-all",
                     expenseAllocation === opt.id ? "bg-white shadow text-primary" : "text-muted-foreground"
                   )}
                 >
@@ -635,7 +657,7 @@ export default function NewTransactionPage() {
                         const balance = order.total_price - order.paid_amount;
                         return (
                           <p className="text-[10px] font-bold text-red-700 mt-1 flex items-center gap-1">
-                            <Wallet className="h-3 w-3" /> יתרה נוכחית: ₪{balance}
+                            <Wallet className="h-3 w-3" /> חוב נוכחי: ₪{balance}
                           </p>
                         );
                       })()}
@@ -646,7 +668,6 @@ export default function NewTransactionPage() {
                 {expenseAllocation === "split" && (
                   <Input
                     type="number"
-                    step="1"
                     value={customerChargeAmount}
                     onChange={(e) => setCustomerChargeAmount(e.target.value)}
                     onKeyDown={(e) => {
@@ -662,15 +683,43 @@ export default function NewTransactionPage() {
         )}
 
         {/* Global Fields */}
-        <section className="space-y-4">
+        <section className="space-y-3">
 
-          {/* Payment Details - Conditional Fields */}
-          {type === "income" && paymentMethod === "credit" && (
-            <div className="grid grid-cols-3 gap-2 animate-in fade-in slide-in-from-top-2">
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-muted-foreground uppercase">אסמכתא</label>
-                <Input value={confirmationNumber} onChange={(e) => setConfirmationNumber(e.target.value)} placeholder="אישור..." className="h-10 text-center" />
-              </div>
+          {/* Payment method (right half) + primary reference field (left half) */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <label className="text-[11px] font-bold text-muted-foreground flex items-center gap-1">
+                <CreditCard className="h-3 w-3" /> אמצעי תשלום
+              </label>
+              <select
+                value={paymentMethod}
+                onChange={(e) => setPaymentMethod(e.target.value)}
+                className="w-full h-10 rounded-xl border-2 bg-background px-3 text-sm font-bold"
+              >
+                {PAYMENT_METHODS.map((m) => (
+                  <option key={m.value} value={m.value}>{m.label}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="space-y-1">
+              {paymentMethod === "cash" ? null : paymentMethod === "check" ? (
+                <>
+                  <label className="text-[11px] font-bold text-muted-foreground uppercase">מספר צ'ק</label>
+                  <Input value={checkNumber} onChange={(e) => setCheckNumber(e.target.value)} className="h-10" />
+                </>
+              ) : (
+                <>
+                  <label className="text-[11px] font-bold text-muted-foreground uppercase">אסמכתא</label>
+                  <Input value={confirmationNumber} onChange={(e) => setConfirmationNumber(e.target.value)} placeholder="מספר אישור..." className="h-10" />
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* Extra payment detail row — shown only when relevant */}
+          {paymentMethod === "credit" && (
+            <div className="grid grid-cols-2 gap-3 animate-in fade-in slide-in-from-top-2">
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-muted-foreground uppercase">4 ספרות</label>
                 <Input
@@ -678,7 +727,7 @@ export default function NewTransactionPage() {
                   onChange={(e) => setLastFourDigits(e.target.value)}
                   placeholder="****"
                   maxLength={4}
-                  className="h-10 text-center"
+                  className="h-9 text-center"
                 />
               </div>
               <div className="space-y-1">
@@ -688,80 +737,50 @@ export default function NewTransactionPage() {
                   min="1"
                   value={installments}
                   onChange={(e) => setInstallments(e.target.value)}
-                  className="h-10 text-center"
+                  className="h-9 text-center"
                 />
               </div>
             </div>
           )}
 
-          {type === "income" && (paymentMethod === "bit" || paymentMethod === "paybox" || paymentMethod === "transfer") && (
-            <div className="space-y-1 animate-in fade-in slide-in-from-top-2">
-              <label className="text-[10px] font-bold text-muted-foreground uppercase">אסמכתא</label>
-              <Input value={confirmationNumber} onChange={(e) => setConfirmationNumber(e.target.value)} placeholder="מספר אישור..." className="h-10" />
-            </div>
-          )}
-
-          {type === "income" && paymentMethod === "transfer" && (
+          {(paymentMethod === "transfer" || paymentMethod === "check") && (
             <div className="grid grid-cols-3 gap-2 animate-in fade-in slide-in-from-top-2">
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-muted-foreground uppercase">מס' בנק</label>
-                <Input value={bankNumber} onChange={(e) => setBankNumber(e.target.value)} className="h-10 text-center" />
+                <Input value={bankNumber} onChange={(e) => setBankNumber(e.target.value)} className="h-9 text-center" />
               </div>
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-muted-foreground uppercase">מס' סניף</label>
-                <Input value={branchNumber} onChange={(e) => setBranchNumber(e.target.value)} className="h-10 text-center" />
+                <Input value={branchNumber} onChange={(e) => setBranchNumber(e.target.value)} className="h-9 text-center" />
               </div>
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-muted-foreground uppercase">מס' חשבון</label>
-                <Input value={accountNumber} onChange={(e) => setAccountNumber(e.target.value)} className="h-10 text-center" />
+                <Input value={accountNumber} onChange={(e) => setAccountNumber(e.target.value)} className="h-9 text-center" />
               </div>
             </div>
           )}
 
-          {type === "income" && paymentMethod === "check" && (
-            <div className="space-y-2 animate-in fade-in slide-in-from-top-2">
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-muted-foreground uppercase">מספר צ'ק</label>
-                <Input value={checkNumber} onChange={(e) => setCheckNumber(e.target.value)} className="h-10" />
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-muted-foreground uppercase">מס' בנק</label>
-                  <Input value={bankNumber} onChange={(e) => setBankNumber(e.target.value)} className="h-10 text-center" />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-muted-foreground uppercase">מס' סניף</label>
-                  <Input value={branchNumber} onChange={(e) => setBranchNumber(e.target.value)} className="h-10 text-center" />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-muted-foreground uppercase">מס' חשבון</label>
-                  <Input value={accountNumber} onChange={(e) => setAccountNumber(e.target.value)} className="h-10 text-center" />
-                </div>
-              </div>
-            </div>
-          )}
-
-          <div className="space-y-2">
+          <div className="space-y-1">
             <label className="text-xs font-bold text-muted-foreground uppercase tracking-widest">הערות</label>
             <textarea
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               placeholder="פרטים נוספים..."
-              className="w-full h-32 p-4 rounded-2xl border-2 bg-background focus:border-primary outline-none resize-none shadow-inner"
+              className="w-full h-20 p-3 rounded-2xl border-2 bg-background focus:border-primary outline-none resize-none shadow-inner"
             />
           </div>
 
           {/* File upload: always visible for expenses (receipt), hidden for cash income */}
           {(type === "expense" || paymentMethod !== "cash") && (
-            <div className="space-y-2">
+            <div className="space-y-1">
               <label className="text-xs font-bold text-muted-foreground flex items-center gap-1 uppercase tracking-widest">
                 <Camera className="h-3 w-3" /> {type === "expense" ? "צילום קבלה" : "אסמכתא / צילום"}
               </label>
               <label className={cn(
-                "flex flex-col items-center justify-center w-full h-32 rounded-2xl border-2 border-dashed transition-all cursor-pointer",
+                "flex flex-col items-center justify-center w-full h-24 rounded-2xl border-2 border-dashed transition-all cursor-pointer",
                 fileName ? "bg-green-50 border-green-300 text-green-700" : "bg-muted/20 hover:bg-muted/40 text-muted-foreground"
               )}>
-                {fileName ? <Check className="h-8 w-8 mb-2" /> : <Upload className="h-8 w-8 mb-2" />}
+                {fileName ? <Check className="h-6 w-6 mb-1" /> : <Upload className="h-6 w-6 mb-1" />}
                 <span className="font-bold text-sm">{fileName || "לחצי להעלאת קובץ או צילום"}</span>
                 <input type="file" accept="image/*,application/pdf" capture="environment" onChange={handleFileChange} className="hidden" />
               </label>

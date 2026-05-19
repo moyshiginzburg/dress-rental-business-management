@@ -12,13 +12,35 @@ import { Router } from 'express';
 import { run, get, all } from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
 import { ApiError } from '../middleware/errorHandler.js';
-import { isEmailEnabled, sendDetailedIncomeNotification } from '../services/email.js';
+import { sendNewIncomeNotification, isEmailEnabled, sendDetailedIncomeNotification, sendDriveRename } from '../services/email.js';
 import { extractReceiptDetails } from '../services/ai.js';
 import { sanitizePaymentDetails } from '../services/paymentDetails.js';
 import { normalizePhoneNumber } from '../services/phone.js';
 import { saveExpenseReceipt, renameExpenseReceipt } from '../services/localStorage.js';
+import { normalizeTextForSave, normalizeTextForSearch } from '../utils/textUtils.js';
 
 const router = Router();
+
+/**
+ * Recomputes orders.paid_amount as the authoritative SUM of all linked
+ * income transactions. This is the single source of truth the system
+ * relies on for displaying balances; call it after every transaction
+ * write (insert, update, delete) that touches an order link.
+ *
+ * Using a full recompute (instead of an incremental add/subtract) avoids
+ * drift that can accumulate when amounts change or types are toggled.
+ */
+function recomputeOrderPaidAmount(orderId) {
+  if (!orderId) return;
+  const row = get(
+    "SELECT COALESCE(SUM(amount), 0) AS total FROM transactions WHERE order_id = ? AND type = 'income'",
+    [orderId]
+  );
+  run(
+    'UPDATE orders SET paid_amount = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+    [Math.round(row.total || 0), orderId]
+  );
+}
 
 // All routes require authentication
 router.use(requireAuth);
@@ -124,7 +146,7 @@ router.get('/', (req, res, next) => {
     // Add search filter
     if (search) {
       sql += ' AND (t.customer_name LIKE ? OR t.supplier LIKE ? OR t.product LIKE ? OR t.notes LIKE ?)';
-      const searchPattern = `%${search}%`;
+      const searchPattern = normalizeTextForSearch(search);
       params.push(searchPattern, searchPattern, searchPattern, searchPattern);
     }
 
@@ -168,7 +190,7 @@ router.get('/', (req, res, next) => {
     }
     if (search) {
       countSql += ' AND (t.customer_name LIKE ? OR t.supplier LIKE ? OR t.product LIKE ? OR t.notes LIKE ?)';
-      const searchPattern = `%${search}%`;
+      const searchPattern = normalizeTextForSearch(search);
       countParams.push(searchPattern, searchPattern, searchPattern, searchPattern);
     }
     const { total } = get(countSql, countParams);
@@ -333,6 +355,10 @@ router.post('/', async (req, res, next) => {
       throw new ApiError(400, 'נא להזין סכום');
     }
 
+    if (type === 'income' && !customer_id && !req.body.new_customer) {
+      throw new ApiError(400, 'נא לבחור לקוחה או להזין פרטי לקוחה חדשה עבור הכנסה');
+    }
+
     const validCategories = type === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
     if (!validCategories.includes(category)) {
       throw new ApiError(400, 'קטגוריה לא תקינה');
@@ -343,8 +369,9 @@ router.post('/', async (req, res, next) => {
 
     if (req.body.new_customer) {
       const { name, phone, email } = req.body.new_customer;
+      const normalizedCustomerName = normalizeTextForSave(name);
       const normalizedPhone = normalizePhoneNumber(phone);
-      if (!name) {
+      if (!normalizedCustomerName) {
         throw new ApiError(400, 'שם לקוחה חובה עבור לקוחה חדשה');
       }
 
@@ -357,10 +384,10 @@ router.post('/', async (req, res, next) => {
       } else {
         const result = run(
           'INSERT INTO customers (name, phone, email) VALUES (?, ?, ?)',
-          [name, normalizedPhone || null, email || null]
+          [normalizedCustomerName, normalizedPhone || null, email || null]
         );
         finalCustomerId = result.lastInsertRowid;
-        finalCustomerName = name;
+        finalCustomerName = normalizedCustomerName;
       }
     } else if (finalCustomerId && !finalCustomerName) {
       const existingCustomer = get('SELECT name FROM customers WHERE id = ?', [finalCustomerId]);
@@ -402,8 +429,8 @@ router.post('/', async (req, res, next) => {
         category,
         finalCustomerId || null,
         finalCustomerName || null,
-        supplier || null,
-        product || null,
+        normalizeTextForSave(supplier) || null,
+        normalizeTextForSave(product) || null,
         Math.round(parseFloat(amount)),
         paymentMethod || null,
         notes || null,
@@ -445,14 +472,7 @@ router.post('/', async (req, res, next) => {
     }
 
     if (type === 'income' && order_id) {
-      const order = get('SELECT * FROM orders WHERE id = ?', [order_id]);
-      if (order) {
-        const newPaidAmount = (order.paid_amount || 0) + parseFloat(amount);
-        run(
-          'UPDATE orders SET paid_amount = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-          [newPaidAmount, order_id]
-        );
-      }
+      recomputeOrderPaidAmount(order_id);
     }
 
     // 🌟 FAST RESPONSE: Send 201 Created immediately to unblock the UI!
@@ -466,6 +486,8 @@ router.post('/', async (req, res, next) => {
     // This code runs asynchronously after res.send() finishes
     (async () => {
       try {
+        let aiUpdated = false;
+
         // 1. Run AI for Income receipt if present
         if (fileBase64 && type === 'income') {
           const buffer = Buffer.from(fileBase64, 'base64');
@@ -475,13 +497,19 @@ router.post('/', async (req, res, next) => {
           const aiResult = await extractReceiptDetails(buffer, mimeType, paymentMethod);
 
           if (aiResult) {
+            aiUpdated = true;
             if (aiResult.paymentMethod && !paymentMethod) paymentMethod = aiResult.paymentMethod;
             if (aiResult.confirmationNumber && !confirmationNumber) confirmationNumber = aiResult.confirmationNumber;
             if (aiResult.lastFourDigits && !lastFourDigits) lastFourDigits = aiResult.lastFourDigits;
             if (aiResult.checkNumber && !checkNumber) checkNumber = aiResult.checkNumber;
             if (aiResult.bankDetails && !bankDetails) bankDetails = JSON.stringify(aiResult.bankDetails);
-            if (aiResult.installments && (!requestedInstallments || parseInt(requestedInstallments, 10) < 1)) {
-              installments = parseInt(aiResult.installments, 10);
+            // Only let AI override installments when the user left the default (1) AND
+            // the AI actually detected more than one installment.  This preserves any
+            // value the user explicitly typed (e.g. 5) while healing the common case
+            // where the user did not touch the field and the receipt shows 3 installments.
+            const aiInstallments = parseInt(aiResult.installments, 10);
+            if (aiInstallments > 1 && installments === 1) {
+              installments = aiInstallments;
             }
 
             const aiSanitized = sanitizePaymentDetails({
@@ -495,6 +523,8 @@ router.post('/', async (req, res, next) => {
             checkNumber = aiSanitized.checkNumber;
             bankDetails = aiSanitized.bankDetails;
             installments = aiSanitized.installments;
+
+            console.log(`AI merge result for transaction ${transactionId}: method=${paymentMethod}, confirmation=${confirmationNumber}, last4=${lastFourDigits}, installments=${installments}`);
 
             // Update database with AI parsed features securely
             run(
@@ -586,8 +616,21 @@ router.put('/:id', (req, res, next) => {
       last_four_digits,
       check_number,
       bank_details,
-      installments
+      installments,
+      fileBase64,
+      fileName
     } = req.body;
+
+    let finalCustomerId = customer_id;
+    let finalCustomerName = customer_name;
+
+    // Look up customer name if ID is provided but name is missing from request
+    if (finalCustomerId && !finalCustomerName) {
+      const customer = get('SELECT name FROM customers WHERE id = ?', [finalCustomerId]);
+      if (customer) {
+        finalCustomerName = customer.name;
+      }
+    }
 
     const existing = get('SELECT * FROM transactions WHERE id = ?', [id]);
     if (!existing) {
@@ -607,6 +650,10 @@ router.put('/:id', (req, res, next) => {
       throw new ApiError(400, 'נא להזין סכום');
     }
 
+    if (type === 'income' && !customer_id && !customer_name) {
+      throw new ApiError(400, 'נא לבחור לקוחה עבור הכנסה');
+    }
+
     const sanitizedPayment = sanitizePaymentDetails({
       paymentMethod: payment_method,
       confirmationNumber: confirmation_number,
@@ -615,6 +662,9 @@ router.put('/:id', (req, res, next) => {
       bankDetails: bank_details,
       installments
     });
+
+    const normalizedSupplier = normalizeTextForSave(supplier) || null;
+    const normalizedProduct = normalizeTextForSave(product) || null;
 
     run(
       `UPDATE transactions 
@@ -626,10 +676,10 @@ router.put('/:id', (req, res, next) => {
         date,
         type,
         category,
-        customer_id || null,
-        customer_name || null,
-        supplier || null,
-        product || null,
+        finalCustomerId || null,
+        finalCustomerName || null,
+        normalizedSupplier,
+        normalizedProduct,
         Math.round(parseFloat(amount)),
         sanitizedPayment.paymentMethod || null,
         notes || null,
@@ -644,6 +694,42 @@ router.put('/:id', (req, res, next) => {
 
     const updatedTransaction = get('SELECT * FROM transactions WHERE id = ?', [id]);
 
+    // Recompute paid_amount for any order(s) affected by this edit.
+    // We need to cover two cases:
+    //   1. The transaction was already linked to an order (existing.order_id).
+    //   2. The order_id changed (moved to a different order) — both the old
+    //      and the new order need their paid_amount refreshed.
+    const affectedOrderIds = new Set();
+    if (existing.order_id) affectedOrderIds.add(existing.order_id);
+    if (updatedTransaction.order_id) affectedOrderIds.add(updatedTransaction.order_id);
+    for (const oid of affectedOrderIds) {
+      recomputeOrderPaidAmount(oid);
+    }
+
+    // Save new expense receipt file to local storage when provided
+    if (type === 'expense' && fileBase64) {
+      try {
+        const safeFileName = (fileName || '').toLowerCase();
+        let extension = 'jpg';
+        if (safeFileName.endsWith('.pdf')) extension = 'pdf';
+        else if (safeFileName.endsWith('.png')) extension = 'png';
+        else if (safeFileName.endsWith('.webp')) extension = 'webp';
+
+        const expenseDate = date ? new Date(date) : new Date();
+        saveExpenseReceipt(
+          fileBase64,
+          category,
+          normalizedProduct || notes || '',
+          normalizedSupplier || '',
+          parseFloat(amount),
+          expenseDate,
+          extension
+        );
+      } catch (saveError) {
+        console.error('Failed to save expense receipt file on update:', saveError.message);
+      }
+    }
+
     // 🌟 FAST RESPONSE: Return early
     res.json({
       success: true,
@@ -656,36 +742,68 @@ router.put('/:id', (req, res, next) => {
       try {
         if (!isEmailEnabled()) return;
 
-        // 1. If it's an expense, check if fields affecting filename changed
+        // 1. If it's an expense with a NEW file, upload to Drive.
+        //    If no new file but metadata changed, rename existing file.
         if (type === 'expense') {
-          const oldDate = existing.date;
-          const oldCategory = existing.category;
-          const oldSupplier = existing.supplier || existing.customer_name;
-          const oldAmount = existing.amount;
-          const newDate = updatedTransaction.date;
-          const newCategory = updatedTransaction.category;
-          const newSupplier = updatedTransaction.supplier || updatedTransaction.customer_name;
-          const newAmount = updatedTransaction.amount;
+          if (fileBase64) {
+            // New receipt uploaded — send to Drive via Apps Script
+            const { sendNewExpenseNotification } = await import('../services/email.js');
+            await sendNewExpenseNotification({
+              amount: parseFloat(amount),
+              category: getCategoryDisplayName(category),
+              supplier: normalizedSupplier || null,
+              product: normalizedProduct || null,
+              notes,
+              transactionDate: date,
+              fileBase64,
+              fileName
+            });
+          } else {
+            // No new file — check if fields affecting filename changed (rename flow)
+            const oldDate = existing.date;
+            const oldCategory = existing.category;
+            const oldSupplier = existing.supplier || existing.customer_name;
+            const oldAmount = existing.amount;
+            const newDate = updatedTransaction.date;
+            const newCategory = updatedTransaction.category;
+            const newSupplier = updatedTransaction.supplier || updatedTransaction.customer_name;
+            const newAmount = updatedTransaction.amount;
 
-          // If a major field connected to path/name changed
-          if (oldDate !== newDate || oldCategory !== newCategory || oldSupplier !== newSupplier || oldAmount !== newAmount) {
-            console.log(`Expense update triggered rename flow for ID ${id}`);
+            if (oldDate !== newDate || oldCategory !== newCategory || oldSupplier !== newSupplier || oldAmount !== newAmount) {
+              console.log(`Expense update triggered rename flow for ID ${id}`);
 
-            // We need getCategoryDisplayName for the folder names
-            const oldCatFolder = getCategoryDisplayName(oldCategory);
-            const newCatFolder = getCategoryDisplayName(newCategory);
+              const oldCatFolder = getCategoryDisplayName(oldCategory);
+              const newCatFolder = getCategoryDisplayName(newCategory);
 
-            // Fire local rename (assuming jpg/png/pdf default to jpg if unknown, though ideally we'd look it up if we saved it in DB. For now try mostly '.jpg' or skip if not found)
-            // Apps script rename works by matching the string.
-            // Try local rename across common extensions.
-            const exts = ['jpg', 'png', 'pdf'];
-            for (const ext of exts) {
-              const renamed = await renameExpenseReceipt(
-                new Date(oldDate), oldCatFolder, oldSupplier, existing.product || existing.notes, oldAmount, ext,
-                new Date(newDate), newCatFolder, newSupplier, updatedTransaction.product || updatedTransaction.notes, newAmount
-              );
-              if (renamed) {
-                break;
+              const oldDateObj = new Date(oldDate);
+              const oldYear = oldDateObj.getFullYear();
+              const newYear = new Date(newDate).getFullYear();
+              const oldFolder = `${oldYear}/הוצאות/הוצאות מוכרות ${oldYear}`;
+              const newFolder = `${newYear}/הוצאות/הוצאות מוכרות ${newYear}`;
+
+              const formatFileName = (d, s, a, ext = '.jpg') => {
+                const dt = new Date(d);
+                const pyy = dt.getFullYear().toString().slice(-2);
+                const pmm = (dt.getMonth() + 1).toString().padStart(2, '0');
+                const pdd = dt.getDate().toString().padStart(2, '0');
+                return `${pyy}${pmm}${pdd} ${s || 'ספק_לא_ידוע'} ${a}₪${ext}`;
+              };
+
+              const exts = ['jpg', 'png', 'pdf'];
+              for (const ext of exts) {
+                const renamed = await renameExpenseReceipt(
+                  new Date(oldDate), oldCatFolder, oldSupplier, existing.product || existing.notes, oldAmount, ext,
+                  new Date(newDate), newCatFolder, newSupplier, updatedTransaction.product || updatedTransaction.notes, newAmount
+                );
+                if (renamed) {
+                  await sendDriveRename({
+                    oldFolder,
+                    oldFileName: formatFileName(oldDate, oldSupplier, oldAmount, '.' + ext),
+                    newFolder,
+                    newFileName: formatFileName(newDate, newSupplier, newAmount, '.' + ext)
+                  });
+                  break;
+                }
               }
             }
           }
@@ -724,7 +842,7 @@ router.put('/:id', (req, res, next) => {
             }
 
             await sendDetailedIncomeNotification({
-              customerName: updatedTransaction.customer_name || 'לקוח_כלשהו',
+              customerName: updatedTransaction.customer_name || finalCustomerName || 'לקוח_כלשהו',
               customerPhone,
               customerEmail,
               amount: updatedTransaction.amount,
@@ -735,7 +853,8 @@ router.put('/:id', (req, res, next) => {
               bankDetails: updatedTransaction.bank_details,
               installments: updatedTransaction.installments,
               fileBase64: null,
-              fileName: null
+              fileName: null,
+              isUpdate: true // This is an update!
             });
           }
         }
@@ -764,6 +883,10 @@ router.delete('/:id', (req, res, next) => {
     }
 
     run('DELETE FROM transactions WHERE id = ?', [id]);
+
+    // If this income transaction was linked to an order, recompute the
+    // order's paid_amount now that the row no longer exists.
+    recomputeOrderPaidAmount(existing.order_id);
 
     res.json({
       success: true,

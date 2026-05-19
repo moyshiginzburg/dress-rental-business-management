@@ -1,10 +1,16 @@
 "use client";
 
 /**
- * Dashboard Main Page
+ * Dashboard Main Page - Enhanced for Eti
  * 
  * Purpose: Display business overview with extreme clarity and beauty.
  * Focuses on quick actions and key metrics.
+ * 
+ * Stat cards are clickable and navigate to their respective pages:
+ * - Monthly Income → Transactions filtered by current month (all types)
+ * - Orders → Orders page
+ * - Active Dresses → Dresses page
+ * - Customers → Customers page
  */
 
 import { useEffect, useState } from "react";
@@ -19,12 +25,24 @@ import {
   Sparkles,
 } from "lucide-react";
 import Link from "next/link";
+
+/** Returns the first and last day of the current month in YYYY-MM-DD format. */
+function getCurrentMonthRange(): { dateFrom: string; dateTo: string } {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const lastDay = new Date(year, now.getMonth() + 1, 0).getDate();
+  return {
+    dateFrom: `${year}-${month}-01`,
+    dateTo: `${year}-${month}-${String(lastDay).padStart(2, "0")}`,
+  };
+}
 interface DashboardData {
   financials: {
     monthly: { income: number; expenses: number; profit: number };
     yearly: { income: number; expenses: number; profit: number };
   };
-  orders: { active: number };
+  orders: { open: number; totalActive: number };
   customers: { total: number; newThisMonth: number };
   dresses: { available: number; total: number };
 }
@@ -79,7 +97,7 @@ export default function DashboardPage() {
             <Sparkles className="h-4 w-4" />
             <span className="text-xs font-bold uppercase tracking-wider">לוח בקרה</span>
           </div>
-          <h1 className="text-3xl font-black tracking-tight">שלום, <span className="text-green-600">ברוך הבא</span></h1>
+          <h1 className="text-3xl font-black tracking-tight">שלום, <span className="text-green-600">מנהל</span></h1>
         </div>
       </div>
 
@@ -132,43 +150,59 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Stats Summary */}
+      {/* Stats Summary — each card is a navigation link */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Card className="rounded-[1.5rem] border-none shadow-sm bg-white/50">
+        {/* Monthly income → Transactions page filtered by current month (no type filter) */}
+        <Link
+          href={`/dashboard/transactions?dateFrom=${getCurrentMonthRange().dateFrom}&dateTo=${getCurrentMonthRange().dateTo}`}
+          className="rounded-[1.5rem] border-none shadow-sm bg-white/50 block transition-all active:scale-[0.97] hover:shadow-md hover:bg-white/80"
+        >
           <CardContent className="p-5">
             <p className="text-xs font-bold text-muted-foreground mb-1 uppercase">הכנסות החודש</p>
             <div className="text-xl font-black text-green-600">
               {formatCurrency(data.financials.monthly.income)}
             </div>
           </CardContent>
-        </Card>
-        
-        <Card className="rounded-[1.5rem] border-none shadow-sm bg-white/50">
+        </Link>
+
+        {/* Open orders → Orders page */}
+        <Link
+          href="/dashboard/orders"
+          className="rounded-[1.5rem] border-none shadow-sm bg-white/50 block transition-all active:scale-[0.97] hover:shadow-md hover:bg-white/80"
+        >
           <CardContent className="p-5">
-            <p className="text-xs font-bold text-muted-foreground mb-1 uppercase">הזמנות פעילות</p>
-            <div className="text-xl font-black text-green-600">
-              {data.orders.active}
+            <p className="text-xs font-bold text-muted-foreground mb-1 uppercase">הזמנות פתוחות</p>
+            <div className="text-xl font-black">
+              {data.orders.open} <span className="text-xs font-normal text-muted-foreground">/ {data.orders.totalActive}</span>
             </div>
           </CardContent>
-        </Card>
+        </Link>
 
-        <Card className="rounded-[1.5rem] border-none shadow-sm bg-white/50">
+        {/* Active dresses → Dresses page (no filter) */}
+        <Link
+          href="/dashboard/dresses"
+          className="rounded-[1.5rem] border-none shadow-sm bg-white/50 block transition-all active:scale-[0.97] hover:shadow-md hover:bg-white/80"
+        >
           <CardContent className="p-5">
             <p className="text-xs font-bold text-muted-foreground mb-1 uppercase">שמלות פעילות</p>
             <div className="text-xl font-black">
               {data.dresses.available} <span className="text-xs font-normal text-muted-foreground">/ {data.dresses.total}</span>
             </div>
           </CardContent>
-        </Card>
+        </Link>
 
-        <Card className="rounded-[1.5rem] border-none shadow-sm bg-white/50">
+        {/* Customers → Customers page */}
+        <Link
+          href="/dashboard/customers"
+          className="rounded-[1.5rem] border-none shadow-sm bg-white/50 block transition-all active:scale-[0.97] hover:shadow-md hover:bg-white/80"
+        >
           <CardContent className="p-5">
             <p className="text-xs font-bold text-muted-foreground mb-1 uppercase">לקוחות</p>
             <div className="text-xl font-black">
               {data.customers.total}
             </div>
           </CardContent>
-        </Card>
+        </Link>
       </div>
 
     </div>

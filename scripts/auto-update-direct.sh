@@ -14,7 +14,7 @@
 #   5. Logs all actions to local_data/logs/auto-update.log
 #
 # Installation (cron):
-#   * * * * * /path/to/YOUR_REPO_NAME/scripts/auto-update-direct.sh
+#   * * * * * /path/to/dress-rental-business-management/scripts/auto-update-direct.sh
 # =============================================================================
 
 set -euo pipefail
@@ -23,10 +23,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 LOG_FILE="$PROJECT_DIR/local_data/logs/auto-update.log"
-LOCK_FILE="/tmp/dress-mgmt-auto-update-direct.lock"
+LOCK_FILE="/tmp/dress-rental-auto-update-direct.lock"
 BRANCH="${AUTO_UPDATE_BRANCH:-master}"
-PM2_APP_NAME="dress-backend"
-# Line-based rotation: when log exceeds MAX_LINES, trim to KEEP_LINES
+# Line-based rotation: when log exceeds MAX_LINES, trim to KEEP_LINES (preserves long history when updates are rare)
 LOG_MAX_LINES="${AUTO_UPDATE_LOG_MAX_LINES:-80000}"
 LOG_KEEP_LINES="${AUTO_UPDATE_LOG_KEEP_LINES:-60000}"
 
@@ -39,6 +38,7 @@ log() {
 }
 
 # Line-based rotation: prevents unbounded growth; keeps KEEP_LINES when exceeding MAX_LINES.
+# Preserves long history when updates are rare (e.g. no deploys for weeks).
 rotate_auto_update_log() {
     [ -f "$LOG_FILE" ] || return 0
     local lines
@@ -111,8 +111,8 @@ cd "$PROJECT_DIR"
 # Restart backend via pm2 (stop -> force-free port -> wait for port -> start)
 log "Restarting backend (pm2)..."
 if command -v pm2 &>/dev/null; then
-    if pm2 list 2>/dev/null | grep -q "$PM2_APP_NAME"; then
-        pm2 stop "$PM2_APP_NAME" 2>/dev/null
+    if pm2 list 2>/dev/null | grep -q "dress-backend"; then
+        pm2 stop dress-backend 2>/dev/null
         sleep 3
         fuser -k 3001/tcp 2>/dev/null || true
         # Wait for port to be actually free (up to 30s) before starting
@@ -121,7 +121,7 @@ if command -v pm2 &>/dev/null; then
             sleep 2
         done
         sleep 2
-        pm2 start "$PM2_APP_NAME" 2>&1 | while read -r line; do
+        pm2 start dress-backend 2>&1 | while read -r line; do
             log "  [pm2] $line"
         done
     else
@@ -145,7 +145,7 @@ done
 if $ok; then
     log "Health check passed. Backend is running."
 else
-    log "WARNING: Health check failed after update. Check: pm2 logs $PM2_APP_NAME"
+    log "WARNING: Health check failed after update. Check: pm2 logs dress-backend"
 fi
 
 log "=========================================="

@@ -14,7 +14,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import cookieParser from 'cookie-parser';
 import jwt from 'jsonwebtoken';
-import { serverConfig, uploadConfig, authConfig } from './config/index.js';
+import { serverConfig, uploadConfig, localStorageConfig, authConfig } from './config/index.js';
 import { notFoundHandler, errorHandler } from './middleware/errorHandler.js';
 import { requestLogger, errorLogger } from './middleware/activityLogger.js';
 import { mkdirSync, existsSync } from 'fs';
@@ -33,6 +33,7 @@ import agreementsRoutes from './routes/agreements.js';
 import dashboardRoutes from './routes/dashboard.js';
 import exportRoutes from './routes/export.js';
 import appsScriptLogsRoutes from './routes/apps-script-logs.js';
+import clientErrorsRoutes from './routes/client-errors.js';
 
 // Ensure upload directories exist
 const uploadDirs = [
@@ -52,7 +53,7 @@ for (const dir of uploadDirs) {
 // Create Express app
 const app = express();
 
-// Trust the first proxy (e.g., Tailscale Funnel) to accurately get client IPs for rate-limiting
+// Trust the first proxy (nginx reverse proxy) to get real client IPs for rate-limiting
 app.set('trust proxy', 1);
 
 // ===================
@@ -62,12 +63,11 @@ app.set('trust proxy', 1);
 // CORS configuration - allow multiple frontend URLs for development
 const allowedOrigins = [
   serverConfig.frontendUrl,
-  serverConfig.publicFrontendUrl,
   'http://localhost:3000',
   'http://localhost:3003',
   'http://127.0.0.1:3000',
   'http://127.0.0.1:3003',
-].filter(Boolean);
+];
 
 app.use(cors({
   origin: (origin, callback) => {
@@ -168,6 +168,15 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// Root handler - return simple status to avoid 404 logs from scanners
+app.get('/', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Dress Rental Business Management API',
+    timestamp: new Date().toISOString()
+  });
+});
+
 // Favicon handler - return empty response to avoid 404 logs
 app.get('/favicon.ico', (req, res) => {
   res.status(204).end();
@@ -207,6 +216,7 @@ app.use('/api/agreements', agreementsRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/export', exportRoutes);
 app.use('/api/apps-script-logs', appsScriptLogsRoutes);
+app.use('/api/client-errors', clientErrorsRoutes);
 
 // ===================
 // Error Handling
@@ -230,7 +240,7 @@ const PORT = serverConfig.port;
 const server = app.listen(PORT, async () => {
   console.log('');
   console.log('╔════════════════════════════════════════════════════════════╗');
-  console.log('║       Dress Rental Business Management - Backend           ║');
+  console.log('║         Dress Rental Business Management - Backend            ║');
   console.log('╠════════════════════════════════════════════════════════════╣');
   console.log(`║  Server running on: http://localhost:${PORT}                   ║`);
   console.log(`║  Environment: ${serverConfig.nodeEnv.padEnd(43)}║`);

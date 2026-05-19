@@ -15,17 +15,29 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 /**
- * Resolves a file path for display (e.g. dress images, agreement PDFs).
- * Returns relative paths (/uploads/...) so the browser requests same-origin;
- * Next.js rewrites proxy /uploads/* to the backend. Single env var (NEXT_PUBLIC_API_URL)
- * suffices for rewrites—no extra build-time deps for image URLs.
+ * Resolves a file URL relative to the backend API base URL
  */
 export function resolveFileUrl(pathOrUrl: string | null | undefined): string | null {
   if (!pathOrUrl) return null;
   if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
   if (!pathOrUrl.startsWith("/")) return null;
+
+  // Prioritize explicit backend URL from environment variables (crucial for Vercel)
+  const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL;
+  if (backendUrl) {
+    const cleanedUrl = backendUrl.replace(/\/+$/, "");
+    return `${cleanedUrl}${pathOrUrl}`;
+  }
+
+  const apiBase = process.env.NEXT_PUBLIC_API_URL || "/api";
+  if (/^https?:\/\//i.test(apiBase)) {
+    const backendOrigin = apiBase.replace(/\/api\/?$/, "");
+    return `${backendOrigin}${pathOrUrl}`;
+  }
+
   return pathOrUrl;
 }
+
 
 /**
  * Format a number as Israeli Shekel currency
@@ -130,9 +142,13 @@ export function getRelativeDate(date: string | Date): string {
  * Status labels in Hebrew
  */
 export const statusLabels: Record<string, string> = {
-  // Order statuses
+  // Order DB statuses (stored values — kept as fallback)
   active: 'פעילה',
   cancelled: 'בוטלה',
+
+  // Computed order display statuses (derived from event_date + balance in the UI)
+  open: 'פתוחה',
+  completed: 'הושלמה',
 
   // Dress statuses
   available: 'פנויה',
@@ -157,16 +173,63 @@ export function getStatusLabel(status: string): string {
  */
 export function getStatusColor(status: string): string {
   const colors: Record<string, string> = {
+    // Computed order display statuses
+    open: 'badge-info',
+    completed: 'badge-success',
+    // Raw DB order statuses (fallback — active shown neutral, cancelled red)
     active: 'badge-success',
     cancelled: 'badge-error',
+    // Dress statuses
     available: 'badge-success',
     sold: 'badge-default',
     retired: 'badge-default',
     custom_sewing: 'badge-default',
+    // Appointment statuses
     scheduled: 'badge-info',
     no_show: 'badge-error',
   };
   return colors[status] || 'badge-default';
+}
+
+/**
+ * Compute the user-facing order display status from raw order data.
+ *
+ * DB stores only 'active' | 'cancelled'.  The UI presents 'active' orders as
+ * either 'open' (פתוחה) or 'completed' (הושלמה) based on two conditions:
+ *   - completed = event_date has passed (or is today) AND balance = 0
+ *   - open      = everything else that is not cancelled
+ *
+ * A credit balance (paid > total) is intentionally treated as open because
+ * the balance is not zero.
+ */
+export function computeOrderDisplayStatus(order: {
+  status: string;
+  event_date?: string | null;
+  total_price: number;
+  paid_amount: number;
+  total_customer_charge?: number | null;
+}): 'open' | 'completed' | 'cancelled' {
+  if (order.status === 'cancelled') return 'cancelled';
+
+  const total = (order.total_price || 0) + (order.total_customer_charge ?? 0);
+  const balance = total - (order.paid_amount || 0);
+  const isBalanceZero = balance === 0;
+
+  let eventDatePassed = false;
+  if (order.event_date) {
+    // Compare date strings (YYYY-MM-DD) directly — avoids timezone issues.
+    const today = new Date();
+    const yyyy = today.getFullYear();
+    const mm = String(today.getMonth() + 1).padStart(2, '0');
+    const dd = String(today.getDate()).padStart(2, '0');
+    const todayStr = `${yyyy}-${mm}-${dd}`;
+    // event_date may contain a time component; take only the date part.
+    const eventDateStr = order.event_date.slice(0, 10);
+    eventDatePassed = eventDateStr <= todayStr;
+  }
+
+  if (isBalanceZero && eventDatePassed) return 'completed';
+  return 'open';
 }
 
 /**

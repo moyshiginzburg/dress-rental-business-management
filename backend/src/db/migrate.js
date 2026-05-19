@@ -15,6 +15,8 @@ import { allSchemaItems } from './schema.js';
 
 console.log('Starting database migration...\n');
 
+
+
 try {
   // Run all schema creation statements
   for (const item of allSchemaItems) {
@@ -32,6 +34,8 @@ try {
     console.log(`  ✓ ${item.name} created`);
   }
 
+
+
   // Insert default settings if not exists
   const settingsExist = db.prepare('SELECT COUNT(*) as count FROM settings').get();
   
@@ -39,9 +43,9 @@ try {
     console.log('\nInserting default settings...');
     
     const defaultSettings = [
-      { key: 'business_name', value: 'Your Business Name', description: 'Business display name' },
-      { key: 'business_phone', value: 'YOUR_PHONE_NUMBER', description: 'Business phone number' },
-      { key: 'business_email', value: 'your-email@example.com', description: 'Business email' },
+      { key: 'business_name', value: 'השכרת שמלות - דמו', description: 'Business display name' },
+      { key: 'business_phone', value: '050-0000000', description: 'Business phone number' },
+      { key: 'business_email', value: 'admin@example.com', description: 'Business email' },
     ];
     
     const insertSetting = db.prepare(

@@ -1,16 +1,22 @@
 /**
- * Email Service
- * 
- * Purpose: Send email notifications for appointments, agreements, and other events.
- * 
- * Operation (two transport modes):
- * 1. SMTP (nodemailer) - Used when SMTP ports are reachable (local dev, unblocked VPS).
- * 2. Apps Script Web App - Used when APPS_SCRIPT_WEB_APP_URL is set. The backend
- *    POSTs to the Apps Script Web App which sends emails via GmailApp. This bypasses
- *    SMTP entirely and works on cloud providers that block SMTP ports (e.g. DigitalOcean).
- * 
- * For Apps Script integration payloads (calendar, tasks, etc.), the same Web App
- * endpoint is used with the appropriate payload type.
+ * Email & Google Integration Service
+ *
+ * Purpose: Send all outgoing communication and Google integration events
+ * (agreement/order/income/expense emails, calendar events, tasks, Drive
+ * uploads, Sheets appends) through the Apps Script Web App.
+ *
+ * Operation (single transport — HTTPS POST):
+ *   - Every call ultimately goes through `postToAppsScriptWebApp()` which
+ *     POSTs a JSON payload to `APPS_SCRIPT_WEB_APP_URL` over HTTPS.
+ *   - Apps Script (`apps_script/Code.js` `doPost`) routes the payload by
+ *     `type` and either sends an email via `GmailApp.sendEmail()` or
+ *     performs the requested Google action.
+ *   - There is NO SMTP / nodemailer transport in the backend. The dependency
+ *     was removed in v0.9.0 because cloud VPS providers (e.g. DigitalOcean)
+ *     block outbound SMTP ports.
+ *   - There is NO email-polling fallback either. If `APPS_SCRIPT_WEB_APP_URL`
+ *     is not configured, calls return `{ success: false, error: ... }` and
+ *     the error is logged for the developer to investigate.
  */
 
 import { businessConfig, appsScriptConfig } from '../config/index.js';
@@ -25,26 +31,26 @@ import { normalizePhoneNumber } from './phone.js';
 // ---------------------------------------------------------------------------
 const ICON = {
   calendar: '<span style="color:#8e44ad;">&#9654;</span>',  // ▶
-  clock:    '<span style="color:#555;">&#9200;</span>',      // ⏰ (clock, BMP)
+  clock: '<span style="color:#555;">&#9200;</span>',      // ⏰ (clock, BMP)
   duration: '<span style="color:#555;">&#8987;</span>',      // ⏳ (hourglass, BMP)
-  people:   '<span style="color:#555;">&#9679;</span>',      // ●
-  phone:    '<span style="color:#555;">&#9742;</span>',      // ☎
-  pin:      '<span style="color:#c0392b;">&#9679;</span>',   // ●
-  map:      '<span style="color:#1a73e8;">&#9654;</span>',   // ▶
-  person:   '<span style="color:#8e44ad;">&#9679;</span>',   // ●
-  email:    '<span style="color:#555;">&#9993;</span>',      // ✉
-  clip:     '<span style="color:#28a745;">&#10004;</span>',  // ✔
-  sign:     '<span style="color:#8e44ad;">&#9998;</span>',   // ✎
-  note:     '<span style="color:#8e44ad;">&#9998;</span>',   // ✎
-  money:    '<span style="color:#28a745;">&#9632;</span>',   // ■
-  card:     '<span style="color:#555;">&#9632;</span>',      // ■
-  tag:      '<span style="color:#555;">&#9654;</span>',      // ▶
-  dress:    '<span style="color:#8e44ad;">&#9654;</span>',   // ▶
-  shop:     '<span style="color:#555;">&#9654;</span>',      // ▶
-  box:      '<span style="color:#555;">&#9654;</span>',      // ▶
-  expense:  '<span style="color:#dc3545;">&#9632;</span>',   // ■
+  people: '<span style="color:#555;">&#9679;</span>',      // ●
+  phone: '<span style="color:#555;">&#9742;</span>',      // ☎
+  pin: '<span style="color:#c0392b;">&#9679;</span>',   // ●
+  map: '<span style="color:#1a73e8;">&#9654;</span>',   // ▶
+  person: '<span style="color:#8e44ad;">&#9679;</span>',   // ●
+  email: '<span style="color:#555;">&#9993;</span>',      // ✉
+  clip: '<span style="color:#28a745;">&#10004;</span>',  // ✔
+  sign: '<span style="color:#8e44ad;">&#9998;</span>',   // ✎
+  note: '<span style="color:#8e44ad;">&#9998;</span>',   // ✎
+  money: '<span style="color:#28a745;">&#9632;</span>',   // ■
+  card: '<span style="color:#555;">&#9632;</span>',      // ■
+  tag: '<span style="color:#555;">&#9654;</span>',      // ▶
+  dress: '<span style="color:#8e44ad;">&#9654;</span>',   // ▶
+  shop: '<span style="color:#555;">&#9654;</span>',      // ▶
+  box: '<span style="color:#555;">&#9654;</span>',      // ▶
+  expense: '<span style="color:#dc3545;">&#9632;</span>',   // ■
   whatsapp: '<span style="color:#25D366;">&#9742;</span>',   // ☎
-  check:    '<span style="color:#28a745;">&#10004;</span>',  // ✔
+  check: '<span style="color:#28a745;">&#10004;</span>',  // ✔
 };
 
 /**
@@ -74,7 +80,7 @@ async function postToAppsScriptWebApp(payload) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(30000), // 30s timeout
+      signal: AbortSignal.timeout(120000), // 120s timeout for heavy Drive operations
     });
 
     if (!response.ok) {
@@ -159,6 +165,7 @@ function formatDateHebrew(date) {
     year: 'numeric',
     month: 'long',
     day: 'numeric',
+    timeZone: 'Asia/Jerusalem',
   });
 }
 
@@ -196,7 +203,11 @@ export async function sendAgreementConfirmationToCustomer({
   }
 
   const eventDateFormatted = eventDate ? formatDateHebrew(eventDate) : 'לא צוין';
-  const signedAt = formatDateHebrew(new Date());
+  const signedAt = formatDateHebrew(new Date()) + ' ' + new Date().toLocaleTimeString('he-IL', {
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'Asia/Jerusalem',
+  });
 
   const subject = `הסכם השכרת שמלה - ${customerName}`;
 
@@ -722,6 +733,39 @@ export async function sendFileToDrive({ fileName, folder, fileBuffer }) {
 }
 
 /**
+ * Send file rename/move request to Google Drive via Apps Script
+ */
+export async function sendDriveRename({ oldFolder, oldFileName, newFolder, newFileName }) {
+  return sendToAppsScript({
+    type: 'drive_rename',
+    data: {
+      oldFolder,
+      oldFileName,
+      newFolder,
+      newFileName,
+      timestamp: new Date().toISOString()
+    }
+  });
+}
+
+/**
+ * Send order update to sync Calendar and Tasks via Apps Script
+ */
+export async function sendOrderUpdate({ oldCustomerName, oldEventDate, newCustomerName, newEventDate, newOrderSummary }) {
+  return sendToAppsScript({
+    type: 'order_update',
+    data: {
+      oldCustomerName,
+      oldEventDate,
+      newCustomerName,
+      newEventDate,
+      newOrderSummary,
+      timestamp: new Date().toISOString()
+    }
+  });
+}
+
+/**
  * Send email list entry to Google Sheets via Apps Script
  * 
  * @param {string} email - Customer email
@@ -737,7 +781,7 @@ export async function sendToEmailList({ email, name }) {
 }
 
 /**
- * Send detailed income notification to Business Owner
+ * Send detailed income notification to business owner
  * Human-readable format for easy copying
  * 
  * @param {Object} params - Income details
@@ -754,9 +798,10 @@ export async function sendDetailedIncomeNotification({
   bankDetails,
   installments,
   fileBase64,
-  fileName
+  fileName,
+  isUpdate = false, // Add this parameter
 }) {
-  console.log(`Sending detailed income notification to Apps Script for ${customerName}`);
+  console.log(`Sending detailed income notification to Apps Script for ${customerName} (isUpdate: ${isUpdate})`);
 
   return sendToAppsScript({
     type: 'income_detailed',
@@ -771,6 +816,7 @@ export async function sendDetailedIncomeNotification({
       checkNumber,
       bankDetails,
       installments,
+      isUpdate, // Include in payload
       timestamp: new Date().toISOString()
     },
     fileBase64,
@@ -789,6 +835,8 @@ export default {
   sendCalendarEvent,
   sendTaskToGoogle,
   sendFileToDrive,
+  sendDriveRename,
+  sendOrderUpdate,
   sendToEmailList,
   sendDetailedIncomeNotification,
 };

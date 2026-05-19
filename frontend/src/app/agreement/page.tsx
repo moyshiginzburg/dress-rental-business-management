@@ -18,6 +18,7 @@ import { FileText, CheckCircle, Eraser } from "lucide-react";
 
 interface Terms {
   terms: string[];
+  nonRentalTerms: string[];
   cancellationPolicy: string[];
   businessName: string;
   businessPhone: string;
@@ -40,6 +41,7 @@ interface PrefillData {
       finalPrice: number;
     }>;
   };
+  hasRentalItems: boolean;
 }
 
 const ITEM_TYPE_LABELS: Record<string, string> = {
@@ -65,6 +67,7 @@ export default function AgreementPage() {
   const [isDrawing, setIsDrawing] = useState(false);
   const [hasSignature, setHasSignature] = useState(false);
   const [orderDetails, setOrderDetails] = useState<PrefillData["orderDetails"] | null>(null);
+  const [isRental, setIsRental] = useState(true); // default to rental terms (strictest)
 
   // Form data
   const [fullName, setFullName] = useState("");
@@ -111,6 +114,9 @@ export default function AgreementPage() {
         setEmail(data.email || "");
         setEventDate((data.eventDate || "").split("T")[0]);
         setOrderDetails(data.orderDetails || null);
+        if (typeof data.hasRentalItems === 'boolean') {
+          setIsRental(data.hasRentalItems);
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : "קישור חתימה לא תקין";
         setPrefillError(message);
@@ -291,7 +297,7 @@ export default function AgreementPage() {
             </div>
             <CardTitle className="text-2xl">הסכם</CardTitle>
             <CardDescription>
-              {terms?.businessName || "Your Business Name"}
+              {terms?.businessName || "השכרת שמלות - דמו"}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -376,15 +382,15 @@ export default function AgreementPage() {
               {/* Terms */}
               {terms && (
                 <div className="space-y-4 border-t pt-6">
-                  <h3 className="font-medium">תנאי ההשכרה</h3>
+                  <h3 className="font-medium">תנאים</h3>
                   <div className="bg-muted/50 rounded-lg p-4 max-h-60 overflow-y-auto text-sm space-y-2">
                     <ol className="list-decimal list-inside space-y-2">
-                      {terms.terms.map((term, index) => (
+                      {(isRental ? terms.terms : terms.nonRentalTerms).map((term, index) => (
                         <li key={index}>{term}</li>
                       ))}
                     </ol>
                     <div className="mt-4 pt-4 border-t">
-                      <p className="font-medium mb-2">מדיניות ביטולים:</p>
+                      <p className="font-medium mb-2">מדיניות ביטול עסקה:</p>
                       <ol className="list-decimal list-inside space-y-2">
                         {terms.cancellationPolicy.map((policy, index) => (
                           <li key={index}>{policy}</li>
@@ -400,7 +406,7 @@ export default function AgreementPage() {
                       className="mt-1"
                     />
                     <span className="text-sm">
-                      קראתי את התנאים לעיל ואני מסכימה להם
+                      קרמנהל את התנאים לעיל ואני מסכימה להם
                     </span>
                   </label>
                 </div>
@@ -450,7 +456,7 @@ export default function AgreementPage() {
                 size="lg"
                 disabled={loading || prefillLoading || Boolean(prefillError) || !termsAccepted || !hasSignature}
               >
-                {loading ? "שולח..." : "חתום על ההסכם"}
+                {loading ? "שולחת..." : "חתמי על ההסכם"}
               </Button>
               {prefillLoading && (
                 <p className="text-xs text-muted-foreground text-center">טוען פרטי הזמנה...</p>

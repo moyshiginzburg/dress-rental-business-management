@@ -8,17 +8,19 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import {
+  chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from 'fs';
-import { dirname, join } from 'path';
+import { dirname, join, resolve } from 'path';
 import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import { businessConfig } from '../config/index.js';
-import { AGREEMENT_TERMS, AGREEMENT_CANCELLATION_POLICY } from '../constants/agreementTerms.js';
+import { AGREEMENT_CANCELLATION_POLICY, getTermsForOrder } from '../constants/agreementTerms.js';
 
 const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
@@ -46,6 +48,7 @@ function formatDateHebrew(dateStr) {
     year: 'numeric',
     month: 'long',
     day: 'numeric',
+    timeZone: 'Asia/Jerusalem',
   });
 }
 
@@ -103,7 +106,11 @@ function buildAgreementHtml(agreementData) {
   const signedDate = agreementData.signedAt ? new Date(agreementData.signedAt) : new Date();
   const signedTime = Number.isNaN(signedDate.getTime())
     ? ''
-    : signedDate.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
+    : signedDate.toLocaleTimeString('he-IL', {
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZone: 'Asia/Jerusalem',
+      });
 
   const items = Array.isArray(agreementData.orderItems) ? agreementData.orderItems : [];
   const itemRows = items.slice(0, 6).map((item) => {
@@ -123,7 +130,8 @@ function buildAgreementHtml(agreementData) {
     ? agreementData.signatureData
     : '';
   const logoDataUrl = loadLogoDataUrl();
-  const fullTermsItems = AGREEMENT_TERMS.map((term) => `<li>${escapeHtml(term)}</li>`).join('');
+  const { terms: activeTerms, heading: termsHeading } = getTermsForOrder(items);
+  const fullTermsItems = activeTerms.map((term) => `<li>${escapeHtml(term)}</li>`).join('');
   const cancellationItems = AGREEMENT_CANCELLATION_POLICY.map((term) => `<li>${escapeHtml(term)}</li>`).join('');
 
   return `<!doctype html>
@@ -309,7 +317,7 @@ function buildAgreementHtml(agreementData) {
     <div class="sheet">
       <div class="header">
         <div class="header-main">
-          <div class="brand">${escapeHtml(sanitize(businessConfig.name, 'ניהול עסק'))}</div>
+          <div class="brand">${escapeHtml(sanitize(businessConfig.name, 'ישראל ישראלי'))}</div>
           <div class="title">הסכם דיגיטלי</div>
           <div class="meta">
             תאריך חתימה: ${escapeHtml(formatDateHebrew(signedDate))}
@@ -330,7 +338,6 @@ function buildAgreementHtml(agreementData) {
         <section class="card">
           <h3>פרטי אירוע</h3>
           <div class="line">תאריך אירוע: ${escapeHtml(formatDateHebrew(agreementData.eventDate))}</div>
-          <div class="line">סיכום הזמנה: ${escapeHtml(sanitize(agreementData.orderSummary, 'לא צוין'))}</div>
         </section>
       </div>
 
@@ -354,18 +361,18 @@ function buildAgreementHtml(agreementData) {
         <h3>תנאי ההסכם המלאים</h3>
         <div class="terms-grid">
           <div class="terms-block">
-            <h4>תנאי השכרה</h4>
+            <h4>${escapeHtml(termsHeading)}</h4>
             <ol>${fullTermsItems}</ol>
           </div>
           <div class="terms-block">
-            <h4>מדיניות ביטול</h4>
+            <h4>מדיניות ביטול עסקה</h4>
             <ol>${cancellationItems}</ol>
           </div>
         </div>
       </section>
 
       <div class="signature-wrap">
-        <div class="declaration">אני מאשרת שקראתי את תנאי ההסכם ומסכימה להם.</div>
+        <div class="declaration">אני מאשרת שקרמנהל את תנאי ההסכם ומסכימה להם.</div>
         <div class="signature-box">
           <div class="signature-label">חתימה דיגיטלית</div>
           <div class="signature-image">
@@ -390,7 +397,12 @@ async function generateWithChrome(htmlContent) {
     throw new Error('Chrome executable not found. Set CHROME_BIN in environment.');
   }
 
-  const tempDir = mkdtempSync(join(tmpdir(), 'agreement-pdf-'));
+  const baseTempDir = join(__dirname, '..', '..', '..', 'local_data', 'temp_cache');
+  if (!existsSync(baseTempDir)) {
+    mkdirSync(baseTempDir, { recursive: true });
+  }
+  const tempDir = mkdtempSync(join(baseTempDir, 'agreement-pdf-'));
+  chmodSync(tempDir, 0o755);
   const htmlPath = join(tempDir, 'agreement.html');
   const pdfPath = join(tempDir, 'agreement.pdf');
 
@@ -407,7 +419,7 @@ async function generateWithChrome(htmlContent) {
       '--no-pdf-header-footer',
       '--print-to-pdf-no-header',
       `--print-to-pdf=${pdfPath}`,
-      `file://${htmlPath}`,
+      `file://${resolve(htmlPath)}`,
     ];
 
     await execFileAsync(chromePath, args, { timeout: 20000, maxBuffer: 10 * 1024 * 1024 });

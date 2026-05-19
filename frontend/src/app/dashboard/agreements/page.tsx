@@ -5,8 +5,9 @@ import { agreementsApi } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/use-toast";
-import { ExternalLink, FileSignature, FileText, Loader2, PenLine } from "lucide-react";
-import { formatDateTime, resolveFileUrl } from "@/lib/utils";
+import { ExternalLink, FileSignature, FileText, Loader2, PenLine, ShoppingBag } from "lucide-react";
+import { formatDateTime } from "@/lib/utils";
+import { useRouter } from "next/navigation";
 
 interface AgreementRecord {
   id: number;
@@ -21,8 +22,10 @@ interface AgreementRecord {
   created_at: string;
 }
 
+
 export default function AgreementsPage() {
   const { toast } = useToast();
+  const router = useRouter();
   const [agreements, setAgreements] = useState<AgreementRecord[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -125,8 +128,8 @@ export default function AgreementsPage() {
           ) : (
             <div className="space-y-3">
               {agreements.map((agreement) => {
-                const signatureUrl = resolveFileUrl(agreement.signature_url);
-                const pdfUrl = resolveFileUrl(agreement.pdf_url);
+                const signatureUrl = agreement.signature_url;
+                const pdfUrl = agreement.pdf_url;
 
                 return (
                   <div
@@ -162,13 +165,14 @@ export default function AgreementsPage() {
                         <FileText className="h-4 w-4 ms-1" />
                         צפייה ב-PDF
                       </Button>
-                      {pdfUrl && (
+                      {agreement.order_id && (
                         <Button
                           size="sm"
-                          onClick={() => openLink(pdfUrl, "PDF")}
+                          onClick={() => router.push(`/dashboard/orders?id=${agreement.order_id}`)}
+                          className="bg-green-600 hover:bg-green-700 text-white"
                         >
-                          <ExternalLink className="h-4 w-4 ms-1" />
-                          פתיחה
+                          <ShoppingBag className="h-4 w-4 ms-1" />
+                          פתיחת הזמנה
                         </Button>
                       )}
                     </div>

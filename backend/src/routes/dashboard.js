@@ -53,10 +53,24 @@ router.get('/summary', (req, res, next) => {
       ]
     );
 
-    // Single query: orders + customers + dresses counts
+    // Single query: orders + customers + dresses counts.
+    // open_orders = active orders that are NOT yet completed (i.e. balance != 0 or event_date
+    // is in the future / missing). An order is completed when its event_date has passed AND the
+    // balance (total_price + sum of customer-charge expenses – paid_amount) is exactly 0.
     const counts = get(
       `SELECT
-        (SELECT COUNT(*) FROM orders WHERE status = 'active') as active_orders,
+        (SELECT COUNT(*) FROM orders WHERE status = 'active') as total_active_orders,
+        (SELECT COUNT(*) FROM orders o
+          WHERE o.status = 'active'
+            AND NOT (
+              o.event_date IS NOT NULL
+              AND date(o.event_date) <= date('now')
+              AND o.paid_amount = (
+                o.total_price
+                + COALESCE((SELECT SUM(customer_charge_amount) FROM transactions WHERE order_id = o.id), 0)
+              )
+            )
+        ) as open_orders,
         (SELECT COUNT(*) FROM customers) as total_customers,
         (SELECT COUNT(*) FROM customers WHERE created_at >= ? AND created_at < ?) as new_customers_month,
         (SELECT COUNT(*) FROM dresses WHERE status = 'available') as available_dresses,
@@ -80,7 +94,8 @@ router.get('/summary', (req, res, next) => {
           }
         },
         orders: {
-          active: counts.active_orders
+          open: counts.open_orders,
+          totalActive: counts.total_active_orders
         },
         customers: {
           total: counts.total_customers,
@@ -208,7 +223,7 @@ router.get('/top-dresses', (req, res, next) => {
     const dresses = all(
       `SELECT id, name, total_income, rental_count, status
        FROM dresses
-       WHERE is_active = 1 AND rental_count > 0
+       WHERE rental_count > 0
        ORDER BY total_income DESC
        LIMIT ?`,
       [parseInt(limit, 10)]

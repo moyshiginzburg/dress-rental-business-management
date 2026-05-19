@@ -58,7 +58,6 @@ CREATE TABLE IF NOT EXISTS dresses (
     photo_url TEXT,
     thumbnail_url TEXT,
     notes TEXT,
-    is_active INTEGER DEFAULT 1,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 `;

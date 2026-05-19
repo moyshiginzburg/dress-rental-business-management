@@ -10,7 +10,6 @@
  * Deploy as Web App: Execute as "Me", Access "Anyone" (no auth needed since
  * the payload is not sensitive and the URL is secret).
  * 
- * Author: [Your Name]
  * Created: 2026-02-03
  * Updated: 2026-02-17 - Removed email-polling; Web App is the sole integration method
  */
@@ -21,10 +20,10 @@
 
 const CONFIG = {
     // Notification email
-    OWNER_EMAIL: 'your-email@gmail.com',
+    OWNER_EMAIL: 'admin@example.com',
 
     // Google Drive base folder ID
-    DRIVE_BASE_FOLDER_ID: 'YOUR_GOOGLE_DRIVE_FOLDER_ID',
+    DRIVE_BASE_FOLDER_ID: '1A-WmsCr1T06yp2v_ZBEigFvhuqe6M1I_',
 
     // Google Task list name
     TASK_LIST_NAME: 'לקוחות',
@@ -32,8 +31,8 @@ const CONFIG = {
     // Sheets ID for email list
     EMAIL_LIST_SHEET_ID: '', // TODO: Set the sheet ID
 
-    // Tailscale API URL (from start-server.sh)
-    TAILSCALE_API_URL: 'https://your-vps.YOUR_TAILSCALE_DOMAIN.ts.net/api',
+    // VPS backend API URL (e.g. Tailscale Funnel)
+    BACKEND_API_URL: 'https://your-vps.your-tailscale-domain.ts.net/api',
 };
 
 // Cache for backend URL (refreshed once per execution)
@@ -130,6 +129,10 @@ function processPayload(payload) {
             return handleIncomeDetailed(payload);
         case 'order_notification':
             return handleOrderNotification(payload);
+        case 'drive_rename':
+            return handleDriveRename(payload);
+        case 'order_update':
+            return handleOrderUpdate(payload);
         default:
             return { success: false, error: 'Unknown type: ' + payload.type };
     }
@@ -156,7 +159,7 @@ function handleSendEmail(payload) {
         }
 
         const options = {
-            name: 'Your Business Name',
+            name: 'השכרת שמלות - דמו',
             htmlBody: htmlBody,
         };
 
@@ -196,12 +199,12 @@ function getPaymentMethodLabel(method) {
 
 /**
  * Get the current backend URL.
- * The tunnel URL is now directly configured via TAILSCALE_API_URL.
+ * The backend URL is configured via BACKEND_API_URL in CONFIG.
  */
 function getBackendUrl() {
     if (cachedBackendUrl) return cachedBackendUrl;
 
-    let baseUrl = String(CONFIG.TAILSCALE_API_URL || '').trim();
+    let baseUrl = String(CONFIG.BACKEND_API_URL || '').trim();
     baseUrl = baseUrl.replace(/\/+$/, '');
     // Normalize to root URL. We append /api/... later.
     if (baseUrl.endsWith('/api')) {
@@ -611,7 +614,7 @@ function extractReceiptData(fileBlob, paymentMethod) {
                 }
                 if (longestNumber) confirmationNumber = longestNumber;
             }
-        } else if (paymentMethod.includes('העברה')) {
+        } else if (paymentMethod.includes('העברה') && paymentMethod.includes('הפועלים')) {
             const withDashesPattern = /\d+(?:-\d+)+/g;
             const withDashesMatches = fullText.match(withDashesPattern);
             if (withDashesMatches) {
@@ -643,12 +646,15 @@ function extractReceiptData(fileBlob, paymentMethod) {
 }
 
 /**
- * Handle detailed income notification - sent to Business Owner
+ * Handle detailed income notification - sent to business owner
  */
 function handleIncomeDetailed(payload) {
     try {
         const data = payload.data;
-        const subject = payload.subject ? payload.subject.replace(/💰/g, '').trim() : `תשלום חדש - ${data.customerName || 'לקוחה'}`;
+        const isUpdate = data.isUpdate === true;
+        const subjectPrefix = isUpdate ? 'עדכון תשלום' : 'תשלום חדש';
+        
+        const subject = payload.subject ? payload.subject.replace(/💰/g, '').trim() : `${subjectPrefix} - ${data.customerName || 'לקוחה'}`;
         const amount = data.amount || 0;
         const customerName = data.customerName || 'לא צוין';
         const phone = normalizePhone(data.customerPhone || 'לא צוין');
@@ -679,7 +685,7 @@ function handleIncomeDetailed(payload) {
             } catch (e) { }
         }
 
-        console.log(`Processing detailed income for ${customerName}`);
+        console.log(`Processing detailed income for ${customerName} (isUpdate: ${isUpdate})`);
 
         const attachments = [];
         let fileBlob = null;
@@ -716,7 +722,7 @@ function handleIncomeDetailed(payload) {
         // Construct HTML body with all new fields
         let htmlBody = `
             <div dir="rtl" style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; text-align: right; border: 1px solid #eee; border-radius: 10px;">
-                <h2 style="color: #28a745; text-align: center; border-bottom: 2px solid #28a745; padding-bottom: 10px;">פרטי תשלום חדש</h2>
+                <h2 style="color: #28a745; text-align: center; border-bottom: 2px solid #28a745; padding-bottom: 10px;">פרטי ${isUpdate ? 'עדכון תשלום' : 'תשלום חדש'}</h2>
                 
                 <table style="width: 100%; border-collapse: collapse; margin-top: 20px;">
                     <tr>
@@ -773,13 +779,13 @@ function handleIncomeDetailed(payload) {
                 
                 <div style="margin-top: 30px; padding-top: 15px; border-top: 1px solid #eee; text-align: center; color: #666; font-size: 0.9em;">
                     ${attachments.length > 0 ? '<p>קובץ האסמכתא מצורף למייל זה.</p>' : ''}
-                    <p style="font-size: 0.8em;">נשלח אוטומטית ממערכת ניהול העסק</p>
+                    <p style="font-size: 0.8em;">נשלח אוטומטית ממערכת ניהול העסק של ישראל ישראלי</p>
                 </div>
             </div>
         `;
 
         GmailApp.sendEmail(CONFIG.OWNER_EMAIL, subject, 'פרטי תשלום חדש', {
-            name: 'Your Business Name',
+            name: 'השכרת שמלות - דמו',
             htmlBody: htmlBody,
             attachments: attachments.length > 0 ? attachments : undefined
         });
@@ -908,7 +914,7 @@ function handleOrderNotification(payload) {
         `;
 
         GmailApp.sendEmail(CONFIG.OWNER_EMAIL, subject, 'פרטי הזמנה חדשה', {
-            name: 'Your Business Name',
+            name: 'השכרת שמלות - דמו',
             replyTo: CONFIG.OWNER_EMAIL,
             htmlBody,
             attachments: attachments.length > 0 ? attachments : undefined
@@ -1029,12 +1035,15 @@ function handleNotificationGeneric(payload, type) {
         // Fallback for body if no HTML (should not happen with new backend logic)
         const bodyText = `New ${type} notification received. check Drive for details if attached.`;
 
-        GmailApp.sendEmail(CONFIG.OWNER_EMAIL, subject, bodyText, {
-            name: 'Your Business Name',
-            htmlBody: htmlBody
-        });
-
-        console.log(`Sent ${type} notification email to process owner`);
+        if (type !== 'expense') {
+            GmailApp.sendEmail(CONFIG.OWNER_EMAIL, subject, bodyText, {
+                name: 'השכרת שמלות - דמו',
+                htmlBody: htmlBody
+            });
+            console.log(`Sent ${type} notification email to process owner`);
+        } else {
+            console.log(`Skipped sending email for ${type} as per new logic`);
+        }
 
         return { success: true, type: `${type}_notification` };
 
@@ -1071,6 +1080,140 @@ function uploadFileToDrive(base64Data, fileName, folderPath) {
     else if (fileName.toLowerCase().endsWith('.png')) blob.setContentType(MimeType.PNG);
 
     return currentFolder.createFile(blob);
+}
+
+/**
+ * Handle renaming/moving a file in Google Drive
+ */
+function handleDriveRename(payload) {
+    try {
+        const { oldFolder, oldFileName, newFolder, newFileName } = payload.data || {};
+        if (!oldFolder || !oldFileName || !newFileName) {
+            return { success: false, type: 'drive_rename', error: 'Missing required fields for rename' };
+        }
+
+        const baseFolder = DriveApp.getFolderById(CONFIG.DRIVE_BASE_FOLDER_ID);
+
+        // 1. Find the target file in the old folder
+        const oldPathFolders = oldFolder.split('/');
+        let currentOldFolder = baseFolder;
+        for (const f of oldPathFolders) {
+            const folders = currentOldFolder.getFoldersByName(f);
+            if (folders.hasNext()) {
+                currentOldFolder = folders.next();
+            } else {
+                return { success: false, type: 'drive_rename', error: `Old folder path not found: ${f}` };
+            }
+        }
+
+        const files = currentOldFolder.getFilesByName(oldFileName);
+        if (!files.hasNext()) {
+            return { success: false, type: 'drive_rename', error: `File not found: ${oldFileName}` };
+        }
+
+        const file = files.next();
+        file.setName(newFileName);
+
+        // 2. Move file if folder changed
+        if (newFolder && newFolder !== oldFolder) {
+            let currentNewFolder = baseFolder;
+            const newPathFolders = newFolder.split('/');
+            for (const f of newPathFolders) {
+                currentNewFolder = findOrCreateFolder(currentNewFolder, f);
+            }
+            file.moveTo(currentNewFolder);
+        }
+
+        console.log(`Renamed file to ${newFileName} in ${newFolder || oldFolder}`);
+        return { success: true, type: 'drive_rename', newFileName, url: file.getUrl() };
+
+    } catch (error) {
+        console.error('Error renaming in Drive:', error);
+        return { success: false, type: 'drive_rename', error: error.message };
+    }
+}
+
+/**
+ * Handle updates to an order (Calendar and Tasks sync)
+ */
+function handleOrderUpdate(payload) {
+    try {
+        const { oldCustomerName, oldEventDate, newCustomerName, newEventDate, newOrderSummary } = payload.data || {};
+
+        if (!oldCustomerName) {
+            return { success: false, error: 'Missing oldCustomerName for update' };
+        }
+
+        const results = { calendar: false, task: false };
+
+        // 1. Update Calendar Event (Search by old title)
+        const oldCalendarTitle = `חתונה ${oldCustomerName}`;
+        const newCalendarTitle = `חתונה ${newCustomerName || oldCustomerName}`;
+        const calendar = CalendarApp.getDefaultCalendar();
+
+        // We look for events matching the title around the old date (from 1 day before to 1 day after, to handle timezone differences safety)
+        const activeDate = new Date(oldEventDate || new Date());
+        const searchStart = new Date(activeDate.getTime() - 1 * 24 * 60 * 60 * 1000); // 1 day before
+        const searchEnd = new Date(activeDate.getTime() + 1 * 24 * 60 * 60 * 1000);   // 1 day after
+
+        const events = calendar.getEvents(searchStart, searchEnd, { search: oldCustomerName });
+        for (const e of events) {
+            if (e.getTitle() === oldCalendarTitle) {
+                e.setTitle(newCalendarTitle);
+                if (newEventDate && oldEventDate !== newEventDate) {
+                    e.setAllDayDate(new Date(newEventDate));
+                }
+                console.log(`Updated Calendar Event: ${oldCalendarTitle} -> ${newCalendarTitle}`);
+                results.calendar = true;
+                break;
+            }
+        }
+
+        // 2. Update Task
+        const taskListId = findOrCreateTaskList('לקוחות');
+        let pageToken = null;
+        let foundTask = null;
+
+        do {
+            const response = Tasks.Tasks.list(taskListId, { maxResults: 100, pageToken: pageToken });
+            const tasks = response.items || [];
+
+            for (const t of tasks) {
+                // If the old customer name is in the title, we assume this is the one.
+                if (t.title && t.title.includes(oldCustomerName)) {
+                    foundTask = t;
+                    break;
+                }
+            }
+            if (foundTask) break;
+            pageToken = response.nextPageToken;
+        } while (pageToken);
+
+        if (foundTask) {
+            // Build new title similar to handleWeddingTask
+            const activeEventDate = newEventDate ? new Date(newEventDate) : activeDate;
+            const hebrewDate = getHebrewDate(activeEventDate);
+            let newTitle = `${newCustomerName || oldCustomerName} ${hebrewDate}`;
+            if (newOrderSummary) {
+                newTitle += ` ${newOrderSummary}`;
+            }
+
+            foundTask.title = newTitle;
+            if (newEventDate && oldEventDate !== newEventDate) {
+                foundTask.due = new Date(newEventDate).toISOString();
+            }
+
+            Tasks.Tasks.update(foundTask, taskListId, foundTask.id);
+            console.log(`Updated Task: ${foundTask.id} -> ${newTitle}`);
+            results.task = true;
+        }
+
+        return { success: true, type: 'order_update', results };
+
+    } catch (error) {
+        console.error('Error updating order sync:', error);
+        return { success: false, type: 'order_update', error: error.message };
+    }
 }
 
 // ===========================================

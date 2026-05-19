@@ -8,8 +8,8 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/components/ui/use-toast";
 import { X, Plus, ArrowRight, Loader2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
-import { clearSharedUploadPayload, getSharedUploadPayload, base64ToFile } from "@/lib/shared-upload";
-import { resolveFileUrl } from "@/lib/utils";
+import { clearSharedUploadPayload, getSharedUploadPayload, base64ToFile, readImageFileAsBase64 } from "@/lib/shared-upload";
+import { reportClientError } from "@/lib/error-reporter";
 
 export default function EditDressPage() {
     const router = useRouter();
@@ -35,16 +35,16 @@ export default function EditDressPage() {
             try {
                 const res = await dressesApi.get(dressId);
                 if (res.success && res.data) {
-                    const dressBody = res.data as Record<string, unknown>;
-                    const dress = (dressBody.dress || dressBody) as Record<string, unknown>;
+                    const dressBody = res.data as any;
+                    const dress = dressBody.dress || dressBody;
                     setFormData({
-                        name: (dress.name as string) || "",
-                        base_price: (dress.base_price != null ? String(dress.base_price) : "") || "",
-                        status: (dress.status as string) || "available",
-                        intended_use: (dress.intended_use as string) || "",
-                        photo_url: (dress.photo_url as string) || "",
-                        thumbnail_url: (dress.thumbnail_url as string) || "",
-                        notes: (dress.notes as string) || "",
+                        name: dress.name,
+                        base_price: dress.base_price?.toString() || "",
+                        status: dress.status,
+                        intended_use: dress.intended_use || "",
+                        photo_url: dress.photo_url || "",
+                        thumbnail_url: dress.thumbnail_url || "",
+                        notes: dress.notes || "",
                     });
 
                     // Check for shared image payload exactly after fetching the dress
@@ -90,7 +90,20 @@ export default function EditDressPage() {
         const file = e.target.files?.[0];
         if (!file) return;
 
-        if (!file.type.startsWith("image/")) {
+        // Some Android devices return an empty file.type when selecting from the
+        // gallery through a capture="environment" input. Fall back to extension.
+        let mimeType = file.type;
+        if (!mimeType) {
+            const ext = file.name.split('.').pop()?.toLowerCase() || '';
+            const extMap: Record<string, string> = {
+                jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
+                gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp',
+                heic: 'image/heic', heif: 'image/heif',
+            };
+            mimeType = extMap[ext] || '';
+        }
+
+        if (!mimeType.startsWith("image/")) {
             toast({ title: "שגיאה", description: "ניתן להעלות רק קובצי תמונה", variant: "destructive" });
             return;
         }
@@ -102,7 +115,12 @@ export default function EditDressPage() {
 
         setSaving(true);
         try {
-            const res = await dressesApi.uploadImage(file);
+            // Use canvas-based image loading to bypass broken FileReader on some Android Chrome builds (HyperOS observed).
+            // On devices like Poco M7 Pro, capture="environment" files are MediaStore
+            // content URIs that Chrome's JS file APIs cannot read reliably. Loading via
+            // new Image() uses Chrome's native decode pipeline which works correctly.
+            const base64 = await readImageFileAsBase64(file);
+            const res = await dressesApi.uploadImageBase64(base64);
             if (res.success && res.data) {
                 setFormData(prev => ({
                     ...prev,
@@ -113,6 +131,12 @@ export default function EditDressPage() {
             }
         } catch (error) {
             toast({ title: "שגיאה", description: "העלאת תמונה נכשלה", variant: "destructive" });
+            reportClientError({
+                message: error instanceof Error ? error.message : String(error),
+                stack: error instanceof Error ? error.stack : undefined,
+                component: 'EditDress',
+                action: 'העלאת תמונת שמלה'
+            });
         } finally {
             setSaving(false);
         }
@@ -140,16 +164,21 @@ export default function EditDressPage() {
             toast({ title: "הצלחה", description: "שמלה עודכנה בהצלחה" });
             router.push("/dashboard/dresses");
         } catch (error) {
+            const message = error instanceof Error ? error.message : "שגיאה בעדכון שמלה";
             toast({
                 title: "שגיאה",
-                description: error instanceof Error ? error.message : "שגיאה בעדכון שמלה",
+                description: message,
                 variant: "destructive",
+            });
+            reportClientError({
+                message,
+                stack: error instanceof Error ? error.stack : undefined,
+                component: 'EditDress',
+                action: 'עדכון שמלה'
             });
             setSaving(false);
         }
     };
-
-    const imageSrc = resolveFileUrl(formData.photo_url) || formData.photo_url;
 
     if (loading) {
         return (
@@ -235,7 +264,7 @@ export default function EditDressPage() {
                                 {formData.photo_url ? (
                                     <div className="relative h-64 w-full rounded-2xl overflow-hidden border-2 border-primary/20 bg-muted/30 group">
                                         <img
-                                            src={imageSrc || ""}
+                                            src={formData.photo_url || ""}
                                             alt="תצוגה מקדימה"
                                             className="w-full h-full object-contain"
                                         />

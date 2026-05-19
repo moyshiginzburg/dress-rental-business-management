@@ -11,19 +11,23 @@
 import { useEffect, useState, useCallback } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { DateRangeFilter } from "@/components/ui/date-range-filter";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ordersApi, agreementsApi, orderAttachmentsApi } from "@/lib/api";
+import { ordersApi, agreementsApi } from "@/lib/api";
 import {
   formatCurrency,
   formatDateShort,
   getStatusLabel,
   getStatusColor,
+  computeOrderDisplayStatus,
   createWhatsAppLink,
   formatPhoneNumber,
+  resolveFileUrl,
   cn,
 } from "@/lib/utils";
 import { useToast } from "@/components/ui/use-toast";
+import { prepareAttachmentsForUpload } from "@/lib/shared-upload";
 import {
   ShoppingBag,
   Plus,
@@ -37,9 +41,11 @@ import {
   CreditCard,
   Eye,
   Check,
-  FileText,
   Paperclip,
   Download,
+  FileText,
+  Search,
+  FileSignature,
 } from "lucide-react";
 
 interface Order {
@@ -56,13 +62,21 @@ interface Order {
   status: string;
   notes: string | null;
   order_summary: string | null;
+  local_agreement_path?: string | null;
   source?: string | null;
   created_at: string;
+  updated_at?: string;
 }
 
 interface OrderDetailData {
   order: Order;
   items: any[];
+  agreement?: {
+    id: number;
+    agreed_at?: string | null;
+    created_at?: string | null;
+    pdf_url?: string | null;
+  } | null;
 }
 
 interface Attachment {
@@ -89,12 +103,27 @@ const getItemTypeLabel = (type: string) => {
   return types[type] || type;
 };
 
+const isOrderVersionSigned = (orderUpdatedAt?: string | null, agreementSignedAt?: string | null) => {
+  if (!orderUpdatedAt || !agreementSignedAt) return false;
+
+  const normalizeForDateParse = (value: string) => (value.includes("T") ? value : value.replace(" ", "T"));
+  const orderTs = Date.parse(normalizeForDateParse(orderUpdatedAt));
+  const signedTs = Date.parse(normalizeForDateParse(agreementSignedAt));
+
+  if (!Number.isNaN(orderTs) && !Number.isNaN(signedTs)) {
+    return orderTs <= signedTs;
+  }
+
+  return String(orderUpdatedAt) <= String(agreementSignedAt);
+};
+
 export default function OrdersPage() {
   const { toast } = useToast();
   const router = useRouter();
   const searchParams = useSearchParams();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [dateFrom, setDateFrom] = useState<string | null>(null);
   const [dateTo, setDateTo] = useState<string | null>(null);
@@ -176,9 +205,17 @@ export default function OrdersPage() {
     }
   };
 
+  const [debouncedSearch, setDebouncedSearch] = useState(search);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+
   const fetchOrders = useCallback(async (sortCol: string = "event_date", sortDir: string = "desc") => {
     try {
       const response = await ordersApi.list({
+        search: debouncedSearch || undefined,
         status: statusFilter || undefined,
         startDate: dateFrom || undefined,
         endDate: dateTo || undefined,
@@ -196,7 +233,7 @@ export default function OrdersPage() {
     } finally {
       setLoading(false);
     }
-  }, [statusFilter, dateFrom, dateTo, toast]);
+  }, [statusFilter, dateFrom, dateTo, debouncedSearch, toast]);
 
   useEffect(() => {
     fetchOrders(sortBy, sortOrder);
@@ -243,7 +280,7 @@ export default function OrdersPage() {
   const fetchAttachments = async (orderId: number) => {
     setLoadingAttachments(true);
     try {
-      const res = await orderAttachmentsApi.list(orderId);
+      const res = await ordersApi.getAttachments(orderId);
       if (res.success && res.data) {
         setAttachments((res.data as any).attachments || []);
       }
@@ -255,23 +292,27 @@ export default function OrdersPage() {
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!viewingOrderData || !e.target.files?.length) return;
     const files = Array.from(e.target.files);
+    e.target.value = "";
     setUploadingFiles(true);
     try {
-      await orderAttachmentsApi.upload(viewingOrderData.order.id, files);
-      toast({ title: "הצלחה", description: `${files.length} קבצים הועלו` });
+      // Compress images client-side (max 2400px, JPEG q=0.92) before sending so
+      // multipart payloads stay under the Vercel proxy body limit. PDFs pass
+      // through untouched.
+      const prepared = await prepareAttachmentsForUpload(files);
+      await ordersApi.uploadAttachment(viewingOrderData.order.id, prepared);
+      toast({ title: "הצלחה", description: `${prepared.length} קבצים הועלו` });
       fetchAttachments(viewingOrderData.order.id);
     } catch (error) {
       toast({ title: "שגיאה", description: error instanceof Error ? error.message : "שגיאה בהעלאה", variant: "destructive" });
     } finally {
       setUploadingFiles(false);
-      e.target.value = "";
     }
   };
 
   const handleDeleteAttachment = async (attachmentId: number) => {
     if (!viewingOrderData || !confirm("למחוק קובץ זה?")) return;
     try {
-      await orderAttachmentsApi.delete(viewingOrderData.order.id, attachmentId);
+      await ordersApi.deleteAttachment(viewingOrderData.order.id, attachmentId);
       setAttachments(prev => prev.filter(a => a.id !== attachmentId));
       toast({ title: "הצלחה", description: "קובץ נמחק" });
     } catch {
@@ -282,7 +323,7 @@ export default function OrdersPage() {
   const handleSaveDescription = async (attachmentId: number) => {
     if (!viewingOrderData) return;
     try {
-      await orderAttachmentsApi.updateDescription(viewingOrderData.order.id, attachmentId, editingDescText);
+      await ordersApi.updateAttachment(viewingOrderData.order.id, attachmentId, { description: editingDescText });
       setAttachments(prev => prev.map(a => a.id === attachmentId ? { ...a, description: editingDescText } : a));
       setEditingDescId(null);
     } catch {
@@ -298,10 +339,14 @@ export default function OrdersPage() {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
-  const handleCreateSignLinkForViewedOrder = async (openWhatsapp: boolean) => {
+  const handleCreateSignLinkForViewedOrder = async (
+    options?: { openWhatsapp?: boolean; copyToClipboard?: boolean }
+  ): Promise<string | null> => {
     if (!viewingOrderData) return;
 
     const orderId = viewingOrderData.order.id;
+    const shouldOpenWhatsapp = options?.openWhatsapp === true;
+    const shouldCopyToClipboard = options?.copyToClipboard !== false;
     setCreatingSignLinkForOrderId(orderId);
     try {
       const response = await agreementsApi.createSignLink(orderId);
@@ -312,28 +357,52 @@ export default function OrdersPage() {
       const data = response.data as { link: string; whatsappLink?: string | null };
       setViewSignLink({ link: data.link, whatsappLink: data.whatsappLink });
 
-      try {
-        await navigator.clipboard.writeText(data.link);
-        toast({ title: "קישור חתימה מוכן", description: "הקישור הועתק ללוח." });
-      } catch {
-        toast({ title: "קישור חתימה מוכן", description: data.link });
+      if (shouldCopyToClipboard) {
+        try {
+          await navigator.clipboard.writeText(data.link);
+          toast({ title: "קישור חתימה מוכן", description: "הקישור הועתק ללוח." });
+        } catch {
+          toast({ title: "קישור חתימה מוכן", description: data.link });
+        }
       }
 
-      if (openWhatsapp && data.whatsappLink) {
+      if (shouldOpenWhatsapp && data.whatsappLink) {
         window.open(data.whatsappLink, "_blank", "noopener,noreferrer");
       }
+      return data.link;
     } catch (error) {
       toast({
         title: "שגיאה",
         description: error instanceof Error ? error.message : "לא ניתן ליצור קישור חתימה",
         variant: "destructive",
       });
+      return null;
     } finally {
       setCreatingSignLinkForOrderId(null);
     }
   };
 
-  const activeOrdersCount = orders.filter((o) => o.status === "active").length;
+  const handleOpenImmediateSignForViewedOrder = async () => {
+    if (!viewingOrderData) return;
+
+    let link = viewSignLink?.link || "";
+    if (!link) {
+      const generatedLink = await handleCreateSignLinkForViewedOrder({ copyToClipboard: false });
+      if (!generatedLink) return;
+      link = generatedLink;
+    }
+
+    window.location.assign(link);
+  };
+
+  // Count shown in the top tile mirrors the current filter result (all loaded orders).
+  const ordersCount = orders.length;
+
+  const viewedAgreement = viewingOrderData?.agreement || null;
+  const viewedAgreementSignedAt = viewedAgreement?.agreed_at || viewedAgreement?.created_at || null;
+  const viewedOrderUpdatedAt = viewingOrderData?.order?.updated_at || null;
+  const isViewedOrderCurrentlySigned = isOrderVersionSigned(viewedOrderUpdatedAt, viewedAgreementSignedAt);
+  const viewedSignedAgreementPdfUrl = viewedAgreement?.pdf_url || null;
 
   // Financial Summary Calculations
   const ordersSummary = orders.filter(o => o.status !== 'cancelled').reduce((acc, o) => {
@@ -359,14 +428,10 @@ export default function OrdersPage() {
   return (
     <div className="space-y-8 pb-24">
       {/* Header Section */}
-      <div className="flex flex-col md:flex-row md:items-end justify-between gap-6">
+      <div className="flex flex-row items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2 text-green-600 mb-1">
-            <ShoppingBag className="h-4 w-4" />
-            <span className="text-xs font-bold uppercase tracking-wider">ניהול הזמנות</span>
-          </div>
-          <h1 className="text-4xl font-black">ההזמנות <span className="text-green-600">שלי</span></h1>
-          <p className="text-muted-foreground font-medium mt-1">מרכז הבקרה על כל ההשכרות והתפירות</p>
+          <h1 className="text-2xl sm:text-4xl font-black">ההזמנות <span className="text-green-600">שלי</span></h1>
+          <p className="text-xs sm:text-sm text-muted-foreground font-medium mt-1">מרכז הבקרה על ההשכרות</p>
         </div>
         <div className="flex gap-2">
           <Button
@@ -375,56 +440,68 @@ export default function OrdersPage() {
               setIsSelectionMode(!isSelectionMode);
               setSelectedIds([]);
             }}
-            className="h-14 px-4 rounded-2xl border-2 font-bold"
+            size="sm"
+            className="h-10 px-3 rounded-xl border-2 font-bold text-xs sm:text-sm"
           >
-            {isSelectionMode ? "ביטול בחירה" : "בחירה מרובה"}
+            {isSelectionMode ? "ביטול" : "מיזוג"}
           </Button>
           <Button
             onClick={() => router.push('/dashboard/orders/new')}
-            className="h-14 px-8 rounded-2xl shadow-xl shadow-green-500/20 bg-green-600 hover:bg-green-700 text-lg font-bold gap-2"
+            size="sm"
+            className="h-10 px-4 rounded-xl shadow-md bg-green-600 hover:bg-green-700 text-xs sm:text-sm font-bold gap-1"
           >
-            <Plus className="h-6 w-6" />
-            הזמנה חדשה
+            <Plus className="h-4 w-4" />
+            <span>הזמנה חדשה</span>
           </Button>
         </div>
       </div>
 
       {/* Financial Summary Dashboard */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card className="rounded-3xl border-none shadow-sm bg-white overflow-hidden">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-4">
+        <Card className="rounded-2xl border-none shadow-sm bg-white overflow-hidden">
           <div className="h-1 w-full bg-primary" />
-          <CardContent className="p-6">
-            <p className="text-xs font-bold text-muted-foreground uppercase mb-1">הזמנות פעילות</p>
-            <div className="flex items-baseline gap-2">
-              <span className="text-3xl font-black">{activeOrdersCount}</span>
-              <span className="text-muted-foreground text-sm">הזמנות</span>
+          <CardContent className="p-3 sm:p-5">
+            <p className="text-[10px] sm:text-xs font-bold text-muted-foreground uppercase mb-1">הזמנות</p>
+            <div className="flex items-baseline gap-1 sm:gap-2">
+              <span className="text-lg sm:text-2xl font-black">{ordersCount}</span>
             </div>
           </CardContent>
         </Card>
 
-        <Card className="rounded-3xl border-none shadow-sm bg-white overflow-hidden">
+        <Card className="rounded-2xl border-none shadow-sm bg-white overflow-hidden">
           <div className="h-1 w-full bg-green-500" />
-          <CardContent className="p-6">
-            <p className="text-xs font-bold text-muted-foreground uppercase mb-1">סה&quot;כ הכנסות</p>
-            <div className="text-3xl font-black text-green-600">{formatCurrency(ordersSummary.totalPaid)}</div>
+          <CardContent className="p-3 sm:p-5">
+            <p className="text-[10px] sm:text-xs font-bold text-muted-foreground uppercase mb-1">סה&quot;כ הכנסות</p>
+            <div className="text-lg sm:text-2xl font-black text-green-600">{formatCurrency(ordersSummary.totalPaid)}</div>
           </CardContent>
         </Card>
 
-        <Card className="rounded-3xl border-none shadow-sm bg-white overflow-hidden">
+        <Card className="rounded-2xl border-none shadow-sm bg-white overflow-hidden">
           <div className="h-1 w-full bg-orange-500" />
-          <CardContent className="p-6">
-            <p className="text-xs font-bold text-muted-foreground uppercase mb-1">חובות לקוחות</p>
-            <div className="text-3xl font-black text-orange-600">{formatCurrency(ordersSummary.totalDebt)}</div>
+          <CardContent className="p-3 sm:p-5">
+            <p className="text-[10px] sm:text-xs font-bold text-muted-foreground uppercase mb-1">חובות לקוחות</p>
+            <div className="text-lg sm:text-2xl font-black text-orange-600">{formatCurrency(ordersSummary.totalDebt)}</div>
           </CardContent>
         </Card>
 
-        <Card className="rounded-3xl border-none shadow-sm bg-white overflow-hidden">
+        <Card className="rounded-2xl border-none shadow-sm bg-white overflow-hidden">
           <div className="h-1 w-full bg-blue-500" />
-          <CardContent className="p-6">
-            <p className="text-xs font-bold text-muted-foreground uppercase mb-1">יתרות זכות</p>
-            <div className="text-3xl font-black text-blue-600">{formatCurrency(ordersSummary.totalCredit)}</div>
+          <CardContent className="p-3 sm:p-5">
+            <p className="text-[10px] sm:text-xs font-bold text-muted-foreground uppercase mb-1">יתרות זכות</p>
+            <div className="text-lg sm:text-2xl font-black text-blue-600">{formatCurrency(ordersSummary.totalCredit)}</div>
           </CardContent>
         </Card>
+      </div>
+
+      {/* Search Bar */}
+      <div className="relative">
+        <Search className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+        <Input
+          placeholder="חיפוש לקוחה או הזמנה..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="h-12 pr-10 rounded-xl bg-white border-none shadow-sm text-sm sm:text-base"
+        />
       </div>
 
       {/* Filters Section */}
@@ -437,8 +514,8 @@ export default function OrdersPage() {
               onDateChange={(from, to) => { setDateFrom(from); setDateTo(to); }}
             />
           </div>
-          <div className="flex gap-4 w-full md:w-auto overflow-x-auto pb-2 md:pb-0">
-            <div className="w-48 shrink-0">
+          <div className="flex gap-2 w-full">
+            <div className="flex-1 min-w-0">
               <select
                 value={`${sortBy}-${sortOrder}`}
                 onChange={(e) => {
@@ -446,22 +523,23 @@ export default function OrdersPage() {
                   setSortBy(col);
                   setSortOrder(dir);
                 }}
-                className="w-full h-12 px-4 rounded-xl border-2 bg-background font-bold text-sm"
+                className="w-full h-10 px-2 sm:px-4 rounded-xl border-2 bg-background font-bold text-xs sm:text-sm"
               >
-                <option value="event_date-desc">תאריך אירוע (קרובים תחילה)</option>
-                <option value="event_date-asc">תאריך אירוע (רחוקים תחילה)</option>
-                <option value="customer_name-asc">שם הלקוחה (א' - ת')</option>
+                <option value="event_date-desc">קרובים תחילה</option>
+                <option value="event_date-asc">רחוקים תחילה</option>
+                <option value="customer_name-asc">שם הלקוחה</option>
                 <option value="last_active_date-desc">פעילות אחרונה</option>
               </select>
             </div>
-            <div className="w-48 shrink-0">
+            <div className="flex-1 min-w-0">
               <select
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
-                className="w-full h-12 px-4 rounded-xl border-2 bg-background font-bold text-sm"
+                className="w-full h-10 px-2 sm:px-4 rounded-xl border-2 bg-background font-bold text-xs sm:text-sm"
               >
                 <option value="">כל הסטטוסים</option>
-                <option value="active">פעילה</option>
+                <option value="open">פתוחה</option>
+                <option value="completed">הושלמה</option>
                 <option value="cancelled">בוטלה</option>
               </select>
             </div>
@@ -498,150 +576,131 @@ export default function OrdersPage() {
                   </div>
                 )}
                 <Card
-                  onClick={() => isSelectionMode && toggleSelection(order.id)}
+                  onClick={() => isSelectionMode ? toggleSelection(order.id) : viewOrder(order.id)}
                   className={cn(
-                    "rounded-[2rem] border-none shadow-sm overflow-hidden transition-all hover:shadow-md",
-                    order.status === "cancelled" ? "opacity-50 grayscale" : "bg-white",
-                    isSelectionMode && "cursor-pointer hover:ring-2 hover:ring-green-500/50",
-                    selectedIds.includes(order.id) && "ring-2 ring-green-600 bg-green-50/50"
+                    "rounded-2xl border-2 shadow-sm overflow-hidden transition-all hover:shadow-md cursor-pointer",
+                    order.status === "cancelled" ? "border-muted opacity-50 grayscale" : "border-muted hover:border-green-300 bg-white",
+                    selectedIds.includes(order.id) && "ring-2 ring-green-600 border-green-600 bg-green-50/50"
                   )}
                 >
                   <CardContent className="p-0">
-                    <div className="flex flex-col lg:flex-row">
+                    <div className="flex flex-col md:flex-row">
                       {/* Customer & Status Info */}
-                      <div className="p-6 lg:w-1/3 border-b lg:border-b-0 lg:border-l flex flex-col justify-between bg-muted/10">
+                      <div className="p-4 md:p-5 md:w-1/2 flex flex-col justify-between">
                         <div>
-                          <div className="flex items-center justify-between mb-4">
-                            <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">הזמנה #{order.id}</span>
-                            <span className={cn("px-3 py-1 rounded-full text-[10px] font-black uppercase", getStatusColor(order.status))}>
-                              {getStatusLabel(order.status)}
-                            </span>
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">הזמנה #{order.id}</span>
+                              <span className={cn("px-2 py-0.5 rounded-full text-[10px] font-black uppercase", getStatusColor(computeOrderDisplayStatus(order)))}>
+                                {getStatusLabel(computeOrderDisplayStatus(order))}
+                              </span>
+                            </div>
+                            
+                            {!isSelectionMode && (
+                              <div className="flex items-center gap-1 -mt-1 -mr-2">
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-8 w-8 text-muted-foreground hover:text-primary"
+                                  onClick={(e) => { e.stopPropagation(); router.push(`/dashboard/orders/${order.id}/edit`); }}
+                                  title="עריכה"
+                                >
+                                  <Edit className="h-4 w-4" />
+                                </Button>
+                                {order.status !== "cancelled" && (
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                                    onClick={(e) => { e.stopPropagation(); handleDelete(order); }}
+                                    title="ביטול"
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                                )}
+                              </div>
+                            )}
                           </div>
-                          <h3 className="text-2xl font-black mb-1">{order.customer_name}</h3>
-                          <div className="flex items-center gap-2 mb-4">
+                          <div className="flex items-center justify-between mb-1">
+                            <h3 className="text-xl font-black">{order.customer_name}</h3>
+                            {order.event_date && (
+                              <div className="flex items-center gap-1.5 text-xs font-bold text-muted-foreground bg-muted/50 px-2 py-1 rounded-lg">
+                                <Calendar className="h-3.5 w-3.5" />
+                                {formatDateShort(order.event_date)}
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 mb-3">
                             <p className="text-sm font-medium text-muted-foreground">{formatPhoneNumber(order.customer_phone)}</p>
                             {order.customer_phone && (
                               <a
                                 href={createWhatsAppLink(order.customer_phone)}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="h-7 w-7 bg-green-500 hover:bg-green-600 justify-center text-white rounded-full flex items-center transition-colors shadow-sm"
+                                className="h-6 w-6 bg-green-500 hover:bg-green-600 justify-center text-white rounded-full flex items-center transition-colors shadow-sm"
                                 title="שלחי הודעת וואטסאפ"
                                 onClick={(e) => e.stopPropagation()}
                               >
-                                <MessageCircle className="h-3.5 w-3.5" />
+                                <MessageCircle className="h-3 w-3" />
                               </a>
                             )}
                           </div>
                         </div>
 
-                        <div className="flex flex-wrap items-center gap-2 mt-auto pt-4 border-t border-muted">
-                          {order.event_date && (
-                            <div className="flex items-center gap-1.5 text-xs font-bold text-muted-foreground">
-                              <Calendar className="h-3.5 w-3.5" />
-                              {formatDateShort(order.event_date)}
+                        <div className="flex flex-wrap items-center gap-1.5 mt-auto">
+                          {order.order_summary && (
+                            <div className="text-[10px] font-bold text-primary px-2 py-0.5 bg-primary/5 rounded-lg">
+                              {order.order_summary}
                             </div>
                           )}
-                          {order.order_summary && (
-                            <>
-                              <span className="hidden sm:inline text-muted-foreground/30">•</span>
-                              <div className="text-xs font-bold text-primary px-2 py-0.5 bg-primary/5 rounded-lg truncate max-w-[200px]">
-                                {order.order_summary}
-                              </div>
-                            </>
-                          )}
                           {order.notes && (
-                            <>
-                              <span className="hidden sm:inline text-muted-foreground/30">•</span>
-                              <div className="text-xs font-bold text-orange-600 px-2 py-0.5 bg-orange-50 rounded-lg flex items-center gap-1 max-w-[150px]" title={order.notes}>
-                                <FileText className="h-3.5 w-3.5 shrink-0" />
-                                <span className="truncate">{order.notes}</span>
-                              </div>
-                            </>
+                            <div className="text-[10px] font-bold text-orange-600 px-2 py-0.5 bg-orange-50 rounded-lg flex items-center gap-1" title={order.notes}>
+                              <FileText className="h-3 w-3 shrink-0" />
+                              <span className="leading-tight">{order.notes}</span>
+                            </div>
                           )}
                         </div>
                       </div>
 
                       {/* Financial Summary Section */}
-                      <div className="p-6 lg:w-2/5 flex flex-col justify-center gap-6 border-b lg:border-b-0 lg:border-l">
+                      <div className="p-4 md:p-5 md:w-1/2 flex flex-row justify-between items-center bg-muted/5 md:border-r border-t md:border-t-0">
                         <div className="grid grid-cols-2 gap-4">
-                          <div className="space-y-1">
+                          <div className="space-y-0.5">
                             <p className="text-[10px] font-bold text-muted-foreground uppercase">סה&quot;כ לתשלום</p>
-                            <div className="text-xl font-black flex flex-col">
+                            <div className="text-sm sm:text-base font-black flex flex-col">
                               {formatCurrency(totalWithCharges)}
                               {(order.total_customer_charge > 0) && (
                                 <span className="text-[9px] font-bold text-orange-600 mt-0.5">
-                                  (כולל {formatCurrency(order.total_customer_charge)} הוצאות)
+                                  (כולל {formatCurrency(order.total_customer_charge)})
                                 </span>
                               )}
                             </div>
                           </div>
-                          <div className="space-y-1">
+                          <div className="space-y-0.5">
                             <p className="text-[10px] font-bold text-muted-foreground uppercase">שולם בפועל</p>
-                            <div className="text-xl font-black text-green-600">{formatCurrency(order.paid_amount)}</div>
+                            <div className="text-sm sm:text-base font-black text-green-600">{formatCurrency(order.paid_amount)}</div>
                           </div>
                         </div>
 
                         <div className={cn(
-                          "p-4 rounded-2xl flex items-center justify-between",
+                          "px-3 py-2 rounded-xl flex items-center gap-2",
                           isFullyPaid ? "bg-green-50 border border-green-100" :
                             hasDebt ? "bg-orange-50 border border-orange-100" :
                               "bg-blue-50 border border-blue-100"
                         )}>
                           <div>
-                            <p className="text-[10px] font-black uppercase opacity-60">
+                            <p className="text-[9px] font-black uppercase opacity-60">
                               {isFullyPaid ? "שולם במלואו" : hasDebt ? "יתרת חוב" : "יתרת זכות"}
                             </p>
                             <p className={cn(
-                              "text-2xl font-black",
+                              "text-sm sm:text-lg font-black",
                               isFullyPaid ? "text-green-700" : hasDebt ? "text-orange-700" : "text-blue-700"
                             )}>
                               {formatCurrency(Math.abs(balance))}
                             </p>
                           </div>
-                          <div className={cn(
-                            "h-10 w-10 rounded-full flex items-center justify-center",
-                            isFullyPaid ? "bg-green-200/50 text-green-700" :
-                              hasDebt ? "bg-orange-200/50 text-orange-700" :
-                                "bg-blue-200/50 text-blue-700"
-                          )}>
-                            <CreditCard className="h-5 w-5" />
-                          </div>
                         </div>
                       </div>
-
-                      {/* Action Buttons */}
-                      {!isSelectionMode && (
-                        <div className="p-6 lg:w-1/4 flex flex-row lg:flex-col justify-center items-center gap-3 bg-muted/5">
-                          <Button
-                            variant="outline"
-                            size="lg"
-                            onClick={() => viewOrder(order.id)}
-                            className="flex-1 lg:w-full rounded-2xl font-bold h-12 border-2 hover:bg-white"
-                          >
-                            <Eye className="h-5 w-5 ml-2" /> צפייה
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="lg"
-                            onClick={() => router.push(`/dashboard/orders/${order.id}/edit`)}
-                            className="flex-1 lg:w-full rounded-2xl font-bold h-12 border-2 border-primary/20 text-primary hover:bg-primary/5"
-                          >
-                            <Edit className="h-5 w-5 ml-2" /> עריכה
-                          </Button>
-                          <div className="flex gap-2 w-full mt-auto mb-auto lg:mt-0 lg:mb-0">
-                            {order.status !== "cancelled" && (
-                              <Button
-                                variant="ghost"
-                                onClick={(e) => { e.stopPropagation(); handleDelete(order); }}
-                                className="flex-1 lg:w-full rounded-2xl font-bold h-12 text-destructive hover:bg-destructive/5"
-                              >
-                                <Trash2 className="h-5 w-5 ml-2" /> ביטול
-                              </Button>
-                            )}
-                          </div>
-                        </div>
-                      )}
                     </div>
                   </CardContent>
                 </Card>
@@ -786,7 +845,13 @@ export default function OrdersPage() {
               <div className="p-6 space-y-8">
                 {/* Customer Summary */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="p-5 bg-muted/30 rounded-[1.5rem] border-2 border-muted">
+                  <div
+                    className="p-5 bg-muted/30 rounded-[1.5rem] border-2 border-muted cursor-pointer hover:ring-2 hover:ring-primary/40 transition-all"
+                    onClick={() => {
+                      setViewingOrderData(null);
+                      router.push(`/dashboard/customers?editId=${viewingOrderData.order.customer_id}`);
+                    }}
+                  >
                     <h4 className="text-[10px] font-black text-green-600 uppercase tracking-widest mb-3">פרטי לקוחה</h4>
                     <p className="font-black text-xl mb-1">{viewingOrderData.order.customer_name}</p>
                     <p className="text-sm font-medium mb-1">{formatPhoneNumber(viewingOrderData.order.customer_phone)}</p>
@@ -795,8 +860,8 @@ export default function OrdersPage() {
                     <h4 className="text-[10px] font-black text-green-600 uppercase tracking-widest mb-3">פרטי אירוע</h4>
                     <div className="flex items-center justify-between">
                       <p className="font-black text-xl">{viewingOrderData.order.event_date ? formatDateShort(viewingOrderData.order.event_date) : "לא הוזן"}</p>
-                      <span className={cn("px-3 py-1 rounded-full text-[10px] font-black uppercase", getStatusColor(viewingOrderData.order.status))}>
-                        {getStatusLabel(viewingOrderData.order.status)}
+                      <span className={cn("px-3 py-1 rounded-full text-[10px] font-black uppercase", getStatusColor(computeOrderDisplayStatus(viewingOrderData.order)))}>
+                        {getStatusLabel(computeOrderDisplayStatus(viewingOrderData.order))}
                       </span>
                     </div>
                     {viewingOrderData.order.order_summary && (
@@ -822,29 +887,52 @@ export default function OrdersPage() {
                   </div>
                   <div className="space-y-2">
                     {viewingOrderData.items.map((it, idx) => (
-                      <div key={idx} className="flex justify-between items-center p-4 bg-white border-2 rounded-2xl shadow-sm">
-                        <div className="flex items-center gap-3">
-                          <div className="h-10 w-10 bg-muted rounded-xl flex items-center justify-center">
-                            <ShoppingBag className="h-5 w-5 text-muted-foreground" />
+                      <div
+                        key={idx}
+                        className={cn(
+                          "p-4 bg-white border-2 rounded-2xl shadow-sm space-y-2",
+                          it.dress_id && "cursor-pointer hover:ring-2 hover:ring-primary/40 transition-all"
+                        )}
+                        onClick={() => {
+                          if (it.dress_id) {
+                            setViewingOrderData(null);
+                            router.push(`/dashboard/dresses?id=${it.dress_id}`);
+                          }
+                        }}
+                      >
+                        <div className="flex justify-between items-center">
+                          <div className="flex items-center gap-3">
+                            <div className="h-10 w-10 bg-muted rounded-xl flex items-center justify-center">
+                              <ShoppingBag className="h-5 w-5 text-muted-foreground" />
+                            </div>
+                            <div>
+                              <p className="font-black text-sm leading-snug break-words whitespace-normal">{it.dress_name}</p>
+                              <p className="text-[10px] font-bold text-muted-foreground uppercase">{getItemTypeLabel(it.item_type)} {it.wearer_name && `• ${it.wearer_name}`}</p>
+                            </div>
                           </div>
-                          <div>
-                            <p className="font-black text-sm leading-snug break-words whitespace-normal">{it.dress_name}</p>
-                            <p className="text-[10px] font-bold text-muted-foreground uppercase">{getItemTypeLabel(it.item_type)} {it.wearer_name && `• ${it.wearer_name}`}</p>
+                          <div className="text-right">
+                            <p className="font-black text-primary">{formatCurrency(it.final_price || 0)}</p>
+                            {(it.additional_payments > 0) && (
+                              <p className="text-[9px] font-bold text-muted-foreground">בסיס: {formatCurrency(it.base_price || 0)} + {formatCurrency(it.additional_payments || 0)}</p>
+                            )}
                           </div>
                         </div>
-                        <div className="text-right">
-                          <p className="font-black text-primary">{formatCurrency(it.final_price || 0)}</p>
-                          {(it.additional_payments > 0) && (
-                            <p className="text-[9px] font-bold text-muted-foreground">בסיס: {formatCurrency(it.base_price || 0)} + {formatCurrency(it.additional_payments || 0)}</p>
-                          )}
-                        </div>
+                        {it.notes && (
+                          <p className="text-xs text-muted-foreground border-t pt-2 break-words whitespace-pre-wrap">📝 {it.notes}</p>
+                        )}
                       </div>
                     ))}
                   </div>
                 </div>
 
                 {/* Financial Overview - Detailed */}
-                <div className="bg-green-50 p-6 rounded-[2rem] border-2 border-green-100 space-y-4">
+                <div
+                  className="bg-green-50 p-6 rounded-[2rem] border-2 border-green-100 space-y-4 cursor-pointer hover:ring-2 hover:ring-green-400/40 transition-all"
+                  onClick={() => {
+                    setViewingOrderData(null);
+                    router.push(`/dashboard/transactions?customerId=${viewingOrderData.order.customer_id}&customerName=${encodeURIComponent(viewingOrderData.order.customer_name)}`);
+                  }}
+                >
                   <h4 className="text-[10px] font-black text-green-600 uppercase tracking-widest text-center">סיכום כספי מפורט</h4>
 
                   <div className="space-y-2">
@@ -886,27 +974,65 @@ export default function OrdersPage() {
                     <Link2 className="h-4 w-4" />
                     <h4 className="text-[10px] font-black uppercase tracking-widest">חתימה דיגיטלית ללקוחה</h4>
                   </div>
-                  {viewSignLink?.link && (
+                  {viewSignLink?.link && !isViewedOrderCurrentlySigned && (
                     <p className="text-xs break-all bg-white border rounded-lg p-2">{viewSignLink.link}</p>
                   )}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {isViewedOrderCurrentlySigned ? (
                     <Button
-                      variant="outline"
-                      onClick={() => handleCreateSignLinkForViewedOrder(false)}
-                      disabled={creatingSignLinkForOrderId === viewingOrderData.order.id}
+                      type="button"
+                      onClick={() => {
+                        if (!viewedSignedAgreementPdfUrl) return;
+                        window.open(viewedSignedAgreementPdfUrl, "_blank", "noopener,noreferrer");
+                      }}
+                      disabled={!viewedSignedAgreementPdfUrl}
+                      className="w-full h-10 px-2 text-[10px] sm:text-xs font-bold bg-green-600 hover:bg-green-700"
                     >
-                      <Copy className="h-4 w-4 ml-2" />
-                      {creatingSignLinkForOrderId === viewingOrderData.order.id ? "יוצר קישור..." : "יצירה והעתקה"}
+                      <FileText className="h-3 w-3 sm:h-4 sm:w-4 ml-1.5" />
+                      צפיה בחתימה
                     </Button>
-                    <Button
-                      className="bg-green-600 hover:bg-green-700"
-                      onClick={() => handleCreateSignLinkForViewedOrder(true)}
-                      disabled={creatingSignLinkForOrderId === viewingOrderData.order.id}
-                    >
-                      <MessageCircle className="h-4 w-4 ml-2" />
-                      שליחה לוואטסאפ
-                    </Button>
-                  </div>
+                  ) : (
+                    <>
+                      {viewedSignedAgreementPdfUrl && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => window.open(viewedSignedAgreementPdfUrl, "_blank", "noopener,noreferrer")}
+                          className="w-full h-10 px-2 text-[10px] sm:text-xs font-bold"
+                        >
+                          <FileText className="h-3 w-3 sm:h-4 sm:w-4 ml-1.5" />
+                          צפיה בחתימה
+                        </Button>
+                      )}
+                      <div className="flex flex-row items-center gap-2">
+                        <Button
+                          variant="outline"
+                          onClick={() => handleCreateSignLinkForViewedOrder()}
+                          disabled={creatingSignLinkForOrderId === viewingOrderData.order.id}
+                          className="flex-1 h-10 px-2 text-[10px] sm:text-xs font-bold"
+                        >
+                          <Copy className="h-3 w-3 sm:h-4 sm:w-4 ml-1.5" />
+                          {creatingSignLinkForOrderId === viewingOrderData.order.id ? "יוצר קישור..." : "העתקת קישור"}
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          onClick={handleOpenImmediateSignForViewedOrder}
+                          disabled={creatingSignLinkForOrderId === viewingOrderData.order.id}
+                          className="flex-1 h-10 px-2 text-[10px] sm:text-xs font-bold"
+                        >
+                          <FileSignature className="h-3 w-3 sm:h-4 sm:w-4 ml-1.5" />
+                          חתימה
+                        </Button>
+                        <Button
+                          onClick={() => handleCreateSignLinkForViewedOrder({ openWhatsapp: true })}
+                          disabled={creatingSignLinkForOrderId === viewingOrderData.order.id}
+                          className="flex-1 bg-green-600 hover:bg-green-700 h-10 px-2 text-[10px] sm:text-xs font-bold"
+                        >
+                          <MessageCircle className="h-3 w-3 sm:h-4 sm:w-4 ml-1.5" />
+                          שליחה בווצאפ
+                        </Button>
+                      </div>
+                    </>
+                  )}
                 </div>
 
                 {/* Attachments Section */}
@@ -978,7 +1104,7 @@ export default function OrdersPage() {
                           {/* Actions */}
                           <div className="flex gap-1 shrink-0">
                             <a
-                              href={orderAttachmentsApi.downloadUrl(viewingOrderData.order.id, att.id)}
+                              href={ordersApi.attachmentDownloadUrl(viewingOrderData.order.id, att.id)}
                               download
                               className="h-8 w-8 rounded-lg border flex items-center justify-center text-muted-foreground hover:text-green-600 hover:border-green-300 transition-colors"
                               title="הורדה"

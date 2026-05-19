@@ -13,6 +13,7 @@ import { run, get, all } from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
 import { ApiError } from '../middleware/errorHandler.js';
 import { normalizePhoneNumber } from '../services/phone.js';
+import { normalizeTextForSave, normalizeTextForSearch } from '../utils/textUtils.js';
 
 const router = Router();
 
@@ -38,7 +39,7 @@ router.get('/', (req, res, next) => {
     // Add search filter
     if (search) {
       sql += ' AND (c.name LIKE ? OR c.phone LIKE ? OR c.email LIKE ?)';
-      const searchPattern = `%${search}%`;
+      const searchPattern = normalizeTextForSearch(search);
       params.push(searchPattern, searchPattern, searchPattern);
     }
 
@@ -62,7 +63,7 @@ router.get('/', (req, res, next) => {
     const countParams = [];
     if (search) {
       countSql += ' AND (name LIKE ? OR phone LIKE ? OR email LIKE ?)';
-      const searchPattern = `%${search}%`;
+      const searchPattern = normalizeTextForSearch(search);
       countParams.push(searchPattern, searchPattern, searchPattern);
     }
     const { total } = get(countSql, countParams);
@@ -151,10 +152,11 @@ router.get('/:id', (req, res, next) => {
 router.post('/', (req, res, next) => {
   try {
     const { name, phone, email, source, notes } = req.body;
+    const normalizedName = normalizeTextForSave(name);
     const normalizedPhone = normalizePhoneNumber(phone);
 
     // Validate required fields
-    if (!name || !name.trim()) {
+    if (!normalizedName) {
       throw new ApiError(400, 'נא להזין שם לקוחה');
     }
 
@@ -170,7 +172,7 @@ router.post('/', (req, res, next) => {
     const result = run(
       `INSERT INTO customers (name, phone, email, source, notes) 
        VALUES (?, ?, ?, ?, ?)`,
-      [name.trim(), normalizedPhone || null, email || null, source || null, notes || null]
+      [normalizedName, normalizedPhone || null, email || null, source || null, notes || null]
     );
 
     const newCustomer = get('SELECT * FROM customers WHERE id = ?', [result.lastInsertRowid]);
@@ -194,6 +196,7 @@ router.put('/:id', (req, res, next) => {
   try {
     const { id } = req.params;
     const { name, phone, email, source, notes } = req.body;
+    const normalizedName = normalizeTextForSave(name);
     const normalizedPhone = normalizePhoneNumber(phone);
 
     // Check if customer exists
@@ -203,7 +206,7 @@ router.put('/:id', (req, res, next) => {
     }
 
     // Validate required fields
-    if (!name || !name.trim()) {
+    if (!normalizedName) {
       throw new ApiError(400, 'נא להזין שם לקוחה');
     }
 
@@ -223,7 +226,7 @@ router.put('/:id', (req, res, next) => {
       `UPDATE customers 
        SET name = ?, phone = ?, email = ?, source = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
-      [name.trim(), normalizedPhone || null, email || null, source || null, notes || null, id]
+      [normalizedName, normalizedPhone || null, email || null, source || null, notes || null, id]
     );
 
     const updatedCustomer = get('SELECT * FROM customers WHERE id = ?', [id]);
@@ -239,32 +242,9 @@ router.put('/:id', (req, res, next) => {
   }
 });
 
-/**
- * DELETE /api/customers/:id
- * Delete a customer
- */
-router.delete('/:id', (req, res, next) => {
-  try {
-    const { id } = req.params;
+// NOTE: There is no DELETE /api/customers/:id — customers are never deleted
+// individually. Use POST /api/customers/merge to consolidate duplicates.
 
-    // Check if customer exists
-    const existing = get('SELECT * FROM customers WHERE id = ?', [id]);
-    if (!existing) {
-      throw new ApiError(404, 'לקוחה לא נמצאה');
-    }
-
-    // Delete customer
-    run('DELETE FROM customers WHERE id = ?', [id]);
-
-    res.json({
-      success: true,
-      message: 'לקוחה נמחקה בהצלחה'
-    });
-
-  } catch (error) {
-    next(error);
-  }
-});
 
 /**
  * GET /api/customers/search/quick
@@ -277,6 +257,7 @@ router.get('/search/quick', (req, res, next) => {
     if (!q || q.length < 2) {
       return res.json({ success: true, data: { customers: [] } });
     }
+    const searchPattern = normalizeTextForSearch(q);
 
     const customers = all(
       `SELECT id, name, phone, email 
@@ -284,7 +265,7 @@ router.get('/search/quick', (req, res, next) => {
        WHERE (name LIKE ? OR phone LIKE ?)
        ORDER BY name 
        LIMIT 10`,
-      [`%${q}%`, `%${q}%`]
+      [searchPattern, searchPattern]
     );
 
     res.json({
@@ -330,6 +311,7 @@ router.post('/merge', (req, res, next) => {
       // 2. Update target customer details if provided
       if (updatedTargetData) {
         const { name, phone, email, source, notes } = updatedTargetData;
+        const normalizedName = normalizeTextForSave(name);
         const normalizedPhone = normalizePhoneNumber(phone);
         
         run(
@@ -337,7 +319,7 @@ router.post('/merge', (req, res, next) => {
            SET name = ?, phone = ?, email = ?, source = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
            WHERE id = ?`,
           [
-            name || target.name,
+            normalizedName || target.name,
             normalizedPhone || target.phone,
             email || target.email,
             source || target.source,

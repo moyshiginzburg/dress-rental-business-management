@@ -11,6 +11,8 @@ const API_BASE = typeof window !== 'undefined'
   ? '/api'
   : (process.env.NEXT_PUBLIC_API_URL || '/api');
 
+import { reportClientError } from './error-reporter';
+
 interface ApiResponse<T = unknown> {
   success: boolean;
   message?: string;
@@ -72,7 +74,30 @@ class ApiClient {
         credentials: 'include',  // Always send cookies (auth_token) with requests
       });
 
-      const data = await response.json();
+      // Handle non-JSON responses (e.g., Vercel's HTML error pages for
+      // oversized payloads, gateway timeouts, or other proxy-level errors).
+      const contentType = response.headers.get('content-type') || '';
+      let data: any;
+      if (contentType.includes('application/json')) {
+        data = await response.json();
+      } else {
+        // Non-JSON response — likely a proxy/gateway error
+        if (!response.ok) {
+          if (response.status === 413) {
+            throw new Error('הבקשה גדולה מדי. נסי להקטין את הקובץ המצורף.');
+          }
+          if (response.status === 502 || response.status === 504) {
+            throw new Error('השרת לא זמין כרגע. נסי שוב בעוד רגע.');
+          }
+          throw new Error(`שגיאת שרת (${response.status}). נסי שוב.`);
+        }
+        // If response.ok but not JSON, try to parse anyway
+        try {
+          data = await response.json();
+        } catch {
+          throw new Error('תשובה לא צפויה מהשרת. נסי שוב.');
+        }
+      }
 
       if (!response.ok) {
         // Handle 401 - unauthorized
@@ -88,9 +113,25 @@ class ApiClient {
       return data;
     } catch (error) {
       if (error instanceof Error) {
+        // Only report unexpected errors, not standard API errors (which we threw intentionally above)
+        if (!error.message.includes('API') && !error.message.includes('שגיאה') && !error.message.includes('התחברות')) {
+          reportClientError({
+            message: error.message,
+            stack: error.stack,
+            component: 'ApiClient',
+            action: `API Request: ${options.method || 'GET'} ${endpoint}`
+          });
+        }
         throw error;
       }
-      throw new Error('שגיאת רשת');
+      
+      const genericMsg = 'שגיאת רשת - בדקי את החיבור לאינטרנט.';
+      reportClientError({
+        message: genericMsg,
+        component: 'ApiClient',
+        action: `API Request: ${options.method || 'GET'} ${endpoint}`
+      });
+      throw new Error(genericMsg);
     }
   }
 
@@ -175,8 +216,6 @@ export const customersApi = {
   update: (id: number, data: { name: string; phone?: string; email?: string; source?: string; notes?: string }) =>
     api.put(`/customers/${id}`, data),
 
-  delete: (id: number) => api.delete(`/customers/${id}`),
-
   quickSearch: (q: string) => api.get(`/customers/search/quick?q=${encodeURIComponent(q)}`),
 
   merge: (targetCustomerId: number, sourceCustomerId: number, updatedTargetData?: any) =>
@@ -199,10 +238,10 @@ export const dressesApi = {
 
   get: (id: number) => api.get(`/dresses/${id}`),
 
-  create: (data: { name: string; base_price?: number; status?: string; intended_use?: 'rental' | 'sale'; photo_url?: string; thumbnail_url?: string; notes?: string }) =>
+  create: (data: { name: string; base_price?: number; status?: string; intended_use?: 'rental' | 'sale' | null; photo_url?: string; thumbnail_url?: string; notes?: string }) =>
     api.post('/dresses', data),
 
-  update: (id: number, data: { name: string; base_price?: number; status?: string; intended_use?: 'rental' | 'sale'; photo_url?: string; thumbnail_url?: string; notes?: string }) =>
+  update: (id: number, data: { name: string; base_price?: number; status?: string; intended_use?: 'rental' | 'sale' | null; photo_url?: string; thumbnail_url?: string; notes?: string }) =>
     api.put(`/dresses/${id}`, data),
 
   updateStatus: (id: number, status: string) =>
@@ -211,15 +250,42 @@ export const dressesApi = {
   addRental: (id: number, data: { wearer_name: string; amount: number; rental_type?: string; event_date?: string }) =>
     api.post(`/dresses/${id}/rental`, data),
 
-  delete: (id: number) => api.delete(`/dresses/${id}`),
-
   available: () => api.get('/dresses/available'),
 
-  uploadImage: (file: File) => {
+  uploadImage: async (file: File) => {
     const formData = new FormData();
     formData.append('image', file);
     return api.post<{ imageUrl: string; thumbnailUrl: string }>('/dresses/upload', formData);
-  }
+  },
+
+  // Send image as base64 in a JSON body instead of multipart FormData.
+  // Used by the direct file-picker path on Android: capture="environment" files are
+  // reliably read by FileReader but the resulting binary becomes corrupt when passed
+  // through FormData. Sending the raw base64 string in JSON avoids the binary round-trip.
+  uploadImageBase64: async (base64: string) => {
+    return api.post<{ imageUrl: string; thumbnailUrl: string }>('/dresses/upload', { imageBase64: base64 });
+  },
+
+  /**
+   * Merge two dresses into one.
+   * targetDressId — the dress that survives (keeps its ID).
+   * sourceDressId — the dress that is deleted after the merge.
+   * updatedDressData — optional fields to set on the target dress post-merge
+   *   (name, photo_url, thumbnail_url, notes, status, intended_use, base_price).
+   */
+  merge: (
+    targetDressId: number,
+    sourceDressId: number,
+    updatedDressData?: {
+      name?: string;
+      photo_url?: string | null;
+      thumbnail_url?: string | null;
+      notes?: string | null;
+      status?: string;
+      intended_use?: 'rental' | 'sale' | null;
+      base_price?: number;
+    }
+  ) => api.post('/dresses/merge', { targetDressId, sourceDressId, updatedDressData }),
 };
 
 // Transactions API
@@ -306,8 +372,9 @@ export const agreementsApi = {
 
 // Orders API
 export const ordersApi = {
-  list: (params?: { status?: string; customer_id?: number; startDate?: string; endDate?: string; sortBy?: string; sortOrder?: string; page?: number; limit?: number }) => {
+  list: (params?: { search?: string; status?: string; customer_id?: number; startDate?: string; endDate?: string; sortBy?: string; sortOrder?: string; page?: number; limit?: number }) => {
     const searchParams = new URLSearchParams();
+    if (params?.search) searchParams.set('search', params.search);
     if (params?.status) searchParams.set('status', params.status);
     if (params?.customer_id) searchParams.set('customer_id', params.customer_id.toString());
     if (params?.startDate) searchParams.set('startDate', params.startDate);
@@ -329,40 +396,75 @@ export const ordersApi = {
 
   merge: (targetOrderId: number, sourceOrderId: number, updatedOrderData?: any) =>
     api.post('/orders/merge', { targetOrderId, sourceOrderId, updatedOrderData }),
-};
 
-/**
- * Order Attachments API
- *
- * Purpose: Manage file attachments linked to orders.
- * Provides list, upload, update, delete, and download helpers.
- */
-export const orderAttachmentsApi = {
-  list: (orderId: number) =>
+  // --- Attachments ---
+  getAttachments: (orderId: number) =>
     api.get(`/orders/${orderId}/attachments`),
 
-  upload: async (orderId: number, files: File[]) => {
-    const formData = new FormData();
-    files.forEach(f => formData.append('files', f));
-    const res = await fetch(`${API_BASE}/orders/${orderId}/attachments`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${api.getToken()}` },
-      body: formData,
-      credentials: 'include',  // Send auth_token cookie
-    });
-    const json = await res.json();
-    if (!res.ok) throw new Error(json.error || json.message || 'Upload failed');
-    return json;
+  /**
+   * Upload one or more files as attachments to an order.
+   *
+   * Strategy: When the total payload is small (under SINGLE_REQUEST_LIMIT),
+   * send all files in one multipart request — fast, atomic. When the payload
+   * is larger (or any single file is heavy), fall back to one-file-per-POST
+   * sequentially so each request stays well under the Vercel rewrite proxy's
+   * ~4.5MB body limit, regardless of how many files were selected.
+   *
+   * Returns a single ApiResponse with `attachments` aggregated from all
+   * underlying requests, so callers see no difference from a one-shot call.
+   */
+  uploadAttachment: async (orderId: number, files: File[]) => {
+    if (!files || files.length === 0) {
+      return { success: true, message: 'אין קבצים', data: { attachments: [] } } as any;
+    }
+
+    // Generous safety margin under Vercel's ~4.5MB proxy body cap. The number
+    // is intentionally low: even after client-side compression, multipart
+    // overhead and base64 metadata add ~5-10% per file.
+    const SINGLE_REQUEST_LIMIT = 3 * 1024 * 1024;
+    const PER_FILE_HEAVY_THRESHOLD = 2 * 1024 * 1024;
+
+    const totalSize = files.reduce((sum, f) => sum + (f.size || 0), 0);
+    const anyHeavy = files.some((f) => (f.size || 0) > PER_FILE_HEAVY_THRESHOLD);
+    const useSequential = files.length > 1 && (totalSize > SINGLE_REQUEST_LIMIT || anyHeavy);
+
+    if (!useSequential) {
+      const formData = new FormData();
+      for (const file of files) {
+        formData.append('files', file);
+      }
+      return api.post(`/orders/${orderId}/attachments`, formData);
+    }
+
+    // Sequential per-file uploads — defense-in-depth against the Vercel
+    // rewrite body limit when the user selects many heavy images at once.
+    const aggregated: any[] = [];
+    let lastMessage = '';
+    for (const file of files) {
+      const formData = new FormData();
+      formData.append('files', file);
+      const res: any = await api.post(`/orders/${orderId}/attachments`, formData);
+      const items = res?.data?.attachments;
+      if (Array.isArray(items)) aggregated.push(...items);
+      if (typeof res?.message === 'string') lastMessage = res.message;
+    }
+    return {
+      success: true,
+      message: lastMessage || `${aggregated.length} קבצים הועלו בהצלחה`,
+      data: { attachments: aggregated },
+    } as any;
   },
 
-  updateDescription: (orderId: number, attachmentId: number, description: string) =>
-    api.patch(`/orders/${orderId}/attachments/${attachmentId}`, { description }),
+  updateAttachment: (orderId: number, attachmentId: number, data: { description?: string }) =>
+    api.patch(`/orders/${orderId}/attachments/${attachmentId}`, data),
 
-  delete: (orderId: number, attachmentId: number) =>
+  deleteAttachment: (orderId: number, attachmentId: number) =>
     api.delete(`/orders/${orderId}/attachments/${attachmentId}`),
 
-  downloadUrl: (orderId: number, attachmentId: number) =>
-    `${API_BASE}/orders/${orderId}/attachments/${attachmentId}/download`,
+  attachmentDownloadUrl: (orderId: number, attachmentId: number) => {
+    const base = process.env.NEXT_PUBLIC_API_URL || '/api';
+    return `${base}/orders/${orderId}/attachments/${attachmentId}/download`;
+  },
 };
 
 export interface ExportFilterOption {

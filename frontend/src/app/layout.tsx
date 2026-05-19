@@ -9,9 +9,11 @@ import type { Metadata } from 'next';
 import './globals.css';
 import { Toaster } from '@/components/ui/toaster';
 import { ServiceWorkerRegister } from '@/components/pwa/sw-register';
+import { ErrorBoundary } from '@/components/error-boundary';
+import { GlobalErrorReporter } from '@/components/global-error-reporter';
 
 export const metadata: Metadata = {
-  title: 'Dress Rental Business Management',
+  title: 'ישראל ישראלי - ניהול עסק',
   description: 'מערכת ניהול עסק להשכרת ותפירת שמלות ערב',
   manifest: '/manifest.json',
   icons: {
@@ -28,8 +30,11 @@ export default function RootLayout({
   return (
     <html lang="he" dir="rtl">
       <body className="min-h-screen bg-background antialiased">
+        <GlobalErrorReporter />
         <ServiceWorkerRegister />
-        {children}
+        <ErrorBoundary>
+          {children}
+        </ErrorBoundary>
         <Toaster />
       </body>
     </html>

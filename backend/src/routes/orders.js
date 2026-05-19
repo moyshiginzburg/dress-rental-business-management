@@ -14,10 +14,11 @@ import { Router } from 'express';
 import { run, get, all, transaction } from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
 import { ApiError } from '../middleware/errorHandler.js';
-import { sendNewOrderNotification, isEmailEnabled } from '../services/email.js';
+import { sendNewOrderNotification, isEmailEnabled, sendOrderUpdate } from '../services/email.js';
 import { extractReceiptDetails } from '../services/ai.js';
 import { sanitizePaymentDetails } from '../services/paymentDetails.js';
 import { normalizePhoneNumber } from '../services/phone.js';
+import { normalizeTextForSave } from '../utils/textUtils.js';
 
 const router = Router();
 
@@ -76,6 +77,46 @@ function syncDressSaleStatus(dressId) {
 }
 
 /**
+ * Recomputes dresses.total_income (SUM of dress_history.amount) and
+ * rental_count (COUNT of dress_history rows) for a given dress. Call this
+ * after any dress_history write (insert, delete, amount change) to keep
+ * the cached aggregates consistent with the source of truth.
+ */
+function recomputeDressIncomeAndCount(dressId) {
+  if (!dressId) return;
+  const row = get(
+    'SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS cnt FROM dress_history WHERE dress_id = ?',
+    [dressId]
+  );
+  run(
+    'UPDATE dresses SET total_income = ?, rental_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+    [Math.round(row.total || 0), row.cnt || 0, dressId]
+  );
+}
+
+/**
+ * Removes all dress_history rows linked to a given order (used when the
+ * order is cancelled or its items are about to be replaced) and
+ * recomputes total_income + rental_count for every affected dress so the
+ * cached aggregates reflect the new state immediately.
+ *
+ * Only rows with order_id = orderId are removed; manually-added history
+ * rows (inserted via POST /api/dresses/:id/history) carry order_id = NULL
+ * and are never touched.
+ */
+function removeOrderDressHistory(orderId) {
+  if (!orderId) return;
+  const rows = all(
+    'SELECT DISTINCT dress_id FROM dress_history WHERE order_id = ? AND dress_id IS NOT NULL',
+    [orderId]
+  );
+  run('DELETE FROM dress_history WHERE order_id = ?', [orderId]);
+  for (const r of rows) {
+    recomputeDressIncomeAndCount(r.dress_id);
+  }
+}
+
+/**
  * GET /api/orders
  * List orders with filters
  */
@@ -84,6 +125,7 @@ router.get('/', (req, res, next) => {
     const {
       status,
       customer_id,
+      search,
       startDate,
       endDate,
       page = 1,
@@ -91,6 +133,17 @@ router.get('/', (req, res, next) => {
       sortBy = 'created_at',
       sortOrder = 'desc'
     } = req.query;
+
+    // SQL fragment that evaluates to true when an active order is "completed":
+    // event_date has passed AND balance (total_price + customer charges – paid_amount) is zero.
+    const COMPLETED_PREDICATE = `(
+      o.event_date IS NOT NULL
+      AND date(o.event_date) <= date('now')
+      AND o.paid_amount = (
+        o.total_price
+        + COALESCE((SELECT SUM(customer_charge_amount) FROM transactions t2 WHERE t2.order_id = o.id), 0)
+      )
+    )`;
 
     let sql = `
       SELECT o.*, 
@@ -104,12 +157,32 @@ router.get('/', (req, res, next) => {
     const params = [];
 
     if (status) {
-      sql += ' AND o.status = ?';
-      params.push(status);
+      if (status === 'open') {
+        // Active orders that are NOT completed yet
+        sql += ` AND o.status = 'active' AND NOT ${COMPLETED_PREDICATE}`;
+      } else if (status === 'completed') {
+        // Active orders that meet the completion criteria
+        sql += ` AND o.status = 'active' AND ${COMPLETED_PREDICATE}`;
+      } else {
+        // Raw DB status value (e.g. 'cancelled', 'active')
+        sql += ' AND o.status = ?';
+        params.push(status);
+      }
     }
     if (customer_id) {
       sql += ' AND o.customer_id = ?';
       params.push(customer_id);
+    }
+    if (search) {
+      const likeTerm = `%${search}%`;
+      sql += ` AND (
+        c.name LIKE ? OR
+        o.order_summary LIKE ? OR
+        CAST(o.id AS TEXT) = ? OR
+        EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id
+                AND (oi.dress_name LIKE ? OR oi.wearer_name LIKE ?))
+      )`;
+      params.push(likeTerm, likeTerm, search, likeTerm, likeTerm);
     }
     if (startDate) {
       sql += ' AND o.event_date >= ?';
@@ -134,15 +207,32 @@ router.get('/', (req, res, next) => {
 
     const orders = all(sql, params);
 
-    let countSql = 'SELECT COUNT(*) as total FROM orders o WHERE 1=1';
+    let countSql = `SELECT COUNT(*) as total FROM orders o LEFT JOIN customers c ON o.customer_id = c.id WHERE 1=1`;
     const countParams = [];
     if (status) {
-      countSql += ' AND o.status = ?';
-      countParams.push(status);
+      if (status === 'open') {
+        countSql += ` AND o.status = 'active' AND NOT ${COMPLETED_PREDICATE}`;
+      } else if (status === 'completed') {
+        countSql += ` AND o.status = 'active' AND ${COMPLETED_PREDICATE}`;
+      } else {
+        countSql += ' AND o.status = ?';
+        countParams.push(status);
+      }
     }
     if (customer_id) {
       countSql += ' AND o.customer_id = ?';
       countParams.push(customer_id);
+    }
+    if (search) {
+      const likeTerm = `%${search}%`;
+      countSql += ` AND (
+        c.name LIKE ? OR
+        o.order_summary LIKE ? OR
+        CAST(o.id AS TEXT) = ? OR
+        EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id
+                AND (oi.dress_name LIKE ? OR oi.wearer_name LIKE ?))
+      )`;
+      countParams.push(likeTerm, likeTerm, search, likeTerm, likeTerm);
     }
     const { total } = get(countSql, countParams);
 
@@ -187,7 +277,10 @@ router.get('/:id', (req, res, next) => {
     }
 
     const items = all(
-      `SELECT oi.*, d.name as dress_name, d.photo_url as dress_photo, d.base_price as dress_base_price
+      `SELECT oi.*, d.name as dress_name,
+              d.photo_url as dress_photo, d.thumbnail_url as dress_thumbnail,
+              d.base_price as dress_base_price,
+              d.intended_use as dress_intended_use, d.status as dress_status
        FROM order_items oi
        LEFT JOIN dresses d ON oi.dress_id = d.id
        WHERE oi.order_id = ?
@@ -196,7 +289,11 @@ router.get('/:id', (req, res, next) => {
     );
 
     const agreement = get(
-      'SELECT * FROM agreements WHERE order_id = ?',
+      `SELECT *
+       FROM agreements
+       WHERE order_id = ?
+       ORDER BY COALESCE(agreed_at, created_at) DESC, id DESC
+       LIMIT 1`,
       [id]
     );
 
@@ -233,8 +330,8 @@ router.post('/', async (req, res, next) => {
     if (!customer_id && !new_customer) {
       throw new ApiError(400, 'נא לבחור לקוחה או להזין פרטי לקוחה חדשה');
     }
-    if (!total_price || parseFloat(total_price) <= 0) {
-      throw new ApiError(400, 'נא להזין מחיר');
+    if (total_price == null || total_price === '' || isNaN(parseFloat(total_price)) || parseFloat(total_price) < 0) {
+      throw new ApiError(400, 'נא להזין מחיר (0 או יותר)');
     }
     if (!event_date) {
       throw new ApiError(400, 'נא להזין תאריך אירוע');
@@ -244,12 +341,15 @@ router.post('/', async (req, res, next) => {
     let customerData = null;
 
     if (!customer_id && new_customer) {
-      if (!new_customer.name || !new_customer.name.trim()) {
+      const normalizedNewCustomerName = normalizeTextForSave(new_customer.name);
+      if (!normalizedNewCustomerName) {
         throw new ApiError(400, 'נא להזין שם לקוחה');
       }
 
       const normalizedNewCustomerPhone = normalizePhoneNumber(new_customer.phone);
       const normalizedNewCustomerEmail = new_customer.email?.trim() || null;
+      const normalizedNewCustomerSource = new_customer.source?.trim() || null;
+
       const existingCustomer = normalizedNewCustomerPhone
         ? get(
           'SELECT id, name, phone, email FROM customers WHERE phone = ?',
@@ -262,19 +362,21 @@ router.post('/', async (req, res, next) => {
         customerData = existingCustomer;
       } else {
         const customerResult = run(
-          'INSERT INTO customers (name, phone, email) VALUES (?, ?, ?)',
+          'INSERT INTO customers (name, phone, email, source) VALUES (?, ?, ?, ?)',
           [
-            new_customer.name.trim(),
+            normalizedNewCustomerName,
             normalizedNewCustomerPhone || null,
-            normalizedNewCustomerEmail
+            normalizedNewCustomerEmail,
+            normalizedNewCustomerSource
           ]
         );
         finalCustomerId = customerResult.lastInsertRowid;
         customerData = {
           id: finalCustomerId,
-          name: new_customer.name.trim(),
+          name: normalizedNewCustomerName,
           phone: normalizedNewCustomerPhone || null,
-          email: normalizedNewCustomerEmail
+          email: normalizedNewCustomerEmail,
+          source: normalizedNewCustomerSource
         };
       }
     } else {
@@ -297,6 +399,7 @@ router.post('/', async (req, res, next) => {
     }
 
     const depositAmt = Math.round(parseFloat(deposit_amount)) || 0;
+    const roundedTotalPrice = Math.round(parseFloat(total_price)) || 0;
 
     const result = run(
       `INSERT INTO orders (customer_id, event_date, total_price, deposit_amount, paid_amount, notes, order_summary, status)
@@ -304,7 +407,7 @@ router.post('/', async (req, res, next) => {
       [
         finalCustomerId,
         event_date,
-        Math.round(parseFloat(total_price)),
+        roundedTotalPrice,
         depositAmt,
         depositAmt,
         notes || null,
@@ -321,15 +424,39 @@ router.post('/', async (req, res, next) => {
         const finalPrice = Math.round(parseFloat(item.final_price)) || (basePrice + additionalPayments);
         const resolvedItemType = item.item_type || 'rental';
 
-        let resolvedWearerName = item.wearer_name || customerData.name;
-        let resolvedDressName = item.dress_name || resolvedWearerName;
+        let resolvedWearerName = normalizeTextForSave(item.wearer_name) || customerData.name;
+        let resolvedDressName = normalizeTextForSave(item.dress_name) || resolvedWearerName;
+
+        // Auto-create a dress record for sewing items that arrive without an existing dress_id.
+        //
+        // sewing_for_rental: dress stays in the business inventory for future rentals.
+        //   → status = 'available', intended_use = 'rental'
+        //
+        // sewing: dress is sewn for the customer and stays with her (custom sewing).
+        //   → status = 'custom_sewing', intended_use = NULL
+        //
+        // In both cases the new dress is then linked to the order via order_items and
+        // dress_history exactly like any other dress that already existed in inventory.
+        let resolvedDressId = item.dress_id || null;
+
+        if (!resolvedDressId && (resolvedItemType === 'sewing_for_rental' || resolvedItemType === 'sewing')) {
+          const newDressStatus = resolvedItemType === 'sewing_for_rental' ? 'available' : 'custom_sewing';
+          const newDressIntendedUse = resolvedItemType === 'sewing_for_rental' ? 'rental' : null;
+
+          const newDressResult = run(
+            `INSERT INTO dresses (name, base_price, total_income, rental_count, status, intended_use, updated_at)
+             VALUES (?, ?, 0, 0, ?, ?, CURRENT_TIMESTAMP)`,
+            [resolvedDressName, basePrice, newDressStatus, newDressIntendedUse]
+          );
+          resolvedDressId = newDressResult.lastInsertRowid;
+        }
 
         run(
           `INSERT INTO order_items (order_id, dress_id, dress_name, wearer_name, item_type, base_price, additional_payments, final_price, notes)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             orderId,
-            item.dress_id || null,
+            resolvedDressId,
             resolvedDressName,
             resolvedWearerName,
             resolvedItemType,
@@ -340,22 +467,22 @@ router.post('/', async (req, res, next) => {
           ]
         );
 
-        if (item.dress_id) {
+        if (resolvedDressId) {
           run(
             'UPDATE dresses SET rental_count = rental_count + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-            [item.dress_id]
+            [resolvedDressId]
           );
 
           if (resolvedItemType === 'sale') {
-            syncDressSaleStatus(item.dress_id);
+            syncDressSaleStatus(resolvedDressId);
           }
 
           run(
             `INSERT INTO dress_history (dress_id, customer_id, wearer_name, customer_name, amount, rental_type, event_date, notes, order_id)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [item.dress_id, finalCustomerId, resolvedWearerName, customerData?.name || null, finalPrice, resolvedItemType || 'rental', event_date, null, orderId]
+            [resolvedDressId, finalCustomerId, resolvedWearerName, customerData?.name || null, finalPrice, resolvedItemType || 'rental', event_date, null, orderId]
           );
-          run('UPDATE dresses SET total_income = total_income + ? WHERE id = ?', [finalPrice, item.dress_id]);
+          run('UPDATE dresses SET total_income = total_income + ? WHERE id = ?', [finalPrice, resolvedDressId]);
         }
       }
     }
@@ -430,6 +557,8 @@ router.post('/', async (req, res, next) => {
     // Runs asynchronously after res.send() finishes
     (async () => {
       try {
+        let aiUpdatedAny = false;
+
         // 1. Run AI for each deposit payment with a file
         if (deposit_payments && Array.isArray(deposit_payments)) {
           for (let i = 0; i < normalizedDepositPayments.length; i++) {
@@ -442,6 +571,8 @@ router.post('/', async (req, res, next) => {
               const aiData = await extractReceiptDetails(buffer, mimeType, payment.method);
 
               if (aiData) {
+                aiUpdatedAny = true;
+
                 if (aiData.paymentMethod && (!payment.method || payment.method === 'לא צוין')) payment.method = aiData.paymentMethod;
                 if (aiData.confirmationNumber && !payment.confirmationNumber) payment.confirmationNumber = aiData.confirmationNumber;
                 if (aiData.lastFourDigits && !payment.lastFourDigits) payment.lastFourDigits = aiData.lastFourDigits;
@@ -473,12 +604,8 @@ router.post('/', async (req, res, next) => {
                   `UPDATE transactions 
                    SET payment_method = ?, confirmation_number = ?, last_four_digits = ?, 
                        check_number = ?, bank_details = ?, installments = ?, updated_at = CURRENT_TIMESTAMP 
-                   WHERE id = (
-                     SELECT id FROM transactions
-                     WHERE order_id = ? AND amount = ? AND type = 'income' AND category = 'order'
-                     ORDER BY id DESC
-                     LIMIT 1
-                   )`,
+                   WHERE order_id = ? AND amount = ? AND type = 'income' AND category = 'order' 
+                   LIMIT 1`,
                   [
                     payment.method || null,
                     payment.confirmationNumber || null,
@@ -556,6 +683,16 @@ router.put('/:id', (req, res, next) => {
     }
 
     transaction(() => {
+      const updatedCustomerId = customer_id || existing.customer_id;
+      // Look up customer name for dress_history.customer_name snapshot.
+      const customerRow = updatedCustomerId
+        ? get('SELECT name FROM customers WHERE id = ?', [updatedCustomerId])
+        : null;
+      const updatedCustomerName = customerRow ? customerRow.name : null;
+
+      const resolvedEventDate = event_date || existing.event_date;
+      const resolvedStatus = status || existing.status;
+
       // 1. Update the order record
       run(
         `UPDATE orders 
@@ -563,16 +700,22 @@ router.put('/:id', (req, res, next) => {
              status = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
          WHERE id = ?`,
         [
-          customer_id || existing.customer_id,
-          event_date || existing.event_date,
-          Math.round(parseFloat(total_price)) || existing.total_price,
+          updatedCustomerId,
+          resolvedEventDate,
+          total_price != null && total_price !== '' && !isNaN(parseFloat(total_price)) ? Math.round(parseFloat(total_price)) : existing.total_price,
           Math.round(parseFloat(deposit_amount)) || existing.deposit_amount,
           Math.round(parseFloat(paid_amount)) || existing.paid_amount,
-          status || existing.status,
+          resolvedStatus,
           notes || null,
           id
         ]
       );
+
+      // If the order is being (or already is) cancelled, strip its contribution
+      // from every dress's history and recompute aggregates immediately.
+      if (resolvedStatus === 'cancelled') {
+        removeOrderDressHistory(id);
+      }
 
       // 2. If items were provided, refresh them
       if (items && Array.isArray(items)) {
@@ -598,14 +741,17 @@ router.put('/:id', (req, res, next) => {
           const finalPrice = Math.round(parseFloat(item.final_price)) || (basePrice + additionalPayments);
           const resolvedItemType = item.item_type || 'rental';
 
+          const normalizedDressName = normalizeTextForSave(item.dress_name) || 'פריט';
+          const normalizedWearerName = normalizeTextForSave(item.wearer_name) || null;
+
           run(
             `INSERT INTO order_items (order_id, dress_id, dress_name, wearer_name, item_type, base_price, additional_payments, final_price, notes)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               id,
               item.dress_id || null,
-              item.dress_name || 'פריט',
-              item.wearer_name || null,
+              normalizedDressName,
+              normalizedWearerName,
               resolvedItemType,
               basePrice,
               additionalPayments,
@@ -614,7 +760,7 @@ router.put('/:id', (req, res, next) => {
             ]
           );
 
-          itemSummaries.push(`${getItemTypeLabel(resolvedItemType)} ${item.dress_name || ''}`.trim());
+          itemSummaries.push(`${getItemTypeLabel(resolvedItemType)} ${normalizedDressName !== 'פריט' ? normalizedDressName : ''}`.trim());
 
           if (item.dress_id && resolvedItemType === 'sale') {
             saleDressIdsToSync.add(item.dress_id);
@@ -631,6 +777,53 @@ router.put('/:id', (req, res, next) => {
         } else {
           run('UPDATE orders SET order_summary = ? WHERE id = ?', ['הזמנה', id]);
         }
+
+        // 3. Sync dress_history with the new items (skip for cancelled orders
+        //    — removeOrderDressHistory above already cleared them).
+        if (resolvedStatus !== 'cancelled') {
+          // Collect dress_ids from both old and new items so dresses that were
+          // removed from the order also get their aggregates recomputed.
+          const affectedDressIds = new Set();
+          for (const it of currentItems) {
+            if (it.dress_id) affectedDressIds.add(it.dress_id);
+          }
+          for (const item of items) {
+            if (item.dress_id) affectedDressIds.add(Number(item.dress_id));
+          }
+
+          // Replace only the history rows that originate from this order.
+          // Manually-added rows (via POST /api/dresses/:id/history) carry
+          // order_id = NULL and are NOT touched by this DELETE.
+          run('DELETE FROM dress_history WHERE order_id = ?', [id]);
+
+          for (const item of items) {
+            const resolvedDressId = item.dress_id || null;
+            if (!resolvedDressId) continue;
+            const basePrice = Math.round(parseFloat(item.base_price)) || 0;
+            const additionalPayments = Math.round(parseFloat(item.additional_payments)) || 0;
+            const finalPrice = Math.round(parseFloat(item.final_price)) || (basePrice + additionalPayments);
+            const normalizedWearerName = normalizeTextForSave(item.wearer_name) || null;
+            run(
+              `INSERT INTO dress_history (dress_id, customer_id, wearer_name, customer_name, amount, rental_type, event_date, notes, order_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                resolvedDressId,
+                updatedCustomerId,
+                normalizedWearerName,
+                updatedCustomerName,
+                finalPrice,
+                item.item_type || 'rental',
+                resolvedEventDate,
+                null,
+                id
+              ]
+            );
+          }
+
+          for (const dressId of affectedDressIds) {
+            recomputeDressIncomeAndCount(dressId);
+          }
+        }
       }
     });
 
@@ -641,6 +834,38 @@ router.put('/:id', (req, res, next) => {
       message: 'הזמנה עודכנה בהצלחה',
       data: { order: updatedOrder }
     });
+
+    // 🌟 BACKGROUND PROCESSING: Syncing Calendar & Tasks
+    (async () => {
+      try {
+        if (!isEmailEnabled()) return;
+
+        // Fetch old/new customer data to compare
+        const oldCustomerData = existing.customer_id ? get('SELECT name FROM customers WHERE id = ?', [existing.customer_id]) : null;
+        const newCustomerData = updatedOrder.customer_id ? get('SELECT name FROM customers WHERE id = ?', [updatedOrder.customer_id]) : null;
+
+        const oldCustomerName = oldCustomerData ? oldCustomerData.name : 'לקוח_לא_ידוע';
+        const newCustomerName = newCustomerData ? newCustomerData.name : oldCustomerName;
+
+        const oldDate = existing.event_date;
+        const newDate = updatedOrder.event_date;
+        const oldSummary = existing.order_summary;
+        const newSummary = updatedOrder.order_summary;
+
+        if (oldCustomerName !== newCustomerName || oldDate !== newDate || oldSummary !== newSummary) {
+          console.log(`Order ${id} changed metadata (Name/Date/Summary). Syncing with Apps Script.`);
+          await sendOrderUpdate({
+            oldCustomerName,
+            oldEventDate: oldDate,
+            newCustomerName: newCustomerName !== oldCustomerName ? newCustomerName : null,
+            newEventDate: newDate !== oldDate ? newDate : null,
+            newOrderSummary: newSummary !== oldSummary ? newSummary : null
+          });
+        }
+      } catch (bgError) {
+        console.error('Background Calendar/Tasks sync failed:', bgError);
+      }
+    })();
 
   } catch (error) {
     next(error);
@@ -657,6 +882,10 @@ router.delete('/:id', (req, res, next) => {
     if (!order) {
       throw new ApiError(404, 'הזמנה לא נמצאה');
     }
+
+    // Remove this order's contribution from dress history and recompute
+    // total_income + rental_count for every affected dress before cancelling.
+    removeOrderDressHistory(id);
 
     run('UPDATE orders SET status = \'cancelled\', updated_at = CURRENT_TIMESTAMP WHERE id = ?', [id]);
 

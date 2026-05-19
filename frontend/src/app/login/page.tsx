@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { authApi, api } from "@/lib/api";
 import { useToast } from "@/components/ui/use-toast";
+import { reportClientError } from "@/lib/error-reporter";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -48,11 +49,22 @@ export default function LoginPage() {
         router.push("/dashboard");
       }
     } catch (error) {
+      const message = error instanceof Error ? error.message : "אימייל או סיסמה שגויים";
       toast({
         title: "שגיאת התחברות",
-        description: error instanceof Error ? error.message : "אימייל או סיסמה שגויים",
+        description: message,
         variant: "destructive",
       });
+      // We explicitly don't report regular "invalid credentials" as frontend errors,
+      // but we do want to report if the server is unreachable or throwing 500s.
+      if (message !== "אימייל או סיסמה שגויים" && !message.includes("נסה שוב בעוד")) {
+        reportClientError({
+          message,
+          stack: error instanceof Error ? error.stack : undefined,
+          component: 'Login',
+          action: 'ניסיון התחברות'
+        });
+      }
     } finally {
       setLoading(false);
     }
@@ -65,7 +77,7 @@ export default function LoginPage() {
           <div className="mx-auto mb-4 w-16 h-16 bg-primary rounded-full flex items-center justify-center">
             <span className="text-2xl text-white">👗</span>
           </div>
-          <CardTitle className="text-2xl">ניהול עסק שמלות</CardTitle>
+          <CardTitle className="text-2xl">ישראל ישראלי</CardTitle>
           <CardDescription>שמלות ערב - מערכת ניהול</CardDescription>
         </CardHeader>
         <CardContent>

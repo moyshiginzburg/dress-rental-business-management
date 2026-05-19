@@ -13,7 +13,7 @@ import { useEffect, useState, useCallback } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { DateRangeFilter } from "@/components/ui/date-range-filter";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { transactionsApi, customersApi } from "@/lib/api";
 import {
   formatCurrency,
@@ -33,6 +33,7 @@ import {
   X,
   ChevronRight,
   ChevronLeft,
+  FileText,
 } from "lucide-react";
 
 interface Transaction {
@@ -73,20 +74,27 @@ const EXPENSE_CATEGORIES = [
 export default function TransactionsPage() {
   const { toast } = useToast();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [typeFilter, setTypeFilter] = useState<string>("");
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
-  const [dateFrom, setDateFrom] = useState<string | null>(null);
-  const [dateTo, setDateTo] = useState<string | null>(null);
+  // Initialize date range from URL params (e.g. when navigating from dashboard monthly-income card)
+  const [dateFrom, setDateFrom] = useState<string | null>(() => searchParams.get("dateFrom") || null);
+  const [dateTo, setDateTo] = useState<string | null>(() => searchParams.get("dateTo") || null);
 
   // Pagination State
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 500;
 
-  // Customer Filter
-  const [customerId, setCustomerId] = useState<number | null>(null);
-  const [customerSearch, setCustomerSearch] = useState("");
+  // Customer Filter — initialized from URL params if present
+  const [customerId, setCustomerId] = useState<number | null>(() => {
+    const urlCid = searchParams.get("customerId");
+    return urlCid ? parseInt(urlCid) : null;
+  });
+  const [customerSearch, setCustomerSearch] = useState(() => {
+    return searchParams.get("customerName") || "";
+  });
   const [customers, setCustomers] = useState<{ id: number; name: string }[]>([]);
 
   useEffect(() => {
@@ -112,6 +120,17 @@ export default function TransactionsPage() {
     totalExpenses: 0,
     profit: 0,
   });
+
+  const [expandedNote, setExpandedNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!expandedNote) return;
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setExpandedNote(null);
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [expandedNote]);
 
   const calculateDisplayAmount = useCallback((t: Transaction) => {
     // Logic: If no categories selected or 'rental' is selected, show full amount
@@ -434,7 +453,18 @@ export default function TransactionsPage() {
                           <span className="badge badge-error">הוצאה</span>
                         )}
                       </td>
-                      <td className="p-3">{getCategoryLabel(transaction.category)}</td>
+                      <td className="p-3">
+                        {transaction.category === "order" && transaction.order_id ? (
+                          <button
+                            onClick={() => router.push(`/dashboard/orders?id=${transaction.order_id}`)}
+                            className="text-primary underline underline-offset-2 hover:text-primary/80 font-medium cursor-pointer transition-colors"
+                          >
+                            {getCategoryLabel(transaction.category)}
+                          </button>
+                        ) : (
+                          getCategoryLabel(transaction.category)
+                        )}
+                      </td>
                       <td className="p-3">
                         {transaction.customer_name ||
                           transaction.customer_full_name ||
@@ -444,6 +474,16 @@ export default function TransactionsPage() {
                           <span className="text-[10px] text-muted-foreground mr-1">
                             (הזמנה #{transaction.order_id})
                           </span>
+                        )}
+                        {transaction.notes && (
+                          <div
+                            className="text-xs text-orange-600 px-1.5 py-0.5 bg-orange-50 rounded-md flex items-center gap-1 max-w-[150px] mt-0.5 cursor-pointer hover:bg-orange-100 transition-colors"
+                            title={transaction.notes}
+                            onClick={() => setExpandedNote(transaction.notes)}
+                          >
+                            <FileText className="h-3 w-3 shrink-0" />
+                            <span className="truncate">{transaction.notes}</span>
+                          </div>
                         )}
                       </td>
                       <td
@@ -531,6 +571,34 @@ export default function TransactionsPage() {
           </div>
         )
       }
+
+      {expandedNote && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+          onClick={() => setExpandedNote(null)}
+        >
+          <div
+            className="bg-background rounded-2xl shadow-2xl border max-w-sm w-full mx-4 p-5 flex flex-col gap-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-orange-600 font-semibold text-sm">
+                <FileText className="h-4 w-4" />
+                <span>הערה לתנועה</span>
+              </div>
+              <button
+                onClick={() => setExpandedNote(null)}
+                className="text-muted-foreground hover:text-foreground transition-colors rounded-lg p-1 hover:bg-muted"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="bg-orange-50 rounded-xl p-4 text-sm text-orange-900 whitespace-pre-wrap leading-relaxed border border-orange-100">
+              {expandedNote}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

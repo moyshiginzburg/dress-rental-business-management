@@ -1,7 +1,7 @@
-# Database Schema – business.db (SQLite)
+# Database Schema – backend_data.db (SQLite)
 
 > Auto-generated docs — keep in sync with every schema change.
-> Last updated: 2026-03-05
+> Last updated: 2026-03-02
 
 ---
 
@@ -52,11 +52,10 @@
 | total_income | REAL | YES | 0 | | Sum of all rental/sale income |
 | rental_count | INTEGER | YES | 0 | | Count of rental/sale transactions |
 | status | TEXT | YES | 'available' | | CHECK: `available`, `sold`, `retired`, `custom_sewing` |
-| intended_use | TEXT | YES | NULL | | CHECK: `rental`, `sale` — nullable for dresses without designation |
+| intended_use | TEXT | YES | NULL | | CHECK: `rental`, `sale` |
 | photo_url | TEXT | YES | NULL | | |
 | thumbnail_url | TEXT | YES | NULL | | |
 | notes | TEXT | YES | NULL | | |
-| is_active | INTEGER | YES | 1 | | 1=active, 0=hidden |
 | updated_at | DATETIME | NO | CURRENT_TIMESTAMP | | |
 
 **Indexes:** `idx_dresses_name(name)`, `idx_dresses_status(status)`
@@ -179,24 +178,7 @@
 
 ---
 
-### 9. order_attachments
-
-| Column | Type | Nullable | Default | PK | Notes |
-|---|---|---|---|---|---|
-| id | INTEGER | NO | AUTOINCREMENT | PK | |
-| order_id | INTEGER | NO | — | | FK → orders (CASCADE) |
-| original_name | TEXT | NO | — | | Original uploaded filename |
-| stored_name | TEXT | NO | — | | UUID-based stored filename |
-| mime_type | TEXT | YES | NULL | | File MIME type |
-| size_bytes | INTEGER | YES | 0 | | File size in bytes |
-| description | TEXT | YES | NULL | | User-editable description |
-| created_at | DATETIME | NO | CURRENT_TIMESTAMP | | |
-
-**Indexes:** `idx_order_attachments_order_id`
-
----
-
-### 10. settings
+### 8. settings
 
 | Column | Type | Nullable | Default | PK | Notes |
 |---|---|---|---|---|---|
@@ -210,7 +192,7 @@
 
 ---
 
-### 11. users
+### 9. users
 
 | Column | Type | Nullable | Default | PK | Notes |
 |---|---|---|---|---|---|
@@ -244,12 +226,11 @@
 - `base_price` — Default rental price
 - `total_income` — Cumulative income from all rentals/sales
 - `rental_count` — Number of times rented/sold
-- `status` — Current availability: available / sold / retired / custom_sewing
-- `intended_use` — Primary purpose: rental or sale
+- `status` — Current status: available / sold / retired / custom_sewing
+- `intended_use` — Primary purpose when defined: rental / sale (can be NULL/empty)
 - `photo_url` — Full-size photo URL
 - `thumbnail_url` — Thumbnail photo URL
 - `notes` — Internal notes
-- `is_active` — Soft delete flag (1=visible, 0=hidden)
 - `updated_at` — Last update timestamp
 
 ### orders
@@ -259,7 +240,7 @@
 - `total_price` — Total order price (sum of all items)
 - `deposit_amount` — Initial deposit collected
 - `paid_amount` — Total amount paid so far
-- `status` — Order state: active / cancelled
+- `status` — Order state stored in DB: `active` / `cancelled`. The UI presents `active` orders as `פתוחה` (open) or `הושלמה` (completed) based on event_date and balance — this is a computed view, not a stored value.
 - `agreement_signed` — Whether digital agreement was signed (0/1)
 - `local_signature_path` — Path to the signature image file
 - `notes` — Order notes
@@ -340,16 +321,6 @@
 - `description` — Human-readable description
 - `updated_at` — Last update timestamp
 
-### order_attachments
-- `id` — Auto-increment primary key
-- `order_id` — FK to order (cascading delete removes files)
-- `original_name` — Original filename at upload
-- `stored_name` — UUID-based stored filename on disk
-- `mime_type` — File MIME type (image/jpeg, application/pdf, etc.)
-- `size_bytes` — File size in bytes
-- `description` — User-editable text description
-- `created_at` — Upload timestamp
-
 ### users
 - `id` — Auto-increment primary key
 - `email` — Login email (unique)
@@ -360,6 +331,23 @@
 - `last_login` — Last login timestamp
 - `created_at` — Account creation timestamp
 - `updated_at` — Last update timestamp
+
+---
+
+### 10. order_attachments
+
+| Column | Type | Nullable | Default | PK | Notes |
+|---|---|---|---|---|---|
+| id | INTEGER | NO | autoincrement | ✓ | |
+| order_id | INTEGER | NO | | | FK → orders (CASCADE) |
+| original_name | TEXT | NO | | | Original filename at upload time |
+| stored_name | TEXT | NO | | | UUID-based filename on disk |
+| mime_type | TEXT | YES | | | MIME type (image/jpeg, application/pdf, etc.) |
+| size_bytes | INTEGER | YES | 0 | | File size in bytes |
+| description | TEXT | YES | | | User-editable file description |
+| created_at | DATETIME | YES | CURRENT_TIMESTAMP | | |
+
+**Index:** `idx_order_attachments_order_id` on `order_id`
 
 ---
 
@@ -390,9 +378,10 @@
 - `agreements.customer_address` — Not needed
 - `agreements.pickup_date` — Not tracked
 - `agreements.return_date` — Not tracked
+- `dresses.is_active` — Replaced by merge workflow; dresses are never soft-deleted (v1.7.0)
 
 ### Changed CHECK Constraints
-- `dresses.status` — Removed `damaged` (use `retired` instead)
+- `dresses.status` — Removed `damaged` and `rented`
 - `orders.status` — Changed from `pending/confirmed/in_progress/completed/cancelled` to `active/cancelled`
 - `order_items.item_type` — Added CHECK: `rental/sewing/sewing_for_rental/sale` (removed `repair`)
 

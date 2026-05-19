@@ -1,7 +1,7 @@
 # 🏗️ ARCHITECTURE.md - Dress Rental Business Management
 
 > **Purpose:** Complete architectural guide for AI agents and developers.
-> Last Updated: 2026-02-17
+> Last Updated: 2026-02-25
 
 ---
 
@@ -11,7 +11,7 @@
 |------|----------|-------------|
 | Frontend | `frontend/` | Next.js React app |
 | Backend | `backend/` | Express.js REST API |
-| Database | `local_data/backend_data/business.db` | SQLite (Persistent) |
+| Database | `local_data/backend_data/backend_data.db` | SQLite (Persistent) |
 | DB Schema Reference | `docs/DB-SCHEMA.md` | Authoritative live table schema with PK/FK/constraints + short column purposes |
 | Logs | `local_data/logs/` | System & Error logs |
 | Google Integration | `apps_script/` | Via Web App POST (instant) |
@@ -26,11 +26,15 @@
 
 *   **Why?** This directory is externally backed up by the user and is ignored by Git (`.gitignore`).
 *   **What goes here?**
-    *   SQLite Database (`backend_data/business.db`)
+    *   SQLite Database (`backend_data/backend_data.db`)
     *   Logs (`logs/`)
     *   User Uploads (`uploads/`)
+        - `uploads/signatures/` — raw signature images from digital agreement signing
+        - `uploads/agreements/` — signed agreement PDFs (one sub-folder per customer/date)
+        - `uploads/dresses/` — dress images (WebP + thumbnails via `sharp`)
+        - `uploads/expenses/` — expense receipt files, organized as `YEAR/CATEGORY/YYMMDD [supplier] [description] [amount]₪.ext`
     *   Environment Secrets (`.env`)
-    *   CSV Imports (`csv-files-from-google-sheets/`)
+    *   CSV Imports (`csv/`) — source data files exported from Google Sheets
 
 **⚠️ NEVER store critical data outside of `local_data/`. Any data outside this folder is considered ephemeral or code.**
 
@@ -53,22 +57,26 @@ graph LR
     
     subgraph External ["External Services"]
         APPS[Apps Script Web App]
+        GMAIL[Gmail (GmailApp)]
         GCAL[Google Calendar]
         GTASK[Google Tasks]
+        GDRIVE[Google Drive / Tasks API]
     end
-    
+
     UI --> API_CLIENT
     API_CLIENT -->|HTTP| ROUTES
     ROUTES --> SERVICES
     ROUTES --> DB
-    SERVICES -->|HTTP POST| APPS
+    SERVICES -->|HTTPS POST| APPS
+    APPS -->|GmailApp| GMAIL
     APPS -->|API| GCAL
     APPS -->|API| GTASK
+    APPS -->|API| GDRIVE
 ```
 
 ---
 
-## 📊 Database Schema (10 Tables)
+## 📊 Database Schema (9 Tables)
 
 **Authoritative reference:** `docs/DB-SCHEMA.md`
 - Use that file for exact table/column/PK/FK/constraints/defaults.
@@ -141,9 +149,9 @@ erDiagram
 ### Table Purposes:
 - **users**: Admin authentication (JWT-based)
 - **customers**: Client contact info, source, and history
-- **dresses**: Inventory with status tracking and intended use (`rental` / `sale`)
+- **dresses**: Inventory with status tracking (`available` / `sold` / `retired` / `custom_sewing`) and optional intended use (`rental` / `sale` / empty)
 - **dress_history**: Historical event log per dress (rentals, sales, sewing)
-- **orders**: Main order records (rental/sewing/sale); status `active` or `cancelled`
+- **orders**: Main order records (rental/sewing/sale); DB status `active` or `cancelled`. The UI further splits `active` into `פתוחה` (open — balance non-zero or future event) and `הושלמה` (completed — event passed and balance = 0) via a computed helper.
 - **order_items**: Multiple items per order (multi-dress support); item_type: `rental`, `sewing`, `sewing_for_rental`, `sale`
 - **transactions**: All income/expense records; income categories: `order`, `repair`, `other`
 - **agreements**: Signed digital agreements (rental, sewing, sale)
@@ -180,8 +188,39 @@ erDiagram
     ├── Normalize payment reference fields by payment method
     ├── Create transaction record
     ├── Link to order if order_id provided
+    ├── recomputeOrderPaidAmount(order_id) — recalculate orders.paid_amount from SUM of income transactions
     ├── AI receipt extraction if receipt attached (Gemini with ordered model fallback)
     └── sendDetailedIncomeNotification() → Apps Script (income_detailed)
+
+[Route: PUT /api/transactions/:id]
+    ├── Update transaction record
+    └── recomputeOrderPaidAmount(old_order_id + new_order_id) — keeps order balance in sync
+
+[Route: DELETE /api/transactions/:id]
+    └── recomputeOrderPaidAmount(order_id) — removes contribution from order balance
+```
+
+### 2b. Order Edit / Cancel Flow
+```
+[Route: PUT /api/orders/:id]
+    ├── Look up customer name (for dress_history.customer_name snapshot)
+    ├── UPDATE orders record (status, items, dates, prices…)
+    ├── If status → cancelled:
+    │       └── removeOrderDressHistory(id) — deletes order's dress_history rows,
+    │                                          recomputes total_income + rental_count per dress
+    └── If items provided AND status != cancelled:
+            ├── DELETE old order_items
+            ├── INSERT new order_items
+            ├── Sync dress sale-status for sale-type items
+            ├── UPDATE order_summary
+            ├── DELETE dress_history WHERE order_id = id
+            ├── INSERT new dress_history rows from new items (amount = final_price)
+            └── recomputeDressIncomeAndCount(dressId) for every affected dress
+
+[Route: DELETE /api/orders/:id]   (soft-cancel)
+    ├── removeOrderDressHistory(id) — strips order's contribution from all dress history/aggregates
+    ├── UPDATE orders SET status = 'cancelled'
+    └── syncDressSaleStatus for dresses that had sale-type items
 ```
 
 ### 3. Google Integration Flow (Apps Script)
@@ -249,8 +288,14 @@ app/dashboard/page.tsx
 ### Service Dependencies
 ```
 services/email.js
-    ├── Uses: config/index.js (businessConfig, appsScriptConfig)
-    └── Exports: sendToAppsScript, sendNewOrderNotification, sendDetailedIncomeNotification
+    ├── Transport: HTTPS POST to Apps Script Web App (no SMTP / nodemailer)
+    ├── Uses: config/index.js (appsScriptConfig, businessConfig)
+    └── Exports: isEmailEnabled, sendToAppsScript, sendNewOrderNotification,
+                 sendNewIncomeNotification, sendNewExpenseNotification,
+                 sendDetailedIncomeNotification, sendAgreementConfirmationToCustomer,
+                 sendAgreementNotificationToOwner, sendCalendarEvent, sendTaskToGoogle,
+                 sendFileToDrive, sendDriveRename, sendOrderUpdate, sendToEmailList,
+                 testEmailConnection
 
 services/ai.js
     ├── Uses: Gemini Vision API
@@ -261,13 +306,10 @@ services/ai.js
 
 - API key: `GEMINI_API_KEY`
 - Preferred model order (configurable with `GEMINI_MODEL_CANDIDATES`):
-  1. `gemini-3-pro-preview`
-  2. `gemini-3-flash-preview`
-  3. `gemini-2.5-pro`
-  4. `gemini-2.5-flash`
-  5. `gemini-2.5-flash-lite`
-  6. `gemini-2.0-flash`
-  7. `gemini-2.0-flash-lite`
+  1. `gemini-3-flash-preview`
+  2. `gemini-3.1-flash-lite-preview`
+  3. `gemini-2.5-flash`
+  4. `gemini-2.5-flash-lite`
 - Behavior:
   - Service fetches `models.list` and keeps a short cache.
   - It tries models in order and falls back only on retryable errors (e.g. 404/429/unavailable).
@@ -294,8 +336,10 @@ services/pdfGenerator.js
 | GET | `/api/customers` | List with search/pagination |
 | POST | `/api/customers` | Create new |
 | PUT | `/api/customers/:id` | Update |
-| DELETE | `/api/customers/:id` | Soft delete |
+| POST | `/api/customers/merge` | Merge two customers; source deleted, history transferred to target |
 | GET | `/api/customers/quick-search` | Autocomplete |
+
+> **Note**: There is no `DELETE /api/customers/:id` — customers are never individually deleted. Use `POST /api/customers/merge` to consolidate duplicates.
 
 ### Dresses
 | Method | Endpoint | Purpose |
@@ -306,6 +350,12 @@ services/pdfGenerator.js
 | PUT | `/api/dresses/:id` | Update |
 | PATCH | `/api/dresses/:id/status` | Update status |
 | GET | `/api/dresses/available` | Bookable dresses + future booking details |
+| GET | `/api/dresses/:id` | Single dress with rental history + stats |
+| POST | `/api/dresses/merge` | Merge two dresses; source deleted, history transferred to target |
+| POST | `/api/dresses/:id/rental` | Add manual rental record to dress history |
+
+> **Note**: There is no `DELETE /api/dresses/:id` — dresses are never individually deleted. Use `POST /api/dresses/merge` to consolidate duplicates.
+
 
 ### Orders
 | Method | Endpoint | Purpose |
@@ -340,21 +390,29 @@ services/pdfGenerator.js
 ## ⚙️ Key Services Explained
 
 ### email.js - Core Integration Hub
-The email service is central to all external integrations:
-```javascript
-// Main function for Google integration (HTTP POST — no SMTP needed)
-sendToAppsScript(payload) 
-// Sends JSON via HTTPS POST to Apps Script Web App
+The email service is central to all external integrations. It has a single
+transport: HTTPS POST to the Apps Script Web App (no SMTP / nodemailer).
+If `APPS_SCRIPT_WEB_APP_URL` is not configured, calls fail loudly (logged
+as errors) — there is no email-polling fallback.
 
-// Payload types:
-// - send_email: Relay email to customer
-// - calendar_wedding / calendar: Create calendar event
-// - task_wedding / task: Create Google Task
-// - income_detailed: Detailed income notification (handleIncomeDetailed)
-// - income_notification / expense_notification: Generic notification
-// - order_notification: New order notification (email + calendar + task)
-// - sheets: Append to Google Sheets
-// - drive: Upload file to Drive
+```javascript
+// Main function for Google integration
+sendToAppsScript(payload)
+// Sends JSON via HTTPS POST → Apps Script doPost → processPayload(payload)
+
+// Payload types (matched in apps_script/Code.js processPayload switch):
+// - calendar_wedding   : Create wedding calendar event
+// - task_wedding       : Create wedding Google Task
+// - calendar           : Generic calendar event
+// - task               : Generic task
+// - sheets             : Append row to Google Sheets
+// - drive              : Upload file to Drive
+// - drive_rename       : Rename/move a Drive file
+// - income_notification / income_detailed : Income emails (handleIncomeDetailed)
+// - expense_notification: Expense email (handleNotificationGeneric)
+// - order_notification : Order email + auto-create wedding calendar/task
+// - order_update       : Sync renamed/rescheduled wedding calendar event + task
+// - send_email         : Relay arbitrary email via GmailApp (used for agreements)
 ```
 
 ### ai.js - Receipt Processing
@@ -379,7 +437,7 @@ extractReceiptDetails(fileBuffer, mimeType)
 ### "Add new Google integration"
 1. `backend/src/services/email.js` - Add new sendToAppsScript call
 2. `apps_script/Code.js` - Add handler function
-3. Add case to processMessage() switch
+3. Add case to `processPayload()` switch in `apps_script/Code.js`
 
 ### "Add new transaction category"
 1. Only `backend/src/routes/transactions.js` validation (if any)
@@ -395,43 +453,9 @@ extractReceiptDetails(fileBuffer, mimeType)
 
 ## 🚀 Deployment Architecture
 
-### Production Environment — Two Deployment Modes
+### Production Environment
 
-The system supports two deployment modes. Choose one during `setup-new-server.sh`.
-
-#### Option A: Docker Install (Frontend + Backend in Container)
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  Developer Machine (Local)                                          │
-│  ├── Code editing + local dev (npm run dev)                         │
-│  ├── git push → GitHub                                              │
-│  └── local_data/ (old snapshot, NOT used for business)              │
-└─────────────────────┬───────────────────────────────────────────────┘
-                      │ Git push
-                      ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  GitHub (YOUR_GITHUB_USERNAME/YOUR_REPO_NAME)              │
-└─────┬───────────────────────────────────────────┬───────────────────┘
-      │ Vercel auto-deploy (optional)             │ VPS cron poll (1 min)
-      ▼                                           ▼
-┌──────────────────────┐    ┌─────────────────────────────────────────┐
-│  Vercel (optional)   │    │  VPS (Ubuntu 24.04 LTS)                │
-│  Frontend only       │───▶│  Docker Container: business-mgmt-app        │
-│                      │    │  ├── Next.js Frontend  :3000            │
-│                      │    │  ├── Express Backend   :3001            │
-└──────────────────────┘    │  ├── Chromium (PDF generation)          │
-                            │  └── Hebrew fonts (Noto, Culmus)        │
-                            │                                         │
-                            │  Host Services:                         │
-                            │  ├── Tailscale Funnel → :3000 (HTTPS)   │
-                            │  ├── cron: auto-update.sh (every 1 min) │
-                            │  ├── cron: sync-to-cloud.sh (hourly)    │
-                            │  └── rclone → Google Drive               │
-                            └─────────────────────────────────────────┘
-```
-
-#### Option B: Direct Install (Backend via pm2, Frontend on Vercel)
+**Deployment:** Backend via pm2 (Direct Install), frontend on Vercel. Port 3001 exposed via nginx reverse proxy with Let's Encrypt SSL on `YOUR-VPS-IP-WITH-DASHES.sslip.io`.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -448,92 +472,103 @@ The system supports two deployment modes. Choose one during `setup-new-server.sh
       │ Vercel auto-deploy                        │ VPS cron poll (1 min)
       ▼                                           ▼
 ┌──────────────────────┐    ┌─────────────────────────────────────────┐
-│  Vercel              │    │  VPS (Ubuntu 24.04 LTS, pm2)           │
-│  YOUR_APP_NAME       │    │                                         │
-│  .vercel.app         │    │  pm2: dress-backend                     │
-│  (Frontend)          │───▶│  ├── Express Backend   :3001            │
-│  NEXT_PUBLIC_API_URL │    │  ├── Chromium (system package)          │
-│  → VPS backend       │    │  └── Hebrew fonts (system packages)     │
-└──────────────────────┘    │                                         │
+│  Vercel              │    │  VPS (YOUR_VPS_IP, Ubuntu 24.04)       │
+│  your-app-name.vercel.app│    │                                         │
+│  (Frontend only)     │───▶│  Backend (pm2) :3001                    │
+│  NEXT_PUBLIC_API_URL │    │  ├── Express Backend                    │
+│  → VPS backend       │    │  ├── Chromium (PDF generation)          │
+└──────────────────────┘    │  └── Hebrew fonts (Noto, Culmus)        │
+                            │                                         │
                             │  Host Services:                         │
-                            │  ├── Tailscale Funnel → :3001 (HTTPS)   │
+                            │  ├── nginx :80/:443 → :3001 (HTTPS)     │
+                            │  │   (YOUR-VPS-IP-WITH-DASHES.sslip.io, LE cert)   │
                             │  ├── cron: auto-update-direct.sh (1 min)│
                             │  ├── cron: sync-to-cloud.sh (hourly)    │
+                            │  ├── cron: backup-to-telegram.sh (03:00)│
+                            │  ├── cron: daily-security-report (23:55)│
                             │  └── rclone → Google Drive               │
+                            │                                         │
+                            │  Persistent Data (./local_data):        │
+                            │  ├── .env (secrets)                     │
+                            │  ├── backend_data/backend_data.db       │
+                            │  ├── uploads/                           │
+                            │  │   ├── signatures/ (PNG files)        │
+                            │  │   ├── agreements/ (signed PDFs)      │
+                            │  │   ├── dresses/ (WebP images)         │
+                            │  │   └── expenses/ (YEAR/CATEGORY/)     │
+                            │  ├── logs/                              │
+                            │  └── csv/ (Google Sheets exports)       │
                             └─────────────────────────────────────────┘
-```
 
 ### URLs
 
 | URL | Purpose | Who Uses It |
 |-----|---------|-------------|
-| `https://YOUR_APP_NAME.vercel.app` | Main app entry (clean URL) | Business owner, customers (agreements) |
-| `https://your-vps.YOUR_TAILSCALE_DOMAIN.ts.net` | Direct VPS access (Tailscale) | Technical access, API calls from Vercel |
-| `https://YOUR_APP_NAME.vercel.app/agreement?token=...` | Customer agreement signing | Customers (sent via WhatsApp) |
+| `https://your-app-name.vercel.app` | Main app entry (clean URL) | Business owner, customers (agreements) |
+| `https://YOUR-VPS-IP-WITH-DASHES.sslip.io` | Direct VPS backend access (nginx + Let's Encrypt) | Technical access, API calls from Vercel |
+| `https://your-app-name.vercel.app/agreement?token=...` | Customer agreement signing | Customers (sent via WhatsApp) |
 
-### Docker Configuration (Docker Install only)
+### Direct Install Configuration
 
-- **Dockerfile**: Multi-stage build (builder + runtime), installs Chromium + Hebrew fonts
-- **docker-compose.yml**: `network_mode: host`, mounts `./local_data`, `restart: always`
-- **entrypoint.sh**: Starts backend and frontend, handles graceful shutdown
+- **pm2-ecosystem.config.js**: pm2 config for backend; invokes `start-backend.sh`
+- **start-backend.sh**: Waits for port 3001 free, then execs node (prevents EADDRINUSE on restart)
+- **start-app.sh**: Creates dirs, runs migrate, pm2 start
+- **auto-update-direct.sh**: git pull → npm install → pm2 restart (no frontend build)
 - **Environment**: `CHROME_BIN=/usr/bin/chromium`, `NODE_ENV=production`
-
-### Direct Install Configuration (Direct Install only)
-
-- **pm2-ecosystem.config.js**: pm2 config for backend process (`dress-backend`)
-- **start-backend.sh**: Startup wrapper that waits for port 3001 before launching Node
-- **wait-for-port.sh**: Utility that blocks until a TCP port is free
-- **start-app.sh**: Creates directories, runs migrations, starts pm2
-- **setup-direct-install.sh**: Installs Node.js 20, Chromium, fonts, build tools
-- **Environment**: `CHROME_BIN=/usr/bin/chromium-browser`, `NODE_ENV=production`
 
 ### Auto-Update Flow
 
-#### Docker Mode (`auto-update.sh`)
-```
-cron (every 1 min) → auto-update.sh
-    ├── git fetch origin master
-    ├── Compare local HEAD vs remote HEAD
-    ├── If different:
-    │   ├── sync-to-cloud.sh (safety backup)
-    │   ├── git pull origin master
-    │   ├── docker compose up -d --build --force-recreate
-    │   └── Health check
-    └── If same: exit silently
-```
-
-#### Direct Install Mode (`auto-update-direct.sh`)
-```
-cron (every 1 min) → auto-update-direct.sh
-    ├── git fetch origin master
-    ├── Compare local HEAD vs remote HEAD
-    ├── If different:
-    │   ├── sync-to-cloud.sh (safety backup)
-    │   ├── git pull origin master
-    │   ├── cd backend && npm install
-    │   ├── pm2 stop → wait for port → pm2 start
-    │   └── Health check (retries up to 60s)
-    └── If same: exit silently
-```
+`auto-update-direct.sh` → git pull → npm install → pm2 restart dress-backend
 
 ### Backup Flow
 
 ```
 cron (hourly) → sync-to-cloud.sh
     ├── sqlite3 PRAGMA wal_checkpoint(TRUNCATE)  (consistency)
-    └── rclone sync local_data/ → gdrive:YOUR_REPO_NAME/
-        (excludes: logs/, *.db-wal, *.db-shm, migration_backups/)
+    ├── rclone sync local_data/ → gdrive:YOUR_REPO_NAME/
+    │   (excludes: logs/, *.db-wal, *.db-shm, migration_backups/)
+    └── on failure → send_telegram() via telegram-notify.sh
+
+cron (daily 03:00) → backup-to-telegram.sh
+    ├── sqlite3 PRAGMA wal_checkpoint(TRUNCATE)  (consistency)
+    ├── curl POST Telegram sendDocument → eti-business-YYYY-MM-DD.db
+    └── on failure → send_telegram() alert
 ```
+
+### Telegram Monitoring Flow
+
+```
+Backend (Express)
+    └── logger.js [ERROR level]
+            └── sendTelegramAlert()   (fire-and-forget, rate-limited)
+                    └── Telegram Bot API → group chat
+
+cron (daily 23:55) → daily-security-report.sh
+    ├── parse local_data/logs/YYYY-MM-DD.log
+    ├── count: login_failed, [401], [403], [WARN]
+    └── if any events found → send_telegram summary (otherwise silent)
+```
+
+**Alert tiers:**
+- Real-time: backend ERROR-level events (crashes, DB errors, unhandled exceptions)
+- Real-time: cron script failures (Google Drive backup, Telegram backup)
+- Daily summary (23:55): failed logins, 401/403 access attempts (only if any occurred)
+- Log-only: normal operations, successful logins, routine requests
 
 ### Key VPS Paths
 
 | Path | Purpose |
 |------|---------|
-| `/root/YOUR_REPO_NAME/` | Project root (Git clone) |
-| `/root/YOUR_REPO_NAME/local_data/` | All persistent data |
-| `/root/YOUR_REPO_NAME/local_data/.env` | Secrets |
-| `/root/YOUR_REPO_NAME/local_data/backend_data/business.db` | Database |
-| `/root/YOUR_REPO_NAME/local_data/logs/` | App + sync + update logs |
+| `/root/dress-rental-business-management/` | Project root (Git clone) |
+| `/root/dress-rental-business-management/local_data/` | All persistent data |
+| `/root/dress-rental-business-management/local_data/.env` | Secrets |
+| `/root/dress-rental-business-management/local_data/backend_data/backend_data.db` | Database |
+| `/root/dress-rental-business-management/local_data/uploads/signatures/` | Raw signature PNGs |
+| `/root/dress-rental-business-management/local_data/uploads/agreements/` | Signed agreement PDFs |
+| `/root/dress-rental-business-management/local_data/uploads/dresses/` | Dress images (WebP) |
+| `/root/dress-rental-business-management/local_data/uploads/expenses/` | Expense receipts by year/category |
+| `/root/dress-rental-business-management/local_data/logs/` | App + sync + update logs |
+| `/root/dress-rental-business-management/local_data/csv/` | Source CSV files from Google Sheets |
 | `/root/.config/rclone/rclone.conf` | Google Drive rclone auth |
 
 ---
@@ -549,23 +584,26 @@ cron (hourly) → sync-to-cloud.sh
    - `requireAuth` middleware on all protected routes
 
 3. **File Uploads**:
-   - Receipts: `uploads/receipts/`
-   - Signatures: `uploads/signatures/`
-   - Dress images: uploaded directly and stored in `uploads/dresses/`
+   - Signatures: `uploads/signatures/` → raw PNG from signing pad
+   - Agreements: `uploads/agreements/[CustomerName - YYYY-MM-DD - OrderId]/הסכם השכרה - Name.pdf`
+   - Dress images: `uploads/dresses/<uuid>.webp` + `<uuid>_thumb.webp` (processed by `sharp`)
    - Dress image fields (`photo_url`, `thumbnail_url`) store internal app paths (`/uploads/dresses/...`) only
-   - Receipts can also arrive via base64 handoff from Android share flow
+   - Expense receipts: `uploads/expenses/[YEAR]/[CATEGORY]/[YYMMDD] [supplier] [description] [amount]₪.[ext]`
+   - Income receipt files are **NOT** saved to disk — they are sent to Gemini for AI extraction and then discarded; only structured data (confirmationNumber, lastFourDigits, etc.) is persisted in the `transactions` table
+   - Order attachments: `uploads/order_attachments/<orderId>/<uuid>.<ext>` (multipart, multer memory storage). **Image files** are auto-compressed client-side before upload (max 2400px long-side, JPEG q=0.92) via `compressImageFileForAttachment` in `frontend/src/lib/shared-upload.ts`; PDFs and other non-image files pass through unchanged. Per-file backend limit: 20MB. Batches >3MB (or any single file >2MB) are split into sequential per-file POSTs by `ordersApi.uploadAttachment` to stay under the Vercel rewrite proxy's ~4.5MB body limit.
 
 4. **Google Integration**:
-   - PRIMARY: Instant via Web App POST (set `APPS_SCRIPT_WEB_APP_URL` in `.env`)
-   - Email sending routes through Apps Script Web App (bypasses SMTP)
+   - SOLE TRANSPORT: HTTPS POST to the Apps Script Web App (set `APPS_SCRIPT_WEB_APP_URL` in `.env`)
+   - If `APPS_SCRIPT_WEB_APP_URL` is missing, the call returns `{ success: false }` and the error is logged — there is no fallback (email-polling was removed in v0.9.0)
+   - Email sending also routes through the same Web App (`type: 'send_email'` handled by `handleSendEmail` → `GmailApp.sendEmail`); the backend itself has no SMTP/nodemailer code
 
 5. **Dress Availability Semantics**:
-   - Future bookings are shown as scheduling information, not hard unavailability
-   - Dresses are excluded from booking flow only when status is `sold` or `retired`
+  - Future bookings are shown as scheduling information, not hard unavailability
+  - Only dresses with status `available` are included in booking flow
 
 6. **Agreement Link Configuration**:
    - Customer-facing agreement links use `FORCED_PUBLIC_FRONTEND_URL` in `backend/src/routes/agreements.js`
-   - Currently set to `https://YOUR_APP_NAME.vercel.app` for clean URLs
+   - Currently set to `https://your-app-name.vercel.app` for clean URLs
    - Can be overridden by `PUBLIC_FRONTEND_URL` env var
 
 7. **VPS is Source of Truth**:

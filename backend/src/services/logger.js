@@ -9,19 +9,27 @@
  * 
  * Log Files:
  * - logs/YYYY-MM-DD.log: Daily log file with all activities
- * - logs/errors.log: Recent errors only (last 1000 lines kept)
+ * - logs/errors.log: Recent errors only (rotated when > 5MB)
  * - logs/combined.log: Combined log (rotated when > 10MB)
+ * - Self-cleanup: Files older than 30 days are deleted automatically (once per day)
  */
 
-import { appendFileSync, existsSync, mkdirSync, statSync, renameSync } from 'fs';
+import { appendFileSync, existsSync, mkdirSync, statSync, renameSync, readdirSync, unlinkSync, writeFileSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { sendTelegramAlert } from './telegram.js';
+
+/** Log retention in days. Files older than this are deleted during daily cleanup. */
+const LOG_RETENTION_DAYS = 30;
+/** In-memory flag: have we already scheduled cleanup for today? Avoids many setImmediate calls. */
+let cleanupScheduledForDate = null;
 
 // Get project root directory
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const PROJECT_ROOT = join(__dirname, '..', '..', '..');
 const LOGS_DIR = join(PROJECT_ROOT, 'local_data', 'logs');
+const LAST_CLEANUP_FILE = join(LOGS_DIR, '.last_cleanup');
 
 // Ensure logs directory exists
 if (!existsSync(LOGS_DIR)) {
@@ -141,6 +149,75 @@ function writeToCombinedLog(entry) {
 }
 
 /**
+ * Cleanup old log files (30-day retention).
+ * Removes: daily logs (YYYY-MM-DD.log), rotated combined-*.log, errors.log.old/.bak older than LOG_RETENTION_DAYS.
+ * Runs asynchronously and must never crash the backend (wrap in try/catch).
+ * Called at most once per day (checked via logs/.last_cleanup).
+ */
+function cleanupOldLogs() {
+  try {
+    const today = getDateString();
+    if (existsSync(LAST_CLEANUP_FILE)) {
+      const lastDate = readFileSync(LAST_CLEANUP_FILE, 'utf8').trim();
+      if (lastDate === today) {
+        return; // Already ran today
+      }
+    }
+
+    if (!existsSync(LOGS_DIR)) return;
+    const cutoffTime = Date.now() - LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+
+    const files = readdirSync(LOGS_DIR);
+    let removed = 0;
+
+    for (const file of files) {
+      if (file.startsWith('.') || file === 'errors.log' || file === 'combined.log') continue;
+
+      const filePath = join(LOGS_DIR, file);
+      let shouldDelete = false;
+
+      // Daily logs: YYYY-MM-DD.log
+      const dailyMatch = /^\d{4}-\d{2}-\d{2}\.log$/.test(file);
+      // Rotated combined: combined-YYYY-MM-DD.log
+      const combinedMatch = /^combined-\d{4}-\d{2}-\d{2}\.log$/.test(file);
+      // Error backups: errors.log.old, errors.log.bak
+      const errorBackupMatch = /^errors\.log\.(old|bak)$/.test(file);
+
+      if (dailyMatch || combinedMatch || errorBackupMatch) {
+        try {
+          const stats = statSync(filePath);
+          if (stats.mtimeMs < cutoffTime) {
+            shouldDelete = true;
+          }
+        } catch {
+          // Ignore stat errors (file may have been deleted)
+        }
+      }
+
+      if (shouldDelete) {
+        try {
+          unlinkSync(filePath);
+          removed++;
+        } catch {
+          // Ignore unlink errors (permission, lock)
+        }
+      }
+    }
+
+    // Always record that we ran today (prevents re-run after server restart)
+    writeFileSync(LAST_CLEANUP_FILE, today, 'utf8');
+    if (removed > 0 && process.env.NODE_ENV !== 'production') {
+      console.log(`[logger] Cleaned up ${removed} old log file(s)`);
+    }
+  } catch (err) {
+    // Must never throw - logging must not break the app
+    if (process.env.NODE_ENV !== 'production') {
+      console.error('[logger] cleanupOldLogs failed:', err.message);
+    }
+  }
+}
+
+/**
  * Write log to all file destinations
  */
 function writeToFiles(level, category, action, data) {
@@ -152,9 +229,37 @@ function writeToFiles(level, category, action, data) {
   // Always write to combined log
   writeToCombinedLog(entry);
 
-  // Write errors to error log
+  // Write errors to error log and send real-time Telegram alert
   if (level === LOG_LEVELS.ERROR || data.errorMessage) {
     writeToErrorLog(entry);
+
+    if (!shouldSendTelegramAlert(data)) {
+      return;
+    }
+
+    const pathInfo = data.requestPath
+      ? `${data.requestMethod || ''} ${data.requestPath}`.trim()
+      : '';
+    const hostInfo = data.requestHost || data.forwardedHost
+      ? `Host: ${data.requestHost || data.forwardedHost}`
+      : null;
+    const forwardedHostInfo = data.forwardedHost ? `Forwarded-Host: ${data.forwardedHost}` : null;
+    const alertLines = [
+      `[ERROR] ${category} - ${action}`,
+      `Error: ${data.errorMessage || 'unknown error'}`,
+      pathInfo ? `Path: ${pathInfo}` : null,
+      hostInfo,
+      forwardedHostInfo,
+      `Time: ${getTimestamp()}`,
+    ].filter(Boolean);
+    sendTelegramAlert(alertLines.join('\n'));
+  }
+
+  // Run log cleanup at most once per day (async, non-blocking)
+  const today = getDateString();
+  if (cleanupScheduledForDate !== today) {
+    cleanupScheduledForDate = today;
+    setImmediate(() => cleanupOldLogs());
   }
 
   // Also log to console for development
@@ -165,6 +270,76 @@ function writeToFiles(level, category, action, data) {
       console.warn(entry.readable);
     }
   }
+}
+
+const BOT_404_PATHS = new Set(['/robots.txt', '/favicon.ico', '/favicon.png', '/']);
+
+function extractHost(value) {
+  if (!value) return null;
+  const trimmed = String(value).trim();
+  if (!trimmed) return null;
+  if (trimmed.includes('://')) {
+    try {
+      return new URL(trimmed).host;
+    } catch {
+      return null;
+    }
+  }
+  return trimmed.split('/')[0];
+}
+
+function buildFrontendHosts() {
+  const hosts = new Set(['dress-rental.vercel.app']);
+  const envCandidates = [
+    process.env.PUBLIC_FRONTEND_URL,
+    process.env.NEXT_PUBLIC_FRONTEND_URL,
+  ].filter(Boolean);
+  for (const value of envCandidates) {
+    const host = extractHost(value);
+    if (host) hosts.add(host);
+  }
+  return hosts;
+}
+
+function isFromFrontendLink(data) {
+  const host = extractHost(data.requestHost);
+  const forwardedHost = extractHost(data.forwardedHost);
+  const refererHost = extractHost(data.referer);
+  const frontendHosts = buildFrontendHosts();
+
+  const matchesFrontend = (candidate) =>
+    candidate && (frontendHosts.has(candidate) || candidate.endsWith('.vercel.app'));
+
+  return (
+    matchesFrontend(host) ||
+    matchesFrontend(forwardedHost) ||
+    matchesFrontend(refererHost)
+  );
+}
+
+function shouldSendTelegramAlert(data) {
+  const status = data.responseStatus;
+  const path = data.requestPath || '';
+
+  // For 404 errors, only alert if it's a broken link within our own app
+  if (status === 404) {
+    // If it's not from our frontend, it's likely a bot or direct backend hit. Ignore.
+    if (!isFromFrontendLink(data)) {
+      return false;
+    }
+
+    // If it is from our frontend, check if it's a path that should exist
+    const isOurPath = path.startsWith('/api/') || path.startsWith('/uploads/');
+    if (!isOurPath) {
+      // Common bot paths or accidental root hits from frontend are not critical
+      return false;
+    }
+
+    // Otherwise, it's a 404 on an API or upload path coming from our frontend -> Alert (Broken Link)
+    return true;
+  }
+
+  return true;
 }
 
 // Log categories
@@ -178,6 +353,7 @@ export const LogCategory = {
   AGREEMENT: 'agreement', // Rental agreements
   SYSTEM: 'system',       // System events
   ERROR: 'error',         // Errors and exceptions
+  FRONTEND_ERROR: 'frontend_error', // Client-side errors
 };
 
 // Log actions
@@ -224,6 +400,9 @@ export function logActivity({
   details = null,
   ipAddress = null,
   userAgent = null,
+  requestHost = null,
+  forwardedHost = null,
+  referer = null,
   requestMethod = null,
   requestPath = null,
   responseStatus = null,
@@ -241,6 +420,9 @@ export function logActivity({
     details,
     ipAddress,
     userAgent,
+    requestHost,
+    forwardedHost,
+    referer,
     requestMethod,
     requestPath,
     responseStatus,
@@ -278,6 +460,9 @@ export function logUserAction(req, action, category, entityType = null, entityId
     details,
     ipAddress: req.ip || req.connection?.remoteAddress,
     userAgent: req.headers['user-agent'],
+    requestHost: req.headers.host || null,
+    forwardedHost: req.headers['x-forwarded-host'] || null,
+    referer: req.headers.referer || req.headers.referrer || null,
     requestMethod: req.method,
     requestPath: req.path,
   });
@@ -298,6 +483,9 @@ export function logError(req, error, category = LogCategory.ERROR) {
     errorStack: error.stack,
     ipAddress: req?.ip || req?.connection?.remoteAddress,
     userAgent: req?.headers?.['user-agent'],
+    requestHost: req?.headers?.host || null,
+    forwardedHost: req?.headers?.['x-forwarded-host'] || null,
+    referer: req?.headers?.referer || req?.headers?.referrer || null,
     requestMethod: req?.method,
     requestPath: req?.path,
     responseStatus: error.statusCode || 500,

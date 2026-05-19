@@ -11,8 +11,10 @@ import { useEffect, useState, useCallback } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useRouter, useSearchParams } from "next/navigation";
 import { customersApi } from "@/lib/api";
 import { formatPhoneNumber, createWhatsAppLink, formatDateShort, debounce, normalizePhoneInput, cn } from "@/lib/utils";
+import { reportClientError } from "@/lib/error-reporter";
 import { useToast } from "@/components/ui/use-toast";
 import { ContactPicker } from "@/components/dashboard/contact-picker";
 import {
@@ -23,7 +25,6 @@ import {
   Mail,
   MessageCircle,
   Edit,
-  Trash2,
   X,
   UserPlus,
   Sparkles,
@@ -49,6 +50,8 @@ interface CustomerFormData {
 
 export default function CustomersPage() {
   const { toast } = useToast();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -89,6 +92,12 @@ export default function CustomersPage() {
         title: "שגיאה",
         description: "לא ניתן לטעון את רשימת הלקוחות",
         variant: "destructive",
+      });
+      reportClientError({
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        component: 'CustomersList',
+        action: 'טעינת רשימת לקוחות'
       });
     } finally {
       setLoading(false);
@@ -131,6 +140,28 @@ export default function CustomersPage() {
     setShowForm(true);
   };
 
+  useEffect(() => {
+    const editId = searchParams.get("editId");
+    if (editId && !showForm) {
+      (async () => {
+        try {
+          const res = await customersApi.get(parseInt(editId));
+          if (res.success && res.data) {
+            handleEdit((res.data as any).customer as Customer);
+          }
+        } catch (error) {
+          toast({ title: "שגיאה", description: "לא ניתן לטעון פרטי לקוחה", variant: "destructive" });
+          reportClientError({
+            message: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : undefined,
+            component: 'CustomersList',
+            action: `טעינת פרטי לקוח (ID: ${editId})`
+          });
+        }
+      })();
+    }
+  }, [searchParams]);
+
   const toggleSelection = (id: number) => {
     setSelectedIds(prev =>
       prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
@@ -168,10 +199,17 @@ export default function CustomersPage() {
       setIsSelectionMode(false);
       fetchCustomers(search);
     } catch (error) {
+      const message = error instanceof Error ? error.message : "שגיאה במיזוג";
       toast({
         title: "שגיאה",
-        description: error instanceof Error ? error.message : "שגיאה במיזוג",
+        description: message,
         variant: "destructive",
+      });
+      reportClientError({
+        message,
+        stack: error instanceof Error ? error.stack : undefined,
+        component: 'CustomersList',
+        action: `מיזוג לקוחות (${mergeTargetId} + ${sourceId})`
       });
     } finally {
       setSaving(false);
@@ -196,26 +234,24 @@ export default function CustomersPage() {
       resetForm();
       fetchCustomers(search);
     } catch (error) {
+      const message = error instanceof Error ? error.message : "שגיאה בשמירת לקוח";
       toast({
         title: "שגיאה",
-        description: error instanceof Error ? error.message : "שגיאה בשמירת לקוח",
+        description: message,
         variant: "destructive",
+      });
+      reportClientError({
+        message,
+        stack: error instanceof Error ? error.stack : undefined,
+        component: 'CustomersList',
+        action: editingCustomer ? 'עדכון לקוח' : 'יצירת לקוח'
       });
     } finally {
       setSaving(false);
     }
   };
 
-  const handleDelete = async (customer: Customer) => {
-    if (!confirm(`האם למחוק את ${customer.name}?`)) return;
-    try {
-      await customersApi.delete(customer.id);
-      toast({ title: "הצלחה", description: "לקוח נמחק בהצלחה" });
-      fetchCustomers(search);
-    } catch (error) {
-      toast({ title: "שגיאה", description: "לא ניתן למחוק", variant: "destructive" });
-    }
-  };
+
 
   if (loading) {
     return (
@@ -237,7 +273,9 @@ export default function CustomersPage() {
             </div>
             <h1 className="text-3xl font-black">קהל <span className="text-primary">היעד</span></h1>
             <p className="text-muted-foreground text-sm font-medium">
-              {customers.length} לקוחות רשומות במערכת
+              {sourceFilter
+                ? `${customers.filter(c => c.source === sourceFilter).length} מתוך ${customers.length} לקוחות`
+                : `${customers.length} לקוחות רשומות במערכת`}
             </p>
           </div>
           <div className="flex gap-2">
@@ -249,7 +287,7 @@ export default function CustomersPage() {
               }}
               className="rounded-2xl h-12 px-4 border-2"
             >
-              {isSelectionMode ? "ביטול בחירה" : "בחירה מרובה"}
+              {isSelectionMode ? "ביטול" : "מיזוג"}
             </Button>
             <Button onClick={() => setShowForm(true)} className="rounded-2xl h-12 px-6 shadow-lg shadow-primary/20">
               <Plus className="h-5 w-5 ml-2" />
@@ -313,10 +351,17 @@ export default function CustomersPage() {
               </div>
             )}
             <Card
-              onClick={() => isSelectionMode && toggleSelection(customer.id)}
+              onClick={() => {
+                if (isSelectionMode) {
+                  toggleSelection(customer.id);
+                } else {
+                  router.push(`/dashboard/transactions?customerId=${customer.id}&customerName=${encodeURIComponent(customer.name)}`);
+                }
+              }}
               className={cn(
-                "rounded-[1.5rem] border-none shadow-xl shadow-gray-200/40 bg-white transition-all active:scale-[0.98]",
-                isSelectionMode && "cursor-pointer hover:ring-2 hover:ring-primary/50",
+                "rounded-[1.5rem] border-none shadow-xl shadow-gray-200/40 bg-white transition-all active:scale-[0.98] cursor-pointer",
+                isSelectionMode && "hover:ring-2 hover:ring-primary/50",
+                !isSelectionMode && "hover:ring-2 hover:ring-primary/30",
                 selectedIds.includes(customer.id) && "ring-2 ring-primary bg-primary/5"
               )}
             >
@@ -340,6 +385,7 @@ export default function CustomersPage() {
                         target="_blank"
                         rel="noopener noreferrer"
                         className="h-10 w-10 bg-green-50 rounded-xl flex items-center justify-center text-green-600 transition-colors active:bg-green-100"
+                        onClick={(e) => e.stopPropagation()}
                       >
                         <MessageCircle className="h-5 w-5" />
                       </a>
@@ -348,6 +394,7 @@ export default function CustomersPage() {
                       <a
                         href={`tel:${customer.phone}`}
                         className="h-10 w-10 bg-blue-50 rounded-xl flex items-center justify-center text-blue-600 transition-colors active:bg-blue-100"
+                        onClick={(e) => e.stopPropagation()}
                       >
                         <Phone className="h-5 w-5" />
                       </a>
@@ -368,11 +415,8 @@ export default function CustomersPage() {
                   </div>
                   {!isSelectionMode && (
                     <div className="flex gap-1">
-                      <Button variant="ghost" size="icon" onClick={() => handleEdit(customer)} className="h-8 w-8 text-gray-400">
+                      <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); handleEdit(customer); }} className="h-8 w-8 text-gray-400">
                         <Edit className="h-4 w-4" />
-                      </Button>
-                      <Button variant="ghost" size="icon" onClick={() => handleDelete(customer)} className="h-8 w-8 text-red-300 hover:text-red-500">
-                        <Trash2 className="h-4 w-4" />
                       </Button>
                     </div>
                   )}

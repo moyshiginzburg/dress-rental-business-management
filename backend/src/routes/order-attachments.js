@@ -25,11 +25,45 @@ import { uploadConfig } from '../config/index.js';
 
 const router = Router({ mergeParams: true });
 
-// Multer: accept up to 20 files at once, 10 MB each, store in memory
+// Multer: accept up to 20 files at once, 20 MB each, store in memory.
+// nginx is configured for 50MB total body, so 20MB/file leaves comfortable
+// headroom even for hi-res scanned PDFs that bypass client-side compression.
+const PER_FILE_LIMIT_BYTES = 20 * 1024 * 1024;
 const upload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: 10 * 1024 * 1024 },
+    limits: { fileSize: PER_FILE_LIMIT_BYTES },
 });
+
+/**
+ * Wrap multer's array() middleware so that LIMIT_FILE_SIZE / file-count
+ * rejections respond with a friendly Hebrew JSON 413 instead of bubbling
+ * out as an opaque proxy error. The frontend's api.ts already prefers JSON
+ * messages over status-code-derived fallbacks, so this preserves a clear
+ * error end-to-end (nginx → Express → fetch).
+ */
+function uploadFilesWithFriendlyErrors(req, res, next) {
+    const middleware = upload.array('files', 20);
+    middleware(req, res, (err) => {
+        if (!err) return next();
+
+        if (err instanceof multer.MulterError) {
+            if (err.code === 'LIMIT_FILE_SIZE') {
+                return res.status(413).json({
+                    success: false,
+                    message: `הקובץ גדול מדי. הגודל המקסימלי הוא ${Math.round(PER_FILE_LIMIT_BYTES / (1024 * 1024))}MB לקובץ.`
+                });
+            }
+            if (err.code === 'LIMIT_FILE_COUNT') {
+                return res.status(413).json({
+                    success: false,
+                    message: 'יותר מדי קבצים בהעלאה אחת. עד 20 קבצים בכל פעם.'
+                });
+            }
+        }
+
+        return next(err);
+    });
+}
 
 router.use(requireAuth);
 
@@ -91,7 +125,7 @@ router.get('/', (req, res, next) => {
 // ---------------------------------------------------------------------------
 // POST /api/orders/:orderId/attachments — upload one or more files
 // ---------------------------------------------------------------------------
-router.post('/', upload.array('files', 20), (req, res, next) => {
+router.post('/', uploadFilesWithFriendlyErrors, (req, res, next) => {
     try {
         const { orderId } = req.params;
         assertOrderExists(orderId);

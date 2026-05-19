@@ -34,7 +34,7 @@ const ORDER_TYPE_OPTIONS = [
 const DRESS_STATUS_OPTIONS = [
   { value: 'available', label: 'פנויה' },
   { value: 'sold', label: 'נמכרה' },
-  { value: 'retired', label: 'הוצאה מהמלאי' },
+  { value: 'retired', label: 'יצאה ממלאי' },
   { value: 'custom_sewing', label: 'תפירה אישית' },
 ];
 
@@ -153,14 +153,6 @@ const DATASET_CONFIG = {
         queryType: 'in',
         column: 'intended_use',
         options: DRESS_INTENDED_USE_OPTIONS,
-      },
-      {
-        key: 'dressIsActive',
-        label: 'פעילה במלאי',
-        inputType: 'select',
-        queryType: 'equals_number',
-        column: 'is_active',
-        options: ACTIVE_OPTIONS,
       },
       {
         key: 'search',
@@ -660,7 +652,7 @@ router.get('/csv', (req, res, next) => {
 
     const csvContent = rowsToCsv(rows, columns);
     const datePart = new Date().toISOString().slice(0, 10);
-    const fileName = `${datasetKey}-${datePart}.csv`;
+    const fileName = `eti-${datasetKey}-${datePart}.csv`;
 
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);

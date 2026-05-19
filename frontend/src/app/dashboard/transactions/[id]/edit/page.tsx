@@ -28,6 +28,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { useToast } from "@/components/ui/use-toast";
 import { transactionsApi, customersApi, ordersApi } from "@/lib/api";
 import { cn, getCategoryLabel } from "@/lib/utils";
+import { compressImageForUpload } from "@/lib/shared-upload";
+import { reportClientError } from "@/lib/error-reporter";
 
 const FORM_INCOME_CATEGORIES = [
   { value: "existing_order", label: "הזמנה" },
@@ -182,27 +184,48 @@ export default function EditTransactionPage() {
     }
   }, [customerSearch]);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      if (file.size > 5 * 1024 * 1024) {
-        toast({ title: "שגיאה", description: "הקובץ גדול מדי", variant: "destructive" });
-        return;
-      }
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const base64String = reader.result as string;
-        setFileBase64(base64String.split(',')[1]);
-        setFileName(file.name);
-      };
-      reader.readAsDataURL(file);
+    if (!file) return;
+
+    if (file.size > 20 * 1024 * 1024) {
+      toast({ title: "הקובץ גדול מדי", description: "הגודל המרבי הוא 20MB. נסי לצלם שוב ברזולוציה נמוכה יותר.", variant: "destructive" });
+      return;
+    }
+
+    try {
+      const base64 = await compressImageForUpload(file);
+      setFileBase64(base64);
+      setFileName(file.name);
+    } catch (err) {
+      console.error('File read/compress error:', err);
+      toast({ title: "שגיאה בקריאת הקובץ", description: "לא ניתן לקרוא את הקובץ. נסי לצלם שוב.", variant: "destructive" });
+      reportClientError({
+        message: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
+        component: 'EditTransaction',
+        action: 'קריאת קובץ אסמכתא'
+      });
     }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!amount || (!category && type === "expense") || (type === "income" && !uiCategory)) {
-      toast({ title: "חסרים פרטים", description: "נא למלא את כל שדות החובה", variant: "destructive" });
+
+    if (!amount) {
+      toast({ title: "חסר סכום", description: "נא להזין את סכום התנועה.", variant: "destructive" });
+      return;
+    }
+    if (type === "income" && !uiCategory) {
+      toast({ title: "חסר סוג הכנסה", description: "נא לבחור סוג הכנסה: הזמנה, תיקונים או אחר.", variant: "destructive" });
+      return;
+    }
+    if (type === "expense" && !category) {
+      toast({ title: "חסרה קטגוריה", description: "נא לבחור קטגוריה להוצאה (חומרים, תקורה וכו').", variant: "destructive" });
+      return;
+    }
+    if (type === "income" && !customerId) {
+      toast({ title: "חסרה לקוחה", description: "נא לבחור לקוחה קיימת או ליצור חדשה.", variant: "destructive" });
       return;
     }
 
@@ -236,7 +259,16 @@ export default function EditTransactionPage() {
       toast({ title: "הצלחה!", description: "העסקה עודכנה בהצלחה" });
       router.push("/dashboard/transactions");
     } catch (error) {
-      toast({ title: "שגיאה", description: "לא ניתן לעדכן את העסקה", variant: "destructive" });
+      const message = error instanceof Error && error.message
+        ? error.message
+        : "לא ניתן לעדכן את התנועה. בדקי את החיבור לאינטרנט ונסי שוב.";
+      toast({ title: "שגיאה בעדכון", description: message, variant: "destructive" });
+      reportClientError({
+        message,
+        stack: error instanceof Error ? error.stack : undefined,
+        component: 'EditTransaction',
+        action: 'עדכון תנועה'
+      });
     } finally {
       setSaving(false);
     }
@@ -278,6 +310,9 @@ export default function EditTransactionPage() {
               placeholder="0"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === '.' || e.key === '-') e.preventDefault();
+              }}
               className="text-6xl font-black text-center bg-transparent border-none focus:outline-none w-full placeholder:text-muted/20"
             />
             <span className="absolute -right-6 top-2 text-3xl text-muted-foreground font-light">₪</span>
@@ -503,6 +538,9 @@ export default function EditTransactionPage() {
                     type="number"
                     value={customerChargeAmount}
                     onChange={(e) => setCustomerChargeAmount(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === '.' || e.key === '-') e.preventDefault();
+                    }}
                     placeholder="כמה היא משלמת?"
                     className="h-11 rounded-xl border-2"
                   />

@@ -2,8 +2,7 @@
  * pm2 Ecosystem Config - Backend Only (Direct Install)
  *
  * Purpose: pm2 configuration for running the Express backend without Docker.
- * Used when VPS runs backend directly; frontend is served by Vercel or
- * accessed via the Docker container (if using Docker deployment instead).
+ * Used when VPS runs backend directly; frontend is served by Vercel.
  *
  * How it works:
  *   - pm2 runs backend/src/index.js from the backend directory

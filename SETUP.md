@@ -1,14 +1,13 @@
 # Setup & Deployment Guide
 
-> **Two deployment options available:**  
-> **Docker Install** (frontend + backend in container) or **Direct Install** (backend via pm2, frontend on Vercel).
+> **Current production**: VPS at `YOUR_VPS_IP`. **Direct Install**: backend via pm2, frontend on Vercel, nginx as HTTPS reverse proxy. URLs: `https://YOUR-VPS-IP-WITH-DASHES.sslip.io` (backend API via nginx), `https://your-app-name.vercel.app` (users).
 
 ---
 
 ## Table of Contents
 
 1. [Local Development](#local-development)
-2. [VPS Production Deployment](#vps-production-deployment)
+2. [VPS Production Deployment (Direct Install)](#vps-production-deployment-direct-install)
 3. [Migrating to a New Server](#migrating-to-a-new-server)
 4. [Vercel Frontend Setup](#vercel-frontend-setup)
 5. [Backup & Restore](#backup--restore)
@@ -54,93 +53,45 @@ cd backend && npm run db:migrate
 
 ---
 
-## VPS Production Deployment
+## VPS Production Deployment (Direct Install)
 
-### Docker Install
+The production system runs on a VPS: backend via pm2, frontend on Vercel, nginx as HTTPS reverse proxy with Let's Encrypt SSL.
 
-The production system runs in Docker on a VPS with Tailscale Funnel for HTTPS access.
-
-#### Architecture
+### Architecture
 
 ```
-VPS (Ubuntu 24.04 LTS, Docker)
-├── Docker Container: business-mgmt-app
-│   ├── Next.js Frontend  → port 3000
-│   ├── Express Backend   → port 3001
-│   ├── Chromium (for PDF generation)
-│   └── Hebrew fonts (Noto, Culmus, DejaVu)
-│
-├── Volume Mount: ./local_data → /app/local_data
-│   ├── .env (secrets)
-│   ├── backend_data/business.db (SQLite)
-│   ├── uploads/ (signatures, dresses, agreements, expenses)
-│   └── logs/
-│
-├── Tailscale Funnel → port 3000 (public HTTPS)
-├── Cron: auto-update.sh (every minute)
-└── Cron: sync-to-cloud.sh (every hour)
-```
-
-#### Docker Commands
-
-```bash
-# SSH into VPS
-ssh root@YOUR_VPS_IP
-
-# Go to project directory
-cd /root/YOUR_REPO_NAME
-
-# View running containers
-docker ps
-
-# View live logs
-docker compose logs -f
-
-# Restart the container
-docker compose restart
-
-# Full rebuild after manual changes
-docker compose up -d --build --force-recreate
-
-# Stop the container
-docker compose down
-```
-
-### Direct Install
-
-The production system runs backend via pm2; frontend is deployed on Vercel.
-
-#### Architecture
-
-```
-VPS (Ubuntu 24.04 LTS, pm2)
-├── pm2: dress-backend (Express Backend → port 3001)
-├── Chromium + Hebrew fonts (installed as system packages)
-│
-├── local_data/
-│   ├── .env (secrets)
-│   ├── backend_data/business.db (SQLite)
-│   ├── uploads/ (signatures, dresses, agreements, expenses)
-│   └── logs/
-│
-├── Tailscale Funnel → port 3001 (public HTTPS, backend only)
+VPS (Ubuntu 22.04+)
+├── Backend (pm2)     → port 3001 (internal only)
+├── nginx             → :80 (redirect) + :443 HTTPS (Let's Encrypt)
+│                       proxies all traffic to :3001
+│                       domain: YOUR-VPS-IP-WITH-DASHES.sslip.io
+├── local_data/       → DB, uploads, logs, .env
 ├── Cron: auto-update-direct.sh (every minute)
-└── Cron: sync-to-cloud.sh (every hour)
+├── Cron: sync-to-cloud.sh (hourly)
+├── Cron: backup-to-telegram.sh (daily 03:00)
+└── Cron: daily-security-report.sh (daily 23:55)
 
-Vercel (separate)
-└── Next.js Frontend (NEXT_PUBLIC_API_URL → VPS)
+Vercel (frontend) → NEXT_PUBLIC_API_URL = https://YOUR-VPS-IP-WITH-DASHES.sslip.io/api
 ```
 
-#### pm2 Commands
+### Key Files on VPS
+
+| Path | Purpose |
+|------|---------|
+| `/root/dress-rental-business-management/` | Project root (Git repo) |
+| `/root/dress-rental-business-management/local_data/` | All persistent data |
+| `/root/dress-rental-business-management/local_data/.env` | Secrets |
+| `/root/dress-rental-business-management/local_data/backend_data/backend_data.db` | Database |
+| `/root/dress-rental-business-management/local_data/logs/` | Application + sync logs |
+| `/root/.config/rclone/rclone.conf` | Google Drive authentication |
+
+### VPS Commands
 
 ```bash
 # SSH into VPS
 ssh root@YOUR_VPS_IP
 
-# Go to project directory
-cd /root/YOUR_REPO_NAME
-
-# View pm2 status
+# View backend status
 pm2 status
 
 # View live logs
@@ -148,90 +99,116 @@ pm2 logs dress-backend
 
 # Restart backend
 pm2 restart dress-backend
-
-# Start backend (if stopped)
-bash scripts/start-app.sh
-
-# Stop backend
-pm2 stop dress-backend
 ```
 
-### Key Files on VPS
+### New Server
 
-| Path | Purpose |
-|------|---------|
-| `/root/YOUR_REPO_NAME/` | Project root (Git repo) |
-| `/root/YOUR_REPO_NAME/local_data/` | All persistent data |
-| `/root/YOUR_REPO_NAME/local_data/.env` | Secrets |
-| `/root/YOUR_REPO_NAME/local_data/backend_data/business.db` | Database |
-| `/root/YOUR_REPO_NAME/local_data/logs/` | Application + sync logs |
-| `/root/.config/rclone/rclone.conf` | Google Drive authentication |
+```bash
+wget -qO setup.sh https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME/master/scripts/setup-new-server.sh
+bash setup.sh
+```
+
+### Key Scripts (Direct Install)
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/setup-direct-install.sh` | Node 20, Chromium, fonts, build tools |
+| `scripts/start-app.sh` | Create dirs, migrate, pm2 start |
+| `scripts/auto-update-direct.sh` | git pull → npm install → pm2 restart |
+| `scripts/pm2-ecosystem.config.js` | pm2 config (backend only) |
+| `scripts/telegram-notify.sh` | Shared Telegram helper sourced by all bash scripts |
+| `scripts/backup-to-telegram.sh` | Daily DB file sent to Telegram group (cron 03:00) |
+| `scripts/daily-security-report.sh` | Daily security summary to Telegram (cron 23:55) |
+
+### nginx Reverse Proxy (HTTPS)
+
+The backend is exposed via nginx on `YOUR-VPS-IP-WITH-DASHES.sslip.io` (sslip.io resolves the IP embedded in the hostname — no domain purchase needed). SSL cert is managed by Let's Encrypt via certbot.
+
+**Config file:** `/etc/nginx/sites-available/dress-backend`
+
+Key commands:
+```bash
+# Test nginx config
+nginx -t
+
+# Reload nginx (graceful, no downtime)
+systemctl reload nginx
+
+# Check SSL cert expiry
+certbot certificates
+
+# Renew cert manually (usually automatic)
+certbot renew
+```
+
+**UFW rules needed:**
+```
+22/tcp    ALLOW   SSH
+80/tcp    ALLOW   HTTP (for certbot renewal challenges + redirect to HTTPS)
+443/tcp   ALLOW   HTTPS nginx
+```
+
+**How the sslip.io domain works:**
+- `YOUR-VPS-IP-WITH-DASHES.sslip.io` resolves to `YOUR_VPS_IP` (VPS public IP) via public DNS
+- sslip.io is on the [Public Suffix List](https://publicsuffix.org/), so Let's Encrypt rate limits apply per subdomain (not shared with others)
+- No registration or account needed — it just works based on the IP in the hostname
+
+### Log Retention
+
+Logs older than 30 days are automatically deleted by the logger. No separate cron needed.
 
 ---
 
 ## Migrating to a New Server
 
-To move everything to a fresh Ubuntu 24.04 LTS server in ~5 minutes:
-
 ```bash
-# On the new server:
 wget -qO setup.sh https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME/master/scripts/setup-new-server.sh
 bash setup.sh
 ```
 
-The script asks you to choose: **Docker** or **Direct Install**, then handles all 10 steps:
+This installs deps, clones repo, restores from Drive, starts pm2 backend, and sets up cron. Frontend stays on Vercel.
 
-1. Install system packages (Docker **or** Node.js + Chromium + pm2)
-2. Add swap if RAM < 3GB
-3. Create SSH key for GitHub (you add it as Deploy Key)
-4. Clone the repository
-5. Paste `.env` content (from old server's `local_data/.env`)
-6. Paste `rclone.conf` content (from old server's `~/.config/rclone/rclone.conf`)
-7. Restore data from Google Drive backup
-8. Build and start app (Docker compose **or** pm2)
-9. Connect Tailscale and start Funnel
-10. Install auto-update and backup cron jobs
-
-### After Migration
-
-1. Update `NEXT_PUBLIC_API_URL` in Vercel to the new Tailscale URL (if using Vercel)
-2. Redeploy on Vercel
-3. Verify everything works with the new backend
-4. Decommission the old server
+**Note:** The setup script was written before the nginx migration. After running it on a new server, manually:
+1. Install nginx + certbot (see nginx section below)
+2. Configure nginx for the new server's sslip.io domain (e.g. `<IP-with-dashes>.sslip.io`)
+3. Update `NEXT_PUBLIC_API_URL` in Vercel to `https://<new-sslip-domain>/api`
+4. Redeploy on Vercel
+5. Verify `https://your-app-name.vercel.app` works
+6. Decommission the old server
 
 ---
 
 ## Vercel Frontend Setup
 
-The Vercel deployment serves the frontend for nice customer-facing URLs. **Required for Direct Install mode; optional for Docker mode.**
+The Vercel deployment serves the frontend for nice customer-facing URLs.
 
 ### Environment Variables (Vercel Dashboard)
 
 | Variable | Value | Purpose |
 |----------|-------|---------|
-| `NEXT_PUBLIC_API_URL` | `https://your-vps.YOUR_TAILSCALE_DOMAIN.ts.net/api` | Points to VPS backend. Used for: (1) API calls; (2) rewrites—`next.config.js` derives backend base URL from this to proxy `/api/*` and `/uploads/*` (images, agreements) to the VPS. |
+| `NEXT_PUBLIC_API_URL` | `https://YOUR-VPS-IP-WITH-DASHES.sslip.io/api` | Points to VPS backend via nginx. Used for: (1) API calls from the frontend; (2) rewrites—`next.config.js` derives the backend base URL from this to proxy `/api/*` and `/uploads/*` (images, agreements, signatures) to the VPS. |
 
-**This is the only required variable.** Images use relative paths (`/uploads/...`); rewrites proxy them to the VPS. No extra env vars needed.
+**This is the only required variable.** Images and files use relative paths (`/uploads/...`); Vercel's rewrites proxy them to the VPS using the URL derived from `NEXT_PUBLIC_API_URL`.
 
 **After changing env vars**: Trigger a new deployment (Deployments → Redeploy). If images still don't load, use "Clear cache and deploy" or set `VERCEL_FORCE_NO_BUILD_CACHE=1` to force a clean build.
 
 ### How It Works
 
-1. Customer/user visits `https://YOUR_APP_NAME.vercel.app`
+1. Customer/user visits `https://your-app-name.vercel.app`
 2. Vercel serves the Next.js frontend
 3. Frontend JavaScript calls `NEXT_PUBLIC_API_URL` for API requests
 4. VPS backend processes the request and returns data
-5. Dress images and agreement files use relative paths (`/uploads/...`); `next.config.js` rewrites proxy them to the backend
-6. CORS allows the configured `PUBLIC_FRONTEND_URL` origin
+5. Image URLs (dresses, agreements) are resolved to the VPS base URL so the browser fetches them directly from the VPS
+6. CORS allows `*.vercel.app` origins
 
 ### Agreement Signing Flow
 
 1. Backend generates a signed token for the order
-2. Link is created: `https://YOUR_APP_NAME.vercel.app/agreement?token=<JWT>`
+2. Link is created: `https://your-app-name.vercel.app/agreement?token=<JWT>`
 3. Business owner sends link to customer via WhatsApp
 4. Customer opens link → signs digitally → backend saves agreement + PDF
 
-The agreement URL is controlled by `PUBLIC_FRONTEND_URL` in your `.env`. If unset, it falls back to a hardcoded default in `backend/src/routes/agreements.js`. Set `PUBLIC_FRONTEND_URL` to your Vercel URL or Tailscale URL so customer signing links point to the correct domain.
+The agreement URL is set in `backend/src/routes/agreements.js` (`FORCED_PUBLIC_FRONTEND_URL`).
 
 ---
 
@@ -245,106 +222,102 @@ The agreement URL is controlled by `PUBLIC_FRONTEND_URL` in your `.env`. If unse
 - **What's backed up**: Database, uploads, .env, CSV files
 - **What's excluded**: logs, migration backups, WAL/SHM temp files
 - **Safety**: SQLite WAL is checkpointed before sync for consistency
+- **Failure alert**: Sends Telegram message if rclone fails
+
+### Automatic Backup (VPS → Telegram)
+
+- **Frequency**: Daily at 03:00 (cron job)
+- **Script**: `scripts/backup-to-telegram.sh`
+- **What's sent**: The `backend_data.db` file as a Telegram document
+- **Caption**: Date + file size
+- **Failure alert**: Sends Telegram text alert if upload fails
+
+### Telegram Monitoring (Security & Errors)
+
+- **Real-time error alerts**: Backend ERROR-level events → immediate Telegram message
+- **Daily security summary**: Failed logins, 401/403 attempts → Telegram at 23:55 (only if events occurred)
+- **Script**: `scripts/daily-security-report.sh`
+- **Configuration**: `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `local_data/.env`
+
+To add Telegram credentials to the VPS:
+
+```bash
+ssh root@YOUR_VPS_IP
+echo "TELEGRAM_BOT_TOKEN=your_token_here" >> /root/dress-rental-business-management/local_data/.env
+echo "TELEGRAM_CHAT_ID=your_chat_id_here" >> /root/dress-rental-business-management/local_data/.env
+pm2 restart dress-backend
+```
 
 ### Manual Backup
 
 ```bash
-ssh root@YOUR_VPS_IP "cd /root/YOUR_REPO_NAME && ./scripts/sync-to-cloud.sh"
+ssh root@YOUR_VPS_IP "cd /root/dress-rental-business-management && ./scripts/sync-to-cloud.sh"
 ```
 
 ### Restore from Backup
 
 ```bash
-ssh root@YOUR_VPS_IP "cd /root/YOUR_REPO_NAME && ./scripts/sync-from-cloud.sh"
-# This stops Docker/pm2, copies data from Drive, and restarts automatically
+ssh root@YOUR_VPS_IP "cd /root/dress-rental-business-management && ./scripts/sync-from-cloud.sh"
+# This stops pm2 backend, copies data from Drive, and restarts pm2
 ```
 
 ### Local Machine Backup (Legacy)
 
-The local machine has a separate backup script (`~/.your_sync_script.sh`) that backs up to `gdrive:YOUR_BACKUP_FOLDER/`. This is independent and does NOT conflict with the VPS backup. **Do not delete `local_data/` on the local machine** -- the local rclone sync uses `rclone sync` which would propagate the deletion to Drive.
+The local machine has a separate backup script (`~/.gdrive_configs/sync_code_to_drive.sh`) that backs up to `gdrive:YOUR_BACKUP_FOLDER/`. This is independent and does NOT conflict with the VPS backup. **Do not delete `local_data/` on the local machine** -- the local rclone sync uses `rclone sync` which would propagate the deletion to Drive.
 
 ---
 
 ## Auto-Update System
 
-### How It Works
-
-Both modes poll GitHub for new commits every minute via cron.
-
-#### Docker Mode (`auto-update.sh`)
-
-1. `git fetch origin master`
-2. If local != remote:
-   - Pre-update backup (safety net)
-   - `git pull origin master`
-   - `docker compose up -d --build --force-recreate`
-   - Health check after rebuild
-3. **Downtime**: ~1-2 minutes (Docker rebuild)
-
-#### Direct Install Mode (`auto-update-direct.sh`)
-
-1. `git fetch origin master`
-2. If local != remote:
-   - Pre-update backup (safety net)
-   - `git pull origin master`
-   - `cd backend && npm install`
-   - pm2 stop → wait for port → pm2 start
-   - Health check
-3. **Downtime**: ~5 seconds (no rebuild needed)
+1. Cron runs `scripts/auto-update-direct.sh` every minute
+2. `git fetch` → compare HEAD → if different: backup, pull, `npm install` (backend), `pm2 restart dress-backend`
+3. Downtime: ~10-30 seconds
 
 ### Logs
 
 ```bash
-ssh root@YOUR_VPS_IP "cat /root/YOUR_REPO_NAME/local_data/logs/auto-update.log"
+ssh root@YOUR_VPS_IP "cat /root/dress-rental-business-management/local_data/logs/auto-update.log"
 ```
 
 ---
 
 ## Logs & Debugging
 
-### Docker Mode — Container Logs
+### Process Logs
 
 ```bash
-# Live tail
-ssh root@YOUR_VPS_IP "docker compose -f /root/YOUR_REPO_NAME/docker-compose.yml logs -f"
-
-# Last 100 lines
-ssh root@YOUR_VPS_IP "docker compose -f /root/YOUR_REPO_NAME/docker-compose.yml logs --tail 100"
-```
-
-### Direct Install Mode — pm2 Logs
-
-```bash
-# Live tail
 ssh root@YOUR_VPS_IP "pm2 logs dress-backend"
-
-# Last 100 lines
-ssh root@YOUR_VPS_IP "pm2 logs dress-backend --lines 100"
 ```
 
 ### Application Log Files
 
 ```bash
 # List log files
-ssh root@YOUR_VPS_IP "ls -la /root/YOUR_REPO_NAME/local_data/logs/"
+ssh root@YOUR_VPS_IP "ls -la /root/dress-rental-business-management/local_data/logs/"
 
 # Daily log (today's date)
-ssh root@YOUR_VPS_IP "cat /root/YOUR_REPO_NAME/local_data/logs/$(date +%Y-%m-%d).log"
+ssh root@YOUR_VPS_IP "cat /root/dress-rental-business-management/local_data/logs/$(date +%Y-%m-%d).log"
 
 # Error log
-ssh root@YOUR_VPS_IP "cat /root/YOUR_REPO_NAME/local_data/logs/errors.log"
+ssh root@YOUR_VPS_IP "cat /root/dress-rental-business-management/local_data/logs/errors.log"
 
 # Auto-update log
-ssh root@YOUR_VPS_IP "cat /root/YOUR_REPO_NAME/local_data/logs/auto-update.log"
+ssh root@YOUR_VPS_IP "cat /root/dress-rental-business-management/local_data/logs/auto-update.log"
 
 # Cloud sync log
-ssh root@YOUR_VPS_IP "cat /root/YOUR_REPO_NAME/local_data/logs/cloud-sync.log"
+ssh root@YOUR_VPS_IP "cat /root/dress-rental-business-management/local_data/logs/cloud-sync.log"
+
+# Telegram backup log
+ssh root@YOUR_VPS_IP "cat /root/dress-rental-business-management/local_data/logs/telegram-backup.log"
+
+# Security report log
+ssh root@YOUR_VPS_IP "cat /root/dress-rental-business-management/local_data/logs/security-report.log"
 ```
 
 ### Health Check
 
 ```bash
-curl -s https://your-vps.YOUR_TAILSCALE_DOMAIN.ts.net/api/health | python3 -m json.tool
+curl -s https://YOUR-VPS-IP-WITH-DASHES.sslip.io/api/health | python3 -m json.tool
 ```
 
 ### Apps Script Logs
@@ -356,50 +329,33 @@ Apps Script logs are sent to the backend at `/api/apps-script-logs/batch`. View 
 
 ## Troubleshooting
 
-### Docker: Container Keeps Restarting
+### Backend Keeps Restarting
 
 ```bash
-# Check exit code and logs
-ssh root@YOUR_VPS_IP "docker ps -a"
-ssh root@YOUR_VPS_IP "docker logs business-mgmt-app --tail 50"
+# Check status and logs
+ssh root@YOUR_VPS_IP "pm2 status"
+ssh root@YOUR_VPS_IP "pm2 logs dress-backend --lines 50"
 ```
 
 Common causes: missing `.env`, corrupted database, broken dependency install.
 
-### Direct Install: Backend Not Starting
-
-```bash
-# Check pm2 status
-ssh root@YOUR_VPS_IP "pm2 status"
-
-# Check pm2 error logs
-ssh root@YOUR_VPS_IP "pm2 logs dress-backend --err --lines 50"
-
-# Port conflict? Check what's on port 3001
-ssh root@YOUR_VPS_IP "fuser 3001/tcp"
-```
-
-Common causes: missing `.env`, port still in use (EADDRINUSE), missing Node.js dependencies.
-
 ### Frontend Not Loading via Vercel
 
-1. Check `NEXT_PUBLIC_API_URL` in Vercel env vars
-2. Verify VPS is running: `curl https://your-vps.YOUR_TAILSCALE_DOMAIN.ts.net/api/health`
-3. Check CORS: backend `PUBLIC_FRONTEND_URL` env var matches your Vercel URL
+1. Check `NEXT_PUBLIC_API_URL` in Vercel env vars (should be `https://YOUR-VPS-IP-WITH-DASHES.sslip.io/api`)
+2. Verify VPS nginx is running: `ssh root@YOUR_VPS_IP "systemctl status nginx"`
+3. Verify backend is up: `curl https://YOUR-VPS-IP-WITH-DASHES.sslip.io/api/health`
+4. Check CORS: backend allows `*.vercel.app` origins
 
 ### PDF Generation Fails
 
-- Chromium must be installed (Docker: in the image; Direct: as system package)
+- Chromium must be installed on the VPS (installed by setup-direct-install.sh)
 - Hebrew fonts must be present (`fonts-noto-core`, `culmus`)
-- Check `CHROME_BIN` env var points to chromium binary
+- Check `CHROME_BIN` env var points to `/usr/bin/chromium` or `/usr/bin/chromium-browser`
 
 ### Database Locked
 
 ```bash
-# Docker: restart container
-ssh root@YOUR_VPS_IP "docker compose -f /root/YOUR_REPO_NAME/docker-compose.yml restart"
-
-# Direct Install: restart pm2
+# Restart backend (releases all locks)
 ssh root@YOUR_VPS_IP "pm2 restart dress-backend"
 ```
 
@@ -409,33 +365,53 @@ ssh root@YOUR_VPS_IP "pm2 restart dress-backend"
 # Check cron is installed
 ssh root@YOUR_VPS_IP "crontab -l"
 
-# Check the script can run (Docker mode)
-ssh root@YOUR_VPS_IP "cd /root/YOUR_REPO_NAME && bash scripts/auto-update.sh"
-
-# Check the script can run (Direct Install mode)
-ssh root@YOUR_VPS_IP "cd /root/YOUR_REPO_NAME && bash scripts/auto-update-direct.sh"
+# Check the script can run
+ssh root@YOUR_VPS_IP "cd /root/dress-rental-business-management && bash scripts/auto-update-direct.sh"
 
 # Check Git can fetch (SSH key must be a Deploy Key on GitHub)
-ssh root@YOUR_VPS_IP "cd /root/YOUR_REPO_NAME && git fetch origin master"
+ssh root@YOUR_VPS_IP "cd /root/dress-rental-business-management && git fetch origin master"
 ```
 
-### Tailscale Funnel Not Working
+### Backup Failed (rclone remote not found)
+
+Cron runs with minimal environment; rclone needs `HOME` and `RCLONE_CONFIG` to find the config. The hourly cron and pre-update backup should include these explicitly. Verify crontab:
 
 ```bash
-ssh root@YOUR_VPS_IP "tailscale status"
-ssh root@YOUR_VPS_IP "tailscale funnel status"
-# Re-enable (Docker: port 3000, Direct Install: port 3001):
-ssh root@YOUR_VPS_IP "tailscale funnel --bg 3000"  # Docker
-ssh root@YOUR_VPS_IP "tailscale funnel --bg 3001"  # Direct Install
+ssh root@YOUR_VPS_IP "crontab -l"
 ```
 
-### Backup Troubleshooting
+The backup line should be: `0 * * * * HOME=/root RCLONE_CONFIG=/root/.config/rclone/rclone.conf /root/.../scripts/sync-to-cloud.sh`. If missing, re-run setup or update the line manually.
 
-If backup (`sync-to-cloud.sh`) fails from cron:
+### nginx Not Responding
+
 ```bash
-# Check the rclone config is accessible
-ssh root@YOUR_VPS_IP "RCLONE_CONFIG=/root/.config/rclone/rclone.conf rclone listremotes"
+# Check nginx status
+ssh root@YOUR_VPS_IP "systemctl status nginx"
 
-# Run backup manually with verbose output
-ssh root@YOUR_VPS_IP "cd /root/YOUR_REPO_NAME && HOME=/root RCLONE_CONFIG=/root/.config/rclone/rclone.conf bash scripts/sync-to-cloud.sh"
+# Test nginx config
+ssh root@YOUR_VPS_IP "nginx -t"
+
+# Restart nginx
+ssh root@YOUR_VPS_IP "systemctl restart nginx"
+
+# Check ports 80/443 are open
+ssh root@YOUR_VPS_IP "ss -tlnp | grep -E '80|443'"
+
+# Check UFW rules
+ssh root@YOUR_VPS_IP "ufw status"
+
+# Test directly
+curl https://YOUR-VPS-IP-WITH-DASHES.sslip.io/api/health
+```
+
+### SSL Certificate Renewal
+
+Certbot auto-renews via systemd timer. To manually renew:
+```bash
+ssh root@YOUR_VPS_IP "certbot renew --dry-run"
+ssh root@YOUR_VPS_IP "certbot renew"
+```
+Certificate expires every 90 days. Check expiry:
+```bash
+ssh root@YOUR_VPS_IP "certbot certificates"
 ```

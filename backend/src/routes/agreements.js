@@ -21,14 +21,11 @@ import { saveAgreementPdf, isAgreementsFolderAccessible } from '../services/loca
 import { sendAgreementConfirmationToCustomer, sendAgreementNotificationToOwner, isEmailEnabled } from '../services/email.js';
 import { generateAgreementPdf } from '../services/pdfGenerator.js';
 import { normalizePhoneNumber } from '../services/phone.js';
-import { AGREEMENT_TERMS, AGREEMENT_CANCELLATION_POLICY } from '../constants/agreementTerms.js';
+import { AGREEMENT_TERMS, AGREEMENT_NON_RENTAL_TERMS, AGREEMENT_CANCELLATION_POLICY, hasRentalItems } from '../constants/agreementTerms.js';
 
 const router = Router();
 const AGREEMENT_SIGN_TOKEN_EXPIRY = '7d';
-// Agreement links sent to customers. Set PUBLIC_FRONTEND_URL in .env to override.
-// This is the URL customers see when they receive a WhatsApp link to sign their agreement.
-// Change this to your Vercel URL or VPS Tailscale URL.
-const FORCED_PUBLIC_FRONTEND_URL = process.env.PUBLIC_FRONTEND_URL || 'https://YOUR_APP_NAME.vercel.app';
+const FORCED_PUBLIC_FRONTEND_URL = 'https://dress-rental.vercel.app';
 
 function getOrderForAgreement(orderId) {
   const order = get(
@@ -93,6 +90,7 @@ function buildAgreementPrefillPayload(orderWithItems) {
         finalPrice: Number(item.final_price) || 0,
       })),
     },
+    hasRentalItems: hasRentalItems(items),
   };
 }
 
@@ -477,7 +475,9 @@ router.post('/sign', async (req, res, next) => {
     }
 
     // Fire-and-forget: send confirmation emails in the background.
-    // This prevents SMTP timeouts from blocking the HTTP response (socket hang up).
+    // The Apps Script Web App POST has a 120s timeout for heavy Drive ops
+    // (see services/email.js); awaiting it here would block the HTTP
+    // response and risk a Vercel/nginx gateway timeout for the signer.
     if (isEmailEnabled()) {
       const emailPayload = {
         customerName: full_name.trim(),
@@ -606,6 +606,7 @@ router.get('/content/terms', (req, res) => {
     success: true,
     data: {
       terms: AGREEMENT_TERMS,
+      nonRentalTerms: AGREEMENT_NON_RENTAL_TERMS,
       cancellationPolicy: AGREEMENT_CANCELLATION_POLICY,
       businessName: businessConfig.name,
       businessPhone: businessConfig.phone

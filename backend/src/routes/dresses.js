@@ -1,20 +1,38 @@
 /**
  * Dresses Routes
- * 
- * Purpose: CRUD operations for dress inventory management.
- * 
- * Operation: Provides endpoints for listing, creating, updating dresses,
- * and tracking their rental history.
+ *
+ * Purpose: CRUD operations for dress inventory management, including
+ * dress merging functionality.
+ *
+ * Operation: Provides endpoints for listing, creating, updating, and
+ * merging dresses. The DELETE endpoint has been removed in favor of
+ * merging — dresses are never hard-deleted or soft-deleted individually.
+ * The `is_active` column no longer exists on the dresses table; all
+ * dresses in the table are considered active/visible.
+ *
+ * Merge logic:
+ *   - Two dresses are selected; one is the "target" (survives) and the
+ *     other is the "source" (deleted after merge).
+ *   - dress_history rows of the source are moved to the target.
+ *   - order_items rows referencing the source are re-pointed to the target.
+ *   - total_income and rental_count are recomputed from dress_history.
+ *   - The caller may supply new name/photo/notes for the merged dress.
  */
 
 import { Router } from 'express';
-import { run, get, all } from '../db/database.js';
+import { run, get, all, transaction } from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
 import { ApiError } from '../middleware/errorHandler.js';
 import multer from 'multer';
 import { processDressImage } from '../services/image.js';
+import { normalizeTextForSave, normalizeTextForSearch } from '../utils/textUtils.js';
 
 const router = Router();
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
+});
 const validStatuses = ['available', 'sold', 'retired', 'custom_sewing'];
 const validIntendedUses = ['rental', 'sale'];
 
@@ -35,33 +53,37 @@ function normalizeUploadedImagePath(value) {
   return trimmedValue;
 }
 
-// Configure multer for memory storage (for sharp processing)
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) {
-      cb(null, true);
-    } else {
-      cb(new ApiError(400, 'רק קבצי תמונה מורשים'));
-    }
-  }
-});
 
 // All routes require authentication
 router.use(requireAuth);
 
 /**
  * POST /api/dresses/upload
- * Upload and process a dress image
+ * Upload and process a dress image.
+ *
+ * Accepts two content types:
+ *   1. multipart/form-data with field "image" — used by the Android share-target path.
+ *   2. application/json with field "imageBase64" — used by the direct file-picker path.
+ *      Multer silently skips non-multipart requests, so req.body is already parsed by
+ *      express.json() middleware and req.file is simply undefined.
+ *
+ * Both paths produce the same result: a buffer passed to processDressImage().
  */
 router.post('/upload', upload.single('image'), async (req, res, next) => {
   try {
-    if (!req.file) {
+    let buffer;
+
+    if (req.file) {
+      // multipart/form-data path (share-target)
+      buffer = req.file.buffer;
+    } else if (req.body?.imageBase64) {
+      // JSON base64 path (direct file picker on Android)
+      buffer = Buffer.from(req.body.imageBase64, 'base64');
+    } else {
       throw new ApiError(400, 'לא הועלה קובץ');
     }
 
-    const { imageUrl, thumbnailUrl } = await processDressImage(req.file.buffer);
+    const { imageUrl, thumbnailUrl } = await processDressImage(buffer);
 
     res.json({
       success: true,
@@ -74,7 +96,11 @@ router.post('/upload', upload.single('image'), async (req, res, next) => {
 
 /**
  * GET /api/dresses
- * List all dresses with optional filters
+ * List all dresses with optional filters.
+ * No is_active filter — all dresses in the table are visible.
+ *
+ * Supports sorting by last_active_date — the most recent event_date recorded
+ * in dress_history for each dress (falls back to dresses.updated_at).
  */
 router.get('/', (req, res, next) => {
   try {
@@ -84,11 +110,17 @@ router.get('/', (req, res, next) => {
       intended_use,
       page = 1,
       limit = 50,
-      sortBy = 'name',
-      sortOrder = 'asc'
+      sortBy = 'last_active_date',
+      sortOrder = 'desc'
     } = req.query;
 
-    let sql = 'SELECT d.* FROM dresses d WHERE d.is_active = 1';
+    // last_active_date: latest event_date in dress_history, falling back to updated_at
+    let sql = `SELECT d.*,
+             COALESCE(
+               (SELECT MAX(dh.event_date) FROM dress_history dh WHERE dh.dress_id = d.id),
+               d.updated_at
+             ) AS last_active_date
+      FROM dresses d WHERE 1=1`;
     const params = [];
 
     // Add search filter — searches by dress name OR wearer names from history/orders
@@ -98,7 +130,8 @@ router.get('/', (req, res, next) => {
         UNION
         SELECT DISTINCT oi.dress_id FROM order_items oi WHERE oi.wearer_name LIKE ?
       ))`;
-      params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+      const searchPattern = normalizeTextForSearch(search);
+      params.push(searchPattern, searchPattern, searchPattern);
     }
 
     // Add status filter
@@ -121,11 +154,14 @@ router.get('/', (req, res, next) => {
       }
     }
 
-    // Add sorting
-    const validSortColumns = ['name', 'total_income', 'rental_count', 'updated_at'];
-    const sortColumn = validSortColumns.includes(sortBy) ? sortBy : 'name';
+    // Add sorting.
+    // last_active_date is a computed alias — referenced directly (not as d.column).
+    // All other columns are prefixed with d.
+    const validSortColumns = ['name', 'total_income', 'rental_count', 'updated_at', 'last_active_date'];
+    const sortColumn = validSortColumns.includes(sortBy) ? sortBy : 'last_active_date';
     const order = sortOrder.toLowerCase() === 'desc' ? 'DESC' : 'ASC';
-    sql += ` ORDER BY d.${sortColumn} ${order}`;
+    const orderByClause = sortColumn === 'last_active_date' ? sortColumn : `d.${sortColumn}`;
+    sql += ` ORDER BY ${orderByClause} ${order}`;
 
     // Add pagination
     const pageNum = parseInt(page, 10);
@@ -137,7 +173,7 @@ router.get('/', (req, res, next) => {
     const dresses = all(sql, params);
 
     // Get total count
-    let countSql = 'SELECT COUNT(*) as total FROM dresses d WHERE d.is_active = 1';
+    let countSql = 'SELECT COUNT(*) as total FROM dresses d WHERE 1=1';
     const countParams = [];
     if (search) {
       countSql += ` AND (d.name LIKE ? OR d.id IN (
@@ -145,7 +181,8 @@ router.get('/', (req, res, next) => {
         UNION
         SELECT DISTINCT oi.dress_id FROM order_items oi WHERE oi.wearer_name LIKE ?
       ))`;
-      countParams.push(`%${search}%`, `%${search}%`, `%${search}%`);
+      const searchPattern = normalizeTextForSearch(search);
+      countParams.push(searchPattern, searchPattern, searchPattern);
     }
     if (status) {
       countSql += ' AND d.status = ?';
@@ -189,7 +226,7 @@ router.get('/available', (req, res, next) => {
     const dresses = all(
       `SELECT id, name, base_price, photo_url, thumbnail_url, rental_count, total_income, status, intended_use
        FROM dresses 
-       WHERE is_active = 1 AND status = 'available'
+       WHERE status = 'available'
        ORDER BY name`
     );
 
@@ -256,13 +293,13 @@ router.get('/available', (req, res, next) => {
 
 /**
  * GET /api/dresses/:id
- * Get a single dress by ID with rental history
+ * Get a single dress by ID with rental history.
  */
 router.get('/:id', (req, res, next) => {
   try {
     const { id } = req.params;
 
-    const dress = get('SELECT * FROM dresses WHERE id = ? AND is_active = 1', [id]);
+    const dress = get('SELECT * FROM dresses WHERE id = ?', [id]);
 
     if (!dress) {
       throw new ApiError(404, 'שמלה לא נמצאה');
@@ -324,21 +361,22 @@ router.get('/:id', (req, res, next) => {
 
 /**
  * POST /api/dresses
- * Create a new dress
+ * Create a new dress.
  */
 router.post('/', (req, res, next) => {
   try {
     const { name, base_price, status, intended_use, photo_url, thumbnail_url, notes } = req.body;
+    const normalizedName = normalizeTextForSave(name);
     const normalizedPhotoUrl = normalizeUploadedImagePath(photo_url);
     const normalizedThumbnailUrl = normalizeUploadedImagePath(thumbnail_url);
 
     // Validate required fields
-    if (!name || !name.trim()) {
+    if (!normalizedName) {
       throw new ApiError(400, 'נא להזין שם שמלה');
     }
 
     // Check for duplicate name
-    const existing = get('SELECT id FROM dresses WHERE name = ? AND is_active = 1', [name.trim()]);
+    const existing = get('SELECT id FROM dresses WHERE name = ?', [normalizedName]);
     if (existing) {
       throw new ApiError(409, 'שמלה עם שם זה כבר קיימת');
     }
@@ -357,7 +395,7 @@ router.post('/', (req, res, next) => {
       `INSERT INTO dresses (name, base_price, status, intended_use, photo_url, thumbnail_url, notes) 
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
-        name.trim(),
+        normalizedName,
         Math.round(parseFloat(base_price)) || 0,
         status || 'available',
         normalizedIntendedUse,
@@ -382,31 +420,32 @@ router.post('/', (req, res, next) => {
 
 /**
  * PUT /api/dresses/:id
- * Update a dress
+ * Update a dress.
  */
 router.put('/:id', (req, res, next) => {
   try {
     const { id } = req.params;
     const { name, base_price, status, intended_use, photo_url, thumbnail_url, notes } = req.body;
+    const normalizedName = normalizeTextForSave(name);
     const normalizedPhotoUrl = normalizeUploadedImagePath(photo_url);
     const normalizedThumbnailUrl = normalizeUploadedImagePath(thumbnail_url);
 
     // Check if dress exists
-    const existing = get('SELECT * FROM dresses WHERE id = ? AND is_active = 1', [id]);
+    const existing = get('SELECT * FROM dresses WHERE id = ?', [id]);
     if (!existing) {
       throw new ApiError(404, 'שמלה לא נמצאה');
     }
 
     // Validate required fields
-    if (!name || !name.trim()) {
+    if (!normalizedName) {
       throw new ApiError(400, 'נא להזין שם שמלה');
     }
 
     // Check for duplicate name (if changed)
-    if (name.trim() !== existing.name) {
+    if (normalizedName !== existing.name) {
       const duplicate = get(
-        'SELECT id FROM dresses WHERE name = ? AND id != ? AND is_active = 1',
-        [name.trim(), id]
+        'SELECT id FROM dresses WHERE name = ? AND id != ?',
+        [normalizedName, id]
       );
       if (duplicate) {
         throw new ApiError(409, 'שמלה אחרת עם שם זה כבר קיימת');
@@ -418,11 +457,13 @@ router.put('/:id', (req, res, next) => {
     }
 
     const normalizedIntendedUse = intended_use === '' || intended_use === null ? null : intended_use;
-    if (normalizedIntendedUse !== null && !validIntendedUses.includes(normalizedIntendedUse)) {
+    if (normalizedIntendedUse && !validIntendedUses.includes(normalizedIntendedUse)) {
       throw new ApiError(400, 'ייעוד שמלה לא תקין');
     }
 
-    const finalIntendedUse = normalizedIntendedUse !== undefined ? normalizedIntendedUse : (existing.intended_use || null);
+    const nextIntendedUse = normalizedIntendedUse === undefined
+      ? existing.intended_use
+      : normalizedIntendedUse;
 
     // Update dress
     run(
@@ -430,10 +471,10 @@ router.put('/:id', (req, res, next) => {
        SET name = ?, base_price = ?, status = ?, intended_use = ?, photo_url = ?, thumbnail_url = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
       [
-        name.trim(),
+        normalizedName,
         Math.round(parseFloat(base_price)) || 0,
         status || 'available',
-        finalIntendedUse,
+        nextIntendedUse,
         normalizedPhotoUrl,
         normalizedThumbnailUrl,
         notes || null,
@@ -456,7 +497,7 @@ router.put('/:id', (req, res, next) => {
 
 /**
  * PATCH /api/dresses/:id/status
- * Update dress status
+ * Update dress status.
  */
 router.patch('/:id/status', (req, res, next) => {
   try {
@@ -467,7 +508,7 @@ router.patch('/:id/status', (req, res, next) => {
       throw new ApiError(400, 'סטטוס לא תקין');
     }
 
-    const existing = get('SELECT * FROM dresses WHERE id = ? AND is_active = 1', [id]);
+    const existing = get('SELECT * FROM dresses WHERE id = ?', [id]);
     if (!existing) {
       throw new ApiError(404, 'שמלה לא נמצאה');
     }
@@ -489,7 +530,8 @@ router.patch('/:id/status', (req, res, next) => {
 
 /**
  * POST /api/dresses/:id/rental
- * Add a rental record to dress history
+ * Add a manual rental record to dress history.
+ * Used for adding historical events not tied to a formal order.
  */
 router.post('/:id/rental', (req, res, next) => {
   try {
@@ -497,7 +539,7 @@ router.post('/:id/rental', (req, res, next) => {
     const { customer_id, customer_name, amount, rental_type, event_date, notes } = req.body;
 
     // Check if dress exists
-    const dress = get('SELECT * FROM dresses WHERE id = ? AND is_active = 1', [id]);
+    const dress = get('SELECT * FROM dresses WHERE id = ?', [id]);
     if (!dress) {
       throw new ApiError(404, 'שמלה לא נמצאה');
     }
@@ -542,23 +584,117 @@ router.post('/:id/rental', (req, res, next) => {
 });
 
 /**
- * DELETE /api/dresses/:id
- * Soft delete a dress
+ * POST /api/dresses/merge
+ * Merge two dresses into one.
+ *
+ * The target dress keeps its ID and becomes the surviving dress.
+ * The source dress is permanently deleted after the merge.
+ *
+ * Merge steps:
+ *   1. Verify both dresses exist.
+ *   2. Update target dress details (name, photo, thumbnail, notes) if provided.
+ *   3. Move all dress_history rows from source → target.
+ *   4. Update all order_items rows referencing source → target, and update
+ *      dress_name on those items to match the new target dress name.
+ *   5. Recompute total_income and rental_count for the target dress from
+ *      dress_history (single source of truth).
+ *   6. Permanently delete the source dress.
  */
-router.delete('/:id', (req, res, next) => {
+router.post('/merge', (req, res, next) => {
   try {
-    const { id } = req.params;
+    const { targetDressId, sourceDressId, updatedDressData } = req.body;
 
-    const existing = get('SELECT * FROM dresses WHERE id = ? AND is_active = 1', [id]);
-    if (!existing) {
-      throw new ApiError(404, 'שמלה לא נמצאה');
+    if (!targetDressId || !sourceDressId) {
+      throw new ApiError(400, 'חובה לציין מזהה שמלה למיזוג ומזהה שמלה יעד');
     }
 
-    run('UPDATE dresses SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [id]);
+    if (parseInt(targetDressId) === parseInt(sourceDressId)) {
+      throw new ApiError(400, 'לא ניתן למזג שמלה עם עצמה');
+    }
+
+    transaction(() => {
+      // 1. Verify both dresses exist
+      const target = get('SELECT * FROM dresses WHERE id = ?', [targetDressId]);
+      const source = get('SELECT * FROM dresses WHERE id = ?', [sourceDressId]);
+
+      if (!target) {
+        throw new ApiError(404, `שמלת היעד (ID ${targetDressId}) לא נמצאה`);
+      }
+      if (!source) {
+        throw new ApiError(404, `שמלת המקור (ID ${sourceDressId}) לא נמצאה`);
+      }
+
+      // 2. Update target dress details if provided by the caller
+      let finalName = target.name;
+      if (updatedDressData) {
+        const {
+          name,
+          photo_url,
+          thumbnail_url,
+          notes,
+          status,
+          intended_use,
+          base_price
+        } = updatedDressData;
+
+        const newName = normalizeTextForSave(name) || target.name;
+        const newPhotoUrl = normalizeUploadedImagePath(photo_url) ?? target.photo_url;
+        const newThumbnailUrl = normalizeUploadedImagePath(thumbnail_url) ?? target.thumbnail_url;
+        const newNotes = notes !== undefined ? notes : target.notes;
+        const newStatus = (status && validStatuses.includes(status)) ? status : target.status;
+        const normalizedIntendedUse = intended_use === '' ? null : intended_use;
+        const newIntendedUse = (normalizedIntendedUse !== undefined && (normalizedIntendedUse === null || validIntendedUses.includes(normalizedIntendedUse)))
+          ? normalizedIntendedUse
+          : target.intended_use;
+        const newBasePrice = base_price !== undefined
+          ? (Math.round(parseFloat(base_price)) || target.base_price)
+          : target.base_price;
+
+        finalName = newName;
+
+        run(
+          `UPDATE dresses
+           SET name = ?, photo_url = ?, thumbnail_url = ?, notes = ?,
+               status = ?, intended_use = ?, base_price = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?`,
+          [newName, newPhotoUrl, newThumbnailUrl, newNotes, newStatus, newIntendedUse, newBasePrice, targetDressId]
+        );
+      }
+
+      // 3. Move all dress_history rows from source to target
+      run(
+        'UPDATE dress_history SET dress_id = ? WHERE dress_id = ?',
+        [targetDressId, sourceDressId]
+      );
+
+      // 4. Update order_items: re-point dress_id and update dress_name snapshot
+      run(
+        'UPDATE order_items SET dress_id = ?, dress_name = ? WHERE dress_id = ?',
+        [targetDressId, finalName, sourceDressId]
+      );
+
+      // 5. Recompute total_income and rental_count from dress_history
+      const { newTotalIncome } = get(
+        'SELECT COALESCE(SUM(amount), 0) as newTotalIncome FROM dress_history WHERE dress_id = ?',
+        [targetDressId]
+      );
+      const { newRentalCount } = get(
+        'SELECT COUNT(*) as newRentalCount FROM dress_history WHERE dress_id = ?',
+        [targetDressId]
+      );
+
+      run(
+        'UPDATE dresses SET total_income = ?, rental_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        [newTotalIncome, newRentalCount, targetDressId]
+      );
+
+      // 6. Permanently delete the source dress
+      run('DELETE FROM dresses WHERE id = ?', [sourceDressId]);
+    });
 
     res.json({
       success: true,
-      message: 'שמלה נמחקה בהצלחה'
+      message: 'שמלות אוחדו בהצלחה'
     });
 
   } catch (error) {
