@@ -8,6 +8,8 @@
  * Logs errors and returns appropriate HTTP responses.
  */
 
+import { serverConfig } from '../config/index.js';
+
 /**
  * Custom error class for API errors
  */
@@ -46,6 +48,16 @@ export function errorHandler(err, req, res, next) {
   let statusCode = err.statusCode || 500;
   let message = err.message || 'שגיאה פנימית בשרת';
   let details = err.details || null;
+
+  // Clear auth cookie on 401 Unauthorized to prevent client-server auth loops
+  if (statusCode === 401) {
+    res.clearCookie('auth_token', {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: !serverConfig.isDevelopment,
+      path: '/',
+    });
+  }
   
   // Handle specific error types
   if (err.name === 'ValidationError') {

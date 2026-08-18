@@ -106,6 +106,30 @@ router.post('/login', async (req, res, next) => {
 });
 
 /**
+ * POST /api/auth/logout
+ *
+ * Purpose: Authenticated or unauthenticated logout. Clear the HttpOnly auth_token
+ * cookie on the server so that Edge Middleware / reverse proxy correctly recognizes that
+ * the user is no longer logged in, preventing infinite redirect loops.
+ *
+ * Method of operation: Clears the 'auth_token' cookie by sending a Set-Cookie header
+ * with an expired date and matching options (path, secure, sameSite, httpOnly). Returns
+ * a success response.
+ */
+router.post('/logout', (req, res) => {
+  res.clearCookie('auth_token', {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: !serverConfig.isDevelopment,
+    path: '/',
+  });
+  res.json({
+    success: true,
+    message: 'התנתקת בהצלחה'
+  });
+});
+
+/**
  * Helper: Convert JWT expiresIn string (e.g. '7d', '24h') to milliseconds.
  * Used to set the cookie maxAge consistently with the JWT expiry.
  */

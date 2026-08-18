@@ -612,6 +612,8 @@ router.put('/:id', (req, res, next) => {
       amount,
       payment_method,
       notes,
+      order_id,
+      customer_charge_amount,
       confirmation_number,
       last_four_digits,
       check_number,
@@ -670,7 +672,7 @@ router.put('/:id', (req, res, next) => {
       `UPDATE transactions 
        SET date = ?, type = ?, category = ?, customer_id = ?, customer_name = ?, 
            supplier = ?, product = ?, amount = ?, payment_method = ?, notes = ?, confirmation_number = ?, 
-           last_four_digits = ?, check_number = ?, bank_details = ?, installments = ?, updated_at = CURRENT_TIMESTAMP
+           last_four_digits = ?, check_number = ?, bank_details = ?, installments = ?, order_id = ?, customer_charge_amount = ?, updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
       [
         date,
@@ -688,6 +690,8 @@ router.put('/:id', (req, res, next) => {
         sanitizedPayment.checkNumber || null,
         sanitizedPayment.bankDetails,
         sanitizedPayment.installments,
+        order_id || null,
+        type === 'expense' ? (Math.round(parseFloat(customer_charge_amount)) || 0) : 0,
         id
       ]
     );

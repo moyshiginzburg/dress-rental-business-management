@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-08-18
+### Added
+- **Data Fetching & Cache:** Integrated SWR (`swr`) data fetching and cache management across all primary dashboard views (Overview, Customers, Dresses, Orders, Transactions) with instant local state updates and optimistic mutations.
+- **Session Management:** Added a dedicated `POST /api/auth/logout` endpoint that reliably clears the server-side `HttpOnly` authentication cookie alongside client-side token removal.
+- **Transaction Editing:** Enhanced transaction edit endpoints and forms to support updating linked order IDs and customer charge amounts.
+
+### Fixed
+- **Timezone Precision:** Fixed order open/completed predicates and dashboard financial statistics to compute dates in local timezone (`Asia/Jerusalem`) rather than UTC, resolving date-boundary mismatches in SQLite queries during late evening hours.
+- **Auth Redirect Loops:** Added automatic `HttpOnly` cookie expiration headers across all 401 Unauthorized backend responses and global error handlers to prevent stale cookie redirect loops.
+- **Transaction Filtering:** Fixed category filtering logic on the transactions page to distinguish transaction-level categories (`order`, `repair`, `other`) from item breakdown sub-types (`rental`, `sewing`), ensuring order payments display correctly.
+- **Order Balance Consistency:** Aligned order balance calculations across the UI to strictly compute `total_price + total_customer_charge - paid_amount`.
+- **Payment Method Validation:** Enforced mandatory payment method selection in order deposits and transaction creation with clear validation errors.
+- **Backup Automation:** Updated cloud synchronization scripts with dynamic user home resolution and expanded backup exclude filters (`temp_cache/**`, `*.bak*`, `*.backup*`).
+
 ## [1.3.0] - 2026-05-19
 ### Added
 - **Dress Catalog:** Added a new "Last Active" sorting option, now set as the default view for the catalog.

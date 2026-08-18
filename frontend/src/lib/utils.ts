@@ -22,20 +22,27 @@ export function resolveFileUrl(pathOrUrl: string | null | undefined): string | n
   if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
   if (!pathOrUrl.startsWith("/")) return null;
 
-  // Prioritize explicit backend URL from environment variables (crucial for Vercel)
-  const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL;
-  if (backendUrl) {
-    const cleanedUrl = backendUrl.replace(/\/+$/, "");
-    return `${cleanedUrl}${pathOrUrl}`;
+  const normalizedPath = pathOrUrl;
+  const isProd = process.env.NODE_ENV === "production";
+
+  if (isProd) {
+    // In production, ALWAYS return the relative path.
+    // This forces the browser to fetch from the domain (/uploads/...),
+    // which then proxies the request to the backend. This is strictly required
+    // because cross-site <img> requests do not send SameSite=Lax auth_token cookies.
+    return normalizedPath;
   }
 
+  // Use VERCEL_URL if available (for server-side rendering on Vercel)
+  if (typeof window === "undefined" && process.env.VERCEL_URL) {
+    return `https://${process.env.VERCEL_URL}${normalizedPath}`;
+  }
+
+  // Otherwise use the API_URL, but strip /api if it's there, as uploads are served from /uploads
   const apiBase = process.env.NEXT_PUBLIC_API_URL || "/api";
-  if (/^https?:\/\//i.test(apiBase)) {
-    const backendOrigin = apiBase.replace(/\/api\/?$/, "");
-    return `${backendOrigin}${pathOrUrl}`;
-  }
+  const baseUrl = apiBase.replace(/\/api\/?$/, "");
 
-  return pathOrUrl;
+  return `${baseUrl}${normalizedPath}`;
 }
 
 

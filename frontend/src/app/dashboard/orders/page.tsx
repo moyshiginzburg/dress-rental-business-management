@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DateRangeFilter } from "@/components/ui/date-range-filter";
 import { useRouter, useSearchParams } from "next/navigation";
+import useSWR from "swr";
 import { ordersApi, agreementsApi } from "@/lib/api";
 import {
   formatCurrency,
@@ -121,8 +122,6 @@ export default function OrdersPage() {
   const { toast } = useToast();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [orders, setOrders] = useState<Order[]>([]);
-  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [dateFrom, setDateFrom] = useState<string | null>(null);
@@ -193,7 +192,7 @@ export default function OrdersPage() {
       setShowMergeDialog(false);
       setSelectedIds([]);
       setIsSelectionMode(false);
-      fetchOrders();
+      mutate();
     } catch (error) {
       toast({
         title: "שגיאה",
@@ -212,51 +211,58 @@ export default function OrdersPage() {
     return () => clearTimeout(timer);
   }, [search]);
 
-  const fetchOrders = useCallback(async (sortCol: string = "event_date", sortDir: string = "desc") => {
-    try {
-      const response = await ordersApi.list({
-        search: debouncedSearch || undefined,
-        status: statusFilter || undefined,
-        startDate: dateFrom || undefined,
-        endDate: dateTo || undefined,
-        sortBy: sortCol,
-        sortOrder: sortDir,
-        page: 1,
-        limit: 1000,
-      });
-      if (response.success && response.data) {
-        setOrders((response.data as any).orders);
-      }
-    } catch (error) {
-      console.error("Failed to load orders:", error);
-      toast({ title: "שגיאה", description: "לא ניתן לטעון את ההזמנות", variant: "destructive" });
-    } finally {
-      setLoading(false);
-    }
-  }, [statusFilter, dateFrom, dateTo, debouncedSearch, toast]);
+  const { data: ordersRes, error, isLoading: loading, mutate } = useSWR(
+    ["/api/orders", debouncedSearch, statusFilter, dateFrom, dateTo, sortBy, sortOrder],
+    () => ordersApi.list({
+      search: debouncedSearch || undefined,
+      status: statusFilter || undefined,
+      startDate: dateFrom || undefined,
+      endDate: dateTo || undefined,
+      sortBy: sortBy,
+      sortOrder: sortOrder,
+      page: 1,
+      limit: 1000,
+    })
+  );
 
-  useEffect(() => {
-    fetchOrders(sortBy, sortOrder);
-  }, [fetchOrders, sortBy, sortOrder]);
+  const orders = ordersRes?.success && ordersRes.data ? (ordersRes.data as any).orders as Order[] : [];
 
   const handleStatusUpdate = async (orderId: number, status: string) => {
+    mutate(
+      async (currentData: any) => {
+        const list = currentData?.data?.orders || [];
+        const newOrders = list.map((o: any) => o.id === orderId ? { ...o, status } : o);
+        return { ...currentData, data: { ...currentData?.data, orders: newOrders } };
+      },
+      { revalidate: false }
+    );
     try {
       await ordersApi.updateStatus(orderId, status);
       toast({ title: "הצלחה", description: "סטטוס עודכן" });
-      fetchOrders();
     } catch (error) {
       toast({ title: "שגיאה", description: "שגיאה בעדכון", variant: "destructive" });
+    } finally {
+      mutate();
     }
   };
 
   const handleDelete = async (order: Order) => {
     if (!confirm("האם לבטל את ההזמנה?")) return;
+    mutate(
+      async (currentData: any) => {
+        const list = currentData?.data?.orders || [];
+        const newOrders = list.map((o: any) => o.id === order.id ? { ...o, status: "cancelled" } : o);
+        return { ...currentData, data: { ...currentData?.data, orders: newOrders } };
+      },
+      { revalidate: false }
+    );
     try {
       await ordersApi.delete(order.id);
       toast({ title: "הצלחה", description: "הזמנה בוטלה" });
-      fetchOrders();
     } catch (error) {
       toast({ title: "שגיאה", description: "שגיאה בביטול", variant: "destructive" });
+    } finally {
+      mutate();
     }
   };
 

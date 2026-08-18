@@ -115,6 +115,7 @@ export default function NewTransactionPage() {
     if (orderIdParam) {
       setOrderId(orderIdParam);
       setUiCategory("existing_order");
+      setCategory("order");
     }
   }, [searchParams]);
 
@@ -137,7 +138,7 @@ export default function NewTransactionPage() {
     if (shareContext === "transaction_expense") {
       setType("expense");
     }
-    setPaymentMethod((prev) => (prev === "cash" ? "bit" : prev));
+    setPaymentMethod((prev) => (prev === "cash" ? "" : prev));
 
     clearSharedUploadPayload();
     sharedAppliedRef.current = true;
@@ -209,6 +210,10 @@ export default function NewTransactionPage() {
     // --- Specific validation with distinct error messages ---
     if (!amount) {
       toast({ title: "חסר סכום", description: "נא להזין את סכום התנועה.", variant: "destructive" });
+      return;
+    }
+    if (!paymentMethod) {
+      toast({ title: "חסר אמצעי תשלום", description: "נא לבחור אמצעי תשלום לתנועה.", variant: "destructive" });
       return;
     }
     if (type === "income" && !uiCategory) {
@@ -410,7 +415,9 @@ export default function NewTransactionPage() {
                       </div>
                       <div className="flex justify-between items-center mt-2">
                         <span className="text-xs text-muted-foreground">{order.order_summary || 'הזמנה'}</span>
-                        <span className="text-xs font-bold text-green-600">יתרה: ₪{order.total_price - order.paid_amount}</span>
+                        <span className="text-xs font-bold text-green-600">
+                          יתרה: ₪{(order.total_price || 0) + (order.total_customer_charge || 0) - (order.paid_amount || 0)}
+                        </span>
                       </div>
                     </button>
                   ))}
@@ -430,7 +437,7 @@ export default function NewTransactionPage() {
                     {(() => {
                       const order = recentOrders.find(o => o.id.toString() === orderId);
                       if (!order) return null;
-                      const balance = order.total_price - order.paid_amount;
+                      const balance = (order.total_price || 0) + (order.total_customer_charge || 0) - (order.paid_amount || 0);
                       return (
                         <p className="text-xs font-bold text-green-700 mt-1 flex items-center gap-1">
                           <Wallet className="h-3 w-3" /> חוב נוכחי בהזמנה: ₪{balance}
@@ -641,7 +648,9 @@ export default function NewTransactionPage() {
                           <p className="text-[10px] text-muted-foreground">הזמנה #{o.id}</p>
                         </div>
                         <div className="text-left flex flex-col items-end">
-                          <span className="text-xs font-bold text-red-700 bg-red-50 px-2 py-0.5 rounded-md">₪{o.total_price - o.paid_amount} חסר</span>
+                          <span className="text-xs font-bold text-red-700 bg-red-50 px-2 py-0.5 rounded-md">
+                            ₪{(o.total_price || 0) + (o.total_customer_charge || 0) - (o.paid_amount || 0)} חסר
+                          </span>
                         </div>
                       </button>
                     ))}
@@ -654,7 +663,7 @@ export default function NewTransactionPage() {
                       {(() => {
                         const order = recentOrders.find(o => o.id.toString() === orderId);
                         if (!order) return null;
-                        const balance = order.total_price - order.paid_amount;
+                        const balance = (order.total_price || 0) + (order.total_customer_charge || 0) - (order.paid_amount || 0);
                         return (
                           <p className="text-[10px] font-bold text-red-700 mt-1 flex items-center gap-1">
                             <Wallet className="h-3 w-3" /> חוב נוכחי: ₪{balance}
@@ -696,6 +705,7 @@ export default function NewTransactionPage() {
                 onChange={(e) => setPaymentMethod(e.target.value)}
                 className="w-full h-10 rounded-xl border-2 bg-background px-3 text-sm font-bold"
               >
+                <option value="" disabled>בחרי אמצעי תשלום...</option>
                 {PAYMENT_METHODS.map((m) => (
                   <option key={m.value} value={m.value}>{m.label}</option>
                 ))}

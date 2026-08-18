@@ -25,6 +25,8 @@ set -euo pipefail
 # --- Configuration ---
 # Ensure HOME and RCLONE_CONFIG are set (cron runs with minimal env; causes "remote not found")
 # Use absolute path for config when unset - critical for reliable cron execution.
+USER_HOME="$(eval echo ~"${USER:-$(whoami)}")"
+export HOME="${HOME:-$USER_HOME}"
 export HOME="${HOME:-/root}"
 if [ -z "${RCLONE_CONFIG:-}" ]; then
     export RCLONE_CONFIG="$HOME/.config/rclone/rclone.conf"
@@ -107,8 +109,11 @@ if [ -f "$MARKER_FILE" ]; then
     CHANGED_FILE="$(find "$LOCAL_DATA" -type f \
         ! -path "$LOCAL_DATA/logs/*" \
         ! -path "$LOCAL_DATA/migration_backup/*" \
+        ! -path "$LOCAL_DATA/temp_cache/*" \
         ! -name "*.db-shm" \
         ! -name "*.db-wal" \
+        ! -name "*.bak*" \
+        ! -name "*.backup*" \
         ! -path "$MARKER_FILE" \
         -newer "$MARKER_FILE" \
         -print -quit 2>/dev/null || true)"
@@ -126,8 +131,11 @@ rclone sync "$LOCAL_DATA" "${RCLONE_REMOTE}:${DRIVE_PATH}" \
     --log-file "$LOG_FILE" \
     --exclude "logs/**" \
     --exclude "migration_backup/**" \
+    --exclude "temp_cache/**" \
     --exclude "*.db-shm" \
-    --exclude "*.db-wal"
+    --exclude "*.db-wal" \
+    --exclude "*.bak*" \
+    --exclude "*.backup*"
 
 RCLONE_EXIT=$?
 

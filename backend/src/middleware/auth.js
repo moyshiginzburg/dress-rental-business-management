@@ -9,8 +9,28 @@
  */
 
 import jwt from 'jsonwebtoken';
-import { authConfig } from '../config/index.js';
+import { authConfig, serverConfig } from '../config/index.js';
 import { get } from '../db/database.js';
+
+/**
+ * Helper: Clear the HttpOnly auth_token cookie.
+ * 
+ * Purpose: Remove the authentication cookie from the user's browser
+ * when their session is invalid, expired, or when they log out.
+ * 
+ * Method of operation: Sends a clearCookie instruction with identical
+ * configuration options (path, secure, sameSite, httpOnly) used to create
+ * the cookie. Since it's HttpOnly, client-side JS cannot delete it, so the
+ * server must do it.
+ */
+function clearAuthCookie(res) {
+  res.clearCookie('auth_token', {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: !serverConfig.isDevelopment,
+    path: '/',
+  });
+}
 
 /**
  * Middleware to require authentication
@@ -22,6 +42,7 @@ export function requireAuth(req, res, next) {
     const authHeader = req.headers.authorization;
     
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      clearAuthCookie(res);
       return res.status(401).json({
         success: false,
         message: 'אין הרשאה - נדרשת התחברות'
@@ -40,6 +61,7 @@ export function requireAuth(req, res, next) {
     );
     
     if (!user) {
+      clearAuthCookie(res);
       return res.status(401).json({
         success: false,
         message: 'משתמש לא נמצא'
@@ -47,6 +69,7 @@ export function requireAuth(req, res, next) {
     }
     
     if (!user.is_active) {
+      clearAuthCookie(res);
       return res.status(401).json({
         success: false,
         message: 'חשבון לא פעיל'
@@ -58,6 +81,8 @@ export function requireAuth(req, res, next) {
     next();
     
   } catch (error) {
+    clearAuthCookie(res);
+
     if (error.name === 'TokenExpiredError') {
       return res.status(401).json({
         success: false,

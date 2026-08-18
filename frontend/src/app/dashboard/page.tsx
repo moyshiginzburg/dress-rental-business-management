@@ -13,7 +13,7 @@
  * - Customers → Customers page
  */
 
-import { useEffect, useState } from "react";
+import useSWR from "swr";
 import { Card, CardContent } from "@/components/ui/card";
 import { dashboardApi } from "@/lib/api";
 import { formatCurrency } from "@/lib/utils";
@@ -48,26 +48,12 @@ interface DashboardData {
 }
 
 export default function DashboardPage() {
-  const [data, setData] = useState<DashboardData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { data: summaryRes, error, isLoading: loading } = useSWR(
+    "/dashboard/summary",
+    () => dashboardApi.summary()
+  );
 
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const summaryRes = await dashboardApi.summary();
-
-        if (summaryRes.success && summaryRes.data) {
-          setData(summaryRes.data as DashboardData);
-        }
-      } catch (error) {
-        console.error("Failed to load dashboard:", error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchData();
-  }, []);
+  const data = summaryRes?.success ? (summaryRes.data as DashboardData) : null;
 
   if (loading) {
     return (

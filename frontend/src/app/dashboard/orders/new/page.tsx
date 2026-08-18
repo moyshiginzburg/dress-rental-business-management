@@ -189,7 +189,7 @@ export default function NewOrderPage() {
 
       current[0] = {
         ...current[0],
-        method: current[0].method === "cash" ? "bit" : current[0].method,
+        method: current[0].method === "cash" ? "" : current[0].method,
         fileBase64: payload.base64,
         fileName: payload.fileName
       };
@@ -441,6 +441,10 @@ export default function NewOrderPage() {
     }
     if (!eventDate) {
       toast({ title: "שגיאה", description: "נא להזין תאריך אירוע", variant: "destructive" });
+      return;
+    }
+    if (depositPayments.some(p => parseFloat(p.amount) > 0 && !p.method)) {
+      toast({ title: "שגיאה", description: "נא לבחור אמצעי תשלום עבור המקדמה", variant: "destructive" });
       return;
     }
 
@@ -1061,6 +1065,7 @@ export default function NewOrderPage() {
                       }}
                       className="w-full h-11 px-3 border-b-2 border-input bg-background font-medium outline-none focus:border-green-600 transition-all"
                     >
+                      <option value="" disabled>בחרי אמצעי תשלום...</option>
                       <option value="cash">מזומן</option>
                       <option value="credit">אשראי</option>
                       <option value="bit">Bit</option>

@@ -12,8 +12,9 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useRouter, useSearchParams } from "next/navigation";
+import useSWR from "swr";
 import { customersApi } from "@/lib/api";
-import { formatPhoneNumber, createWhatsAppLink, formatDateShort, debounce, normalizePhoneInput, cn } from "@/lib/utils";
+import { formatPhoneNumber, createWhatsAppLink, formatDateShort, normalizePhoneInput, cn } from "@/lib/utils";
 import { reportClientError } from "@/lib/error-reporter";
 import { useToast } from "@/components/ui/use-toast";
 import { ContactPicker } from "@/components/dashboard/contact-picker";
@@ -52,8 +53,6 @@ export default function CustomersPage() {
   const { toast } = useToast();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
@@ -74,47 +73,24 @@ export default function CustomersPage() {
   const [showMergeDialog, setShowMergeDialog] = useState(false);
   const [mergeTargetId, setMergeTargetId] = useState<number | null>(null);
 
-  const fetchCustomers = useCallback(async (searchQuery: string = "", sortCol: string = "last_active_date", sortDir: string = "desc") => {
-    try {
-      const response = await customersApi.list({
-        search: searchQuery,
-        sortBy: sortCol,
-        sortOrder: sortDir,
-        limit: 1000 // Show everything
-      });
-      if (response.success && response.data) {
-        const data = response.data as { customers: Customer[] };
-        setCustomers(data.customers);
-      }
-    } catch (error) {
-      console.error("Failed to load customers:", error);
-      toast({
-        title: "שגיאה",
-        description: "לא ניתן לטעון את רשימת הלקוחות",
-        variant: "destructive",
-      });
-      reportClientError({
-        message: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-        component: 'CustomersList',
-        action: 'טעינת רשימת לקוחות'
-      });
-    } finally {
-      setLoading(false);
-    }
-  }, [toast]);
-
-  // Debounced search
-  const debouncedSearch = useCallback(
-    debounce((query: any, sortCol: any, sortDir: any) => {
-      fetchCustomers(query as string, sortCol as string, sortDir as string);
-    }, 300),
-    [fetchCustomers]
-  );
+  const [debouncedSearch, setDebouncedSearch] = useState("");
 
   useEffect(() => {
-    fetchCustomers(search, sortBy, sortOrder);
-  }, [search, sortBy, sortOrder, fetchCustomers]);
+    const timer = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  const { data: customersRes, error, isLoading: loading, mutate } = useSWR(
+    ["/api/customers", debouncedSearch, sortBy, sortOrder],
+    () => customersApi.list({
+      search: debouncedSearch,
+      sortBy: sortBy,
+      sortOrder: sortOrder,
+      limit: 1000 // Show everything
+    })
+  );
+
+  const customers = customersRes?.success && customersRes.data ? (customersRes.data as any).customers as Customer[] : [];
 
   const resetForm = () => {
     setFormData({
@@ -197,7 +173,7 @@ export default function CustomersPage() {
       setShowMergeDialog(false);
       setSelectedIds([]);
       setIsSelectionMode(false);
-      fetchCustomers(search);
+      mutate();
     } catch (error) {
       const message = error instanceof Error ? error.message : "שגיאה במיזוג";
       toast({
@@ -222,17 +198,33 @@ export default function CustomersPage() {
       toast({ title: "שגיאה", description: "נא להזין שם לקוח", variant: "destructive" });
       return;
     }
+
+    // Optimistic UI update
+    mutate(
+      async (currentData: any) => {
+        const list = currentData?.data?.customers || [];
+        if (editingCustomer) {
+          const newCustomers = list.map((c: any) => c.id === editingCustomer.id ? { ...c, ...formData } : c);
+          return { ...currentData, data: { ...currentData?.data, customers: newCustomers } };
+        } else {
+          const tempId = Date.now();
+          const newCustomers = [{ id: tempId, ...formData, created_at: new Date().toISOString() }, ...list];
+          return { ...currentData, data: { ...currentData?.data, customers: newCustomers } };
+        }
+      },
+      { revalidate: false }
+    );
+
     setSaving(true);
     try {
       if (editingCustomer) {
         await customersApi.update(editingCustomer.id, formData);
-        toast({ title: "הצלחה", description: "לקוח עודכן בהצלחה" });
+        toast({ title: "הצלחה", description: "לקוחה עודכנה בהצלחה" });
       } else {
         await customersApi.create(formData);
-        toast({ title: "הצלחה", description: "לקוח נוסף בהצלחה" });
+        toast({ title: "הצלחה", description: "לקוחה נוספה בהצלחה" });
       }
       resetForm();
-      fetchCustomers(search);
     } catch (error) {
       const message = error instanceof Error ? error.message : "שגיאה בשמירת לקוח";
       toast({
@@ -248,6 +240,7 @@ export default function CustomersPage() {
       });
     } finally {
       setSaving(false);
+      mutate();
     }
   };
 

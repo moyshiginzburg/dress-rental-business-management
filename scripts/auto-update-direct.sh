@@ -85,7 +85,8 @@ done
 # Run cloud backup before update (explicit env ensures rclone works when invoked from cron)
 if [ -x "$SCRIPT_DIR/sync-to-cloud.sh" ]; then
     log "Running pre-update backup..."
-    HOME="${HOME:-/root}" RCLONE_CONFIG="${RCLONE_CONFIG:-/root/.config/rclone/rclone.conf}" \
+    USER_HOME="$(eval echo ~"${USER:-$(whoami)}")"
+    HOME="${HOME:-$USER_HOME}" RCLONE_CONFIG="${RCLONE_CONFIG:-$USER_HOME/.config/rclone/rclone.conf}" \
         "$SCRIPT_DIR/sync-to-cloud.sh" || log "WARNING: Pre-update backup failed. Continuing with update."
 fi
 

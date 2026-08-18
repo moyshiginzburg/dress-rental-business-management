@@ -9,11 +9,12 @@
  * Terms: Updated 'first_rental' to 'sewing_for_rental'.
  */
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { DateRangeFilter } from "@/components/ui/date-range-filter";
 import { useRouter, useSearchParams } from "next/navigation";
+import useSWR from "swr";
 import { transactionsApi, customersApi } from "@/lib/api";
 import {
   formatCurrency,
@@ -75,8 +76,6 @@ export default function TransactionsPage() {
   const { toast } = useToast();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [loading, setLoading] = useState(true);
   const [typeFilter, setTypeFilter] = useState<string>("");
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   // Initialize date range from URL params (e.g. when navigating from dashboard monthly-income card)
@@ -115,12 +114,6 @@ export default function TransactionsPage() {
     }
   }, [customerSearch, customerId]);
 
-  const [summary, setSummary] = useState({
-    totalIncome: 0,
-    totalExpenses: 0,
-    profit: 0,
-  });
-
   const [expandedNote, setExpandedNote] = useState<string | null>(null);
 
   useEffect(() => {
@@ -133,12 +126,17 @@ export default function TransactionsPage() {
   }, [expandedNote]);
 
   const calculateDisplayAmount = useCallback((t: Transaction) => {
-    // Logic: If no categories selected or 'rental' is selected, show full amount
-    if (selectedCategories.length === 0 || selectedCategories.includes("rental")) {
+    // If no categories selected, show full amount
+    if (selectedCategories.length === 0) {
       return t.amount;
     }
 
-    // If it's an expense or not linked to an order, show full amount (filtered by DB anyway)
+    // If selected categories directly includes the transaction category
+    if (selectedCategories.includes(t.category)) {
+      return t.amount;
+    }
+
+    // If it's an expense or not linked to an order, show full amount
     if (t.type === "expense" || !t.order_id || !t.items_breakdown || !t.order_total_price) {
       return t.amount;
     }
@@ -163,56 +161,46 @@ export default function TransactionsPage() {
     }
   }, [selectedCategories]);
 
-  const fetchTransactions = useCallback(async () => {
-    try {
-      const response = await transactionsApi.list({
-        type: typeFilter || undefined,
-        category: selectedCategories.length > 0 ? selectedCategories.join(',') : undefined,
-        startDate: dateFrom || undefined,
-        endDate: dateTo || undefined,
-        customer_id: customerId || undefined,
-        limit: 100000, // Fetch all to calculate accurate profit summary
-      });
-      if (response.success && response.data) {
-        const data = response.data as { transactions: Transaction[] };
+  const { data: txRes, error, isLoading: loading, mutate } = useSWR(
+    ["/api/transactions", typeFilter, selectedCategories.join(','), dateFrom, dateTo, customerId],
+    () => transactionsApi.list({
+      type: typeFilter || undefined,
+      category: selectedCategories.length > 0 ? selectedCategories.join(',') : undefined,
+      startDate: dateFrom || undefined,
+      endDate: dateTo || undefined,
+      customer_id: customerId || undefined,
+      limit: 100000,
+    })
+  );
 
-        // Apply the relative amount calculation to the transactions
-        const processedTransactions = data.transactions.map(t => ({
-          ...t,
-          displayAmount: calculateDisplayAmount(t)
-        })).filter(t => (t as any).displayAmount !== 0);
+  const rawTransactions = useMemo(() => {
+    return (txRes?.success && txRes.data) ? (txRes.data as any).transactions as Transaction[] : [];
+  }, [txRes]);
 
-        setTransactions(processedTransactions as any);
+  const transactions = useMemo(() => {
+    return rawTransactions.map(t => ({
+      ...t,
+      displayAmount: calculateDisplayAmount(t)
+    })).filter(t => (t as any).displayAmount !== 0);
+  }, [rawTransactions, calculateDisplayAmount]);
 
-        const income = processedTransactions
-          .filter((t) => t.type === "income")
-          .reduce((sum, t) => sum + (t as any).displayAmount, 0);
-        const expenses = processedTransactions
-          .filter((t) => t.type === "expense")
-          .reduce((sum, t) => sum + (t as any).displayAmount, 0);
-
-        setSummary({
-          totalIncome: income,
-          totalExpenses: expenses,
-          profit: income - expenses,
-        });
-      }
-    } catch (error) {
-      console.error("Failed to load transactions:", error);
-      toast({
-        title: "שגיאה",
-        description: "לא ניתן לטעון את העסקאות",
-        variant: "destructive",
-      });
-    } finally {
-      setLoading(false);
-    }
-  }, [typeFilter, selectedCategories, dateFrom, dateTo, customerId, toast, calculateDisplayAmount]);
+  const summary = useMemo(() => {
+    const income = transactions
+      .filter((t) => t.type === "income")
+      .reduce((sum, t) => sum + (t as any).displayAmount, 0);
+    const expenses = transactions
+      .filter((t) => t.type === "expense")
+      .reduce((sum, t) => sum + (t as any).displayAmount, 0);
+    return {
+      totalIncome: income,
+      totalExpenses: expenses,
+      profit: income - expenses,
+    };
+  }, [transactions]);
 
   useEffect(() => {
     setCurrentPage(1); // Reset page on filter change
-    fetchTransactions();
-  }, [fetchTransactions]);
+  }, [typeFilter, selectedCategories, dateFrom, dateTo, customerId]);
 
   const totalPages = Math.ceil(transactions.length / itemsPerPage);
   const paginatedTransactions = transactions.slice(
@@ -226,7 +214,7 @@ export default function TransactionsPage() {
     try {
       await transactionsApi.delete(transaction.id);
       toast({ title: "הצלחה", description: "עסקה נמחקה בהצלחה" });
-      fetchTransactions();
+      mutate();
     } catch (error) {
       toast({
         title: "שגיאה",
@@ -466,14 +454,24 @@ export default function TransactionsPage() {
                         )}
                       </td>
                       <td className="p-3">
-                        {transaction.customer_name ||
-                          transaction.customer_full_name ||
-                          transaction.supplier ||
-                          "-"}
-                        {transaction.order_id && (
-                          <span className="text-[10px] text-muted-foreground mr-1">
-                            (הזמנה #{transaction.order_id})
-                          </span>
+                        {transaction.type === "expense" ? (
+                          <div>
+                            <div className="font-semibold text-sm text-gray-900">{transaction.supplier || "-"}</div>
+                            {transaction.product && (
+                              <div className="text-xs text-muted-foreground">{transaction.product}</div>
+                            )}
+                          </div>
+                        ) : (
+                          <div>
+                            <div className="font-semibold text-sm text-gray-900">
+                              {transaction.customer_name || transaction.customer_full_name || "-"}
+                            </div>
+                            {transaction.order_id && (
+                              <span className="text-[10px] text-muted-foreground">
+                                (הזמנה #{transaction.order_id})
+                              </span>
+                            )}
+                          </div>
                         )}
                         {transaction.notes && (
                           <div

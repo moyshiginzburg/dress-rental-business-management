@@ -134,11 +134,19 @@ router.get('/', (req, res, next) => {
       sortOrder = 'desc'
     } = req.query;
 
+    // Compute today's date in Israel timezone to avoid UTC boundary issues.
+    // At 1-3 AM Israel time, date('now') in SQLite returns the previous UTC day,
+    // causing open/completed order counts to diverge from the frontend view.
+    const nowInIsrael = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' }));
+    const todayInIsrael = `${nowInIsrael.getFullYear()}-${String(nowInIsrael.getMonth() + 1).padStart(2, '0')}-${String(nowInIsrael.getDate()).padStart(2, '0')}`;
+
     // SQL fragment that evaluates to true when an active order is "completed":
     // event_date has passed AND balance (total_price + customer charges – paid_amount) is zero.
+    // Uses the Israel-timezone date (embedded as a literal) instead of date('now') to stay
+    // consistent with the dashboard summary and the frontend's local-time logic.
     const COMPLETED_PREDICATE = `(
       o.event_date IS NOT NULL
-      AND date(o.event_date) <= date('now')
+      AND date(o.event_date) <= '${todayInIsrael}'
       AND o.paid_amount = (
         o.total_price
         + COALESCE((SELECT SUM(customer_charge_amount) FROM transactions t2 WHERE t2.order_id = o.id), 0)

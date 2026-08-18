@@ -31,12 +31,19 @@ export default function DashboardLayout({
         return;
       }
 
+      // Stop loading immediately if token exists locally (Optimistic UI)
+      // This removes the waterfall and allows children to fetch data instantly
+      setLoading(false);
+
       try {
+        // Verify token in the background
         await authApi.verify();
-        setLoading(false);
-      } catch {
-        api.setToken(null);
-        router.push("/login");
+      } catch (error) {
+        // We only want to log out if the token is invalid (401),
+        // which is already handled globally by api.ts.
+        // If it's a network error, we just swallow it and let the user continue
+        // using the cached data (offline mode) or retry later.
+        console.error("Background auth verification failed:", error);
       }
     };
 

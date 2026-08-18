@@ -65,7 +65,9 @@ export async function reportClientError(error: ErrorReport) {
 
     // Send it. We don't use the standard api.ts client to avoid circular dependencies
     // and to ensure this works even if the API client is broken
-    const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api';
+    const API_URL = typeof window !== 'undefined'
+      ? '/api'
+      : (process.env.NEXT_PUBLIC_API_URL || '/api');
     
     fetch(`${API_URL}/client-errors`, {
       method: 'POST',

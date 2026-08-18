@@ -22,9 +22,10 @@ router.use(requireAuth);
  */
 router.get('/summary', (req, res, next) => {
   try {
-    const now = new Date();
-    const currentYear = now.getFullYear();
-    const currentMonth = now.getMonth(); // 0-indexed
+    // Calculate current date in Israel timezone to avoid UTC boundary issues
+    const nowInIsrael = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' }));
+    const currentYear = nowInIsrael.getFullYear();
+    const currentMonth = nowInIsrael.getMonth(); // 0-indexed
 
     // Compute date range boundaries so we use >= / < on the indexed date column
     // instead of strftime() which forces a full table scan.
@@ -53,6 +54,11 @@ router.get('/summary', (req, res, next) => {
       ]
     );
 
+    // Today's date string in Israel timezone for date comparisons in SQL.
+    // Using date('now') in SQLite would return UTC, which at 1-3 AM Israel
+    // time is still the previous day — causing open/completed miscounts.
+    const todayInIsrael = `${currentYear}-${String(nowInIsrael.getMonth() + 1).padStart(2, '0')}-${String(nowInIsrael.getDate()).padStart(2, '0')}`;
+
     // Single query: orders + customers + dresses counts.
     // open_orders = active orders that are NOT yet completed (i.e. balance != 0 or event_date
     // is in the future / missing). An order is completed when its event_date has passed AND the
@@ -64,7 +70,7 @@ router.get('/summary', (req, res, next) => {
           WHERE o.status = 'active'
             AND NOT (
               o.event_date IS NOT NULL
-              AND date(o.event_date) <= date('now')
+              AND date(o.event_date) <= ?
               AND o.paid_amount = (
                 o.total_price
                 + COALESCE((SELECT SUM(customer_charge_amount) FROM transactions WHERE order_id = o.id), 0)
@@ -75,7 +81,7 @@ router.get('/summary', (req, res, next) => {
         (SELECT COUNT(*) FROM customers WHERE created_at >= ? AND created_at < ?) as new_customers_month,
         (SELECT COUNT(*) FROM dresses WHERE status = 'available') as available_dresses,
         (SELECT COUNT(*) FROM dresses) as total_dresses`,
-      [monthStart, nextMonthStart]
+      [todayInIsrael, monthStart, nextMonthStart]
     );
 
     res.json({
@@ -125,6 +131,10 @@ router.get('/upcoming-events', (req, res, next) => {
   try {
     const { days = 7 } = req.query;
 
+    // Compute today's date in Israel timezone (same logic as /summary)
+    const nowInIsrael = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Jerusalem' }));
+    const todayInIsrael = `${nowInIsrael.getFullYear()}-${String(nowInIsrael.getMonth() + 1).padStart(2, '0')}-${String(nowInIsrael.getDate()).padStart(2, '0')}`;
+
     // Upcoming order events (pickups and returns)
     const orderEvents = all(
       `SELECT 
@@ -137,10 +147,10 @@ router.get('/upcoming-events', (req, res, next) => {
        FROM orders o
        LEFT JOIN customers c ON o.customer_id = c.id
        WHERE o.status = 'active'
-         AND o.event_date >= date('now')
-         AND o.event_date <= date('now', '+' || ? || ' days')
+         AND o.event_date >= ?
+         AND o.event_date <= date(?, '+' || ? || ' days')
        ORDER BY o.event_date ASC`,
-      [parseInt(days, 10)]
+      [todayInIsrael, todayInIsrael, parseInt(days, 10)]
     );
 
     res.json({

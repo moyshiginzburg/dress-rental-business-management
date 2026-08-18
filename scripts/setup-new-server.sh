@@ -336,7 +336,7 @@ header "Step 10/10: Cron jobs"
     crontab -l 2>/dev/null | grep -v "auto-update" | grep -v "sync-to-cloud" | grep -v "backup-to-telegram" | grep -v "daily-security-report"
     echo "* * * * * $INSTALL_DIR/scripts/auto-update-direct.sh >> /dev/null 2>&1"
     # Explicit HOME/RCLONE_CONFIG ensure backup works from cron (minimal env)
-    echo "0 * * * * HOME=/root RCLONE_CONFIG=/root/.config/rclone/rclone.conf $INSTALL_DIR/scripts/sync-to-cloud.sh >> /dev/null 2>&1"
+    echo "0 * * * * HOME=$HOME RCLONE_CONFIG=$HOME/.config/rclone/rclone.conf $INSTALL_DIR/scripts/sync-to-cloud.sh >> /dev/null 2>&1"
     # Daily DB backup to Telegram at 03:00
     echo "0 3 * * * $INSTALL_DIR/scripts/backup-to-telegram.sh >> /dev/null 2>&1"
     # Daily security report at 23:55 (only sent if suspicious events occurred)

@@ -40,6 +40,12 @@ class ApiClient {
         // The actual HttpOnly cookie is set by the server and cannot be
         // read by JS, but we can expire it by setting maxAge to 0.
         document.cookie = 'auth_token=; path=/; max-age=0; samesite=lax';
+
+        // Also call the server-side logout endpoint to clear the HttpOnly cookie.
+        // This is done as a background fire-and-forget call because setToken
+        // is synchronous and might be called during critical rendering phases.
+        fetch('/api/auth/logout', { method: 'POST', credentials: 'include' })
+          .catch((err) => console.error('Failed to clear server-side auth cookie:', err));
       }
     }
   }

@@ -13,6 +13,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import useSWR from "swr";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -86,16 +87,6 @@ interface DressDetailData {
   };
 }
 
-/* interface DressFormData {
-  name: string;
-  base_price: string;
-  status: string;
-  intended_use: "" | "rental" | "sale";
-  photo_url: string;
-  thumbnail_url: string;
-  notes: string;
-} */
-
 function getIntendedUseLabel(intendedUse: "rental" | "sale" | null | undefined) {
   if (intendedUse === "sale") return "מיועדת למכירה";
   if (intendedUse === "rental") return "מיועדת להשכרה";
@@ -117,8 +108,6 @@ export default function DressesPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { toast } = useToast();
-  const [dresses, setDresses] = useState<Dress[]>([]);
-  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [intendedUseFilter, setIntendedUseFilter] = useState<string>("");
@@ -155,44 +144,26 @@ export default function DressesPage() {
     }
   }, [searchParams, router, toast]);
 
-  const fetchDresses = useCallback(
-    async (
-      searchQuery: string = "",
-      status: string = "",
-      intendedUse: string = "",
-      sort: string = "last_active_date",
-      order: string = "desc"
-    ) => {
-      try {
-        const response = await dressesApi.list({
-          search: searchQuery,
-          status: status || undefined,
-          intended_use: intendedUse === "__empty__" ? "__empty__" : (intendedUse || undefined),
-          sortBy: sort,
-          sortOrder: order,
-          limit: 1000, // Show everything
-        });
-        if (response.success && response.data) {
-          const data = response.data as { dresses: Dress[] };
-          setDresses(data.dresses);
-        }
-      } catch (error) {
-        console.error("Failed to load dresses:", error);
-        toast({
-          title: "שגיאה",
-          description: "לא ניתן לטעון את רשימת השמלות",
-          variant: "destructive",
-        });
-      } finally {
-        setLoading(false);
-      }
-    },
-    [toast]
-  );
+  const [debouncedSearch, setDebouncedSearch] = useState("");
 
   useEffect(() => {
-    fetchDresses(search, statusFilter, intendedUseFilter, sortBy, sortOrder);
-  }, [fetchDresses, search, statusFilter, intendedUseFilter, sortBy, sortOrder]);
+    const timer = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  const { data: dressesRes, error, isLoading: loading, mutate } = useSWR(
+    ["/api/dresses", debouncedSearch, statusFilter, intendedUseFilter, sortBy, sortOrder],
+    () => dressesApi.list({
+      search: debouncedSearch,
+      status: statusFilter || undefined,
+      intended_use: intendedUseFilter === "__empty__" ? "__empty__" : (intendedUseFilter || undefined),
+      sortBy: sortBy,
+      sortOrder: sortOrder,
+      limit: 1000,
+    })
+  );
+
+  const dresses = dressesRes?.success && dressesRes.data ? (dressesRes.data as any).dresses as Dress[] : [];
 
   const viewDress = async (id: number) => {
     setLoadingDetails(true);
@@ -216,8 +187,8 @@ export default function DressesPage() {
   }, [searchParams]);
 
   const toggleSelection = (id: number) => {
-    setSelectedIds(prev =>
-      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+    setSelectedIds((prev: number[]) =>
+      prev.includes(id) ? prev.filter((i: number) => i !== id) : [...prev, id]
     );
   };
 
@@ -235,7 +206,7 @@ export default function DressesPage() {
 
   const executeMerge = async () => {
     if (!mergeTargetId || selectedIds.length !== 2) return;
-    const sourceId = selectedIds.find(id => id !== mergeTargetId);
+    const sourceId = selectedIds.find((id: number) => id !== mergeTargetId);
     if (!sourceId) return;
 
     setSavingMerge(true);
@@ -250,7 +221,7 @@ export default function DressesPage() {
       setShowMergeDialog(false);
       setSelectedIds([]);
       setIsSelectionMode(false);
-      fetchDresses(search, statusFilter, intendedUseFilter, sortBy, sortOrder);
+      mutate();
     } catch (error) {
       toast({
         title: "שגיאה",
