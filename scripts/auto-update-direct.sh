@@ -141,7 +141,7 @@ fi
 ok=false
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
     sleep 5
-    if curl -sf http://localhost:3001/api/health > /dev/null 2>&1; then ok=true; break; fi
+    if curl -sf http://127.0.0.1:3001/api/health > /dev/null 2>&1; then ok=true; break; fi
 done
 if $ok; then
     log "Health check passed. Backend is running."

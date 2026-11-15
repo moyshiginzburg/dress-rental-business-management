@@ -18,6 +18,7 @@ import { sanitizePaymentDetails } from '../services/paymentDetails.js';
 import { normalizePhoneNumber } from '../services/phone.js';
 import { saveExpenseReceipt, renameExpenseReceipt } from '../services/localStorage.js';
 import { normalizeTextForSave, normalizeTextForSearch } from '../utils/textUtils.js';
+import { parseReceiptRequest, saveCustomerReceiptName, requestReceipt, issueReceipt, getReceiptByTransactionId, getVisibleReceiptByTransactionId, buildReceiptEmailInfo } from '../services/receipts.js';
 
 const router = Router();
 
@@ -98,10 +99,13 @@ router.get('/', (req, res, next) => {
     let sql = `
       SELECT t.*, c.name as customer_full_name,
              oi_agg.items_breakdown,
-             o.total_price as order_total_price
+             o.total_price as order_total_price,
+             r.id as receipt_id, r.status as receipt_status, r.document_number as receipt_number,
+             r.error_message as receipt_error, r.updated_at as receipt_updated_at
       FROM transactions t 
       LEFT JOIN customers c ON t.customer_id = c.id
       LEFT JOIN orders o ON o.id = t.order_id
+      LEFT JOIN receipts r ON r.transaction_id = t.id AND r.is_test = 0
       LEFT JOIN (
         SELECT order_id, GROUP_CONCAT(item_type || ':' || final_price) as items_breakdown
         FROM order_items
@@ -145,9 +149,10 @@ router.get('/', (req, res, next) => {
 
     // Add search filter
     if (search) {
-      sql += ' AND (t.customer_name LIKE ? OR t.supplier LIKE ? OR t.product LIKE ? OR t.notes LIKE ?)';
+      sql += ' AND (t.customer_name LIKE ? OR t.supplier LIKE ? OR t.product LIKE ? OR t.notes LIKE ?' +
+        ' OR t.customer_id IN (SELECT id FROM customers WHERE name LIKE ? OR receipt_name LIKE ?))';
       const searchPattern = normalizeTextForSearch(search);
-      params.push(searchPattern, searchPattern, searchPattern, searchPattern);
+      params.push(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern);
     }
 
     // Add sorting
@@ -189,9 +194,10 @@ router.get('/', (req, res, next) => {
       countParams.push(endDate);
     }
     if (search) {
-      countSql += ' AND (t.customer_name LIKE ? OR t.supplier LIKE ? OR t.product LIKE ? OR t.notes LIKE ?)';
+      countSql += ' AND (t.customer_name LIKE ? OR t.supplier LIKE ? OR t.product LIKE ? OR t.notes LIKE ?' +
+        ' OR t.customer_id IN (SELECT id FROM customers WHERE name LIKE ? OR receipt_name LIKE ?))';
       const searchPattern = normalizeTextForSearch(search);
-      countParams.push(searchPattern, searchPattern, searchPattern, searchPattern);
+      countParams.push(searchPattern, searchPattern, searchPattern, searchPattern, searchPattern, searchPattern);
     }
     const { total } = get(countSql, countParams);
 
@@ -304,9 +310,11 @@ router.get('/:id', (req, res, next) => {
       throw new ApiError(404, 'עסקה לא נמצאה');
     }
 
+    const receipt = getVisibleReceiptByTransactionId(transaction.id);
+
     res.json({
       success: true,
-      data: { transaction }
+      data: { transaction, receipt }
     });
 
   } catch (error) {
@@ -339,7 +347,8 @@ router.post('/', async (req, res, next) => {
       bank_details,
       installments: requestedInstallments,
       fileBase64,
-      fileName
+      fileName,
+      receipt: receiptRequest
     } = req.body;
 
     if (!date) {
@@ -447,6 +456,12 @@ router.post('/', async (req, res, next) => {
     const transactionId = result.lastInsertRowid;
     const newTransaction = get('SELECT * FROM transactions WHERE id = ?', [transactionId]);
 
+    // Receipt requested: record it as 'pending' now; it is issued in the
+    // background below, after the AI extraction filled in the payment references.
+    const receiptOptions = type === 'income' ? parseReceiptRequest(receiptRequest, category) : null;
+    if (receiptOptions) saveCustomerReceiptName(finalCustomerId, receiptOptions.customerName);
+    const pendingReceipt = receiptOptions ? requestReceipt(transactionId, receiptOptions) : null;
+
     // Save expense receipt file to local storage (uploads/expenses/YEAR/CATEGORY/)
     if (type === 'expense' && fileBase64) {
       try {
@@ -479,12 +494,13 @@ router.post('/', async (req, res, next) => {
     res.status(201).json({
       success: true,
       message: type === 'income' ? 'הכנסה נוספה בהצלחה' : 'הוצאה נוספה בהצלחה',
-      data: { transaction: newTransaction, emailSent: isEmailEnabled() }
+      data: { transaction: newTransaction, emailSent: isEmailEnabled(), receipt: pendingReceipt }
     });
 
     // 🌟 BACKGROUND PROCESSING: AI + Email
     // This code runs asynchronously after res.send() finishes
     (async () => {
+      let issuedReceipt = null;
       try {
         let aiUpdated = false;
 
@@ -545,7 +561,11 @@ router.post('/', async (req, res, next) => {
           }
         }
 
-        // 2. Send Notifications (Only after AI updated DB)
+        // 2. Issue the receipt (after AI, so its references are on it), before the
+        //    notification so the receipt goes out in the same email.
+        if (pendingReceipt) issuedReceipt = await issueReceipt(pendingReceipt.id);
+
+        // 3. Send Notifications (Only after AI updated DB)
         if (type === 'income' && isEmailEnabled()) {
           let customerPhone = null;
           let customerEmail = null;
@@ -567,7 +587,8 @@ router.post('/', async (req, res, next) => {
             bankDetails,
             installments,
             fileBase64,
-            fileName
+            fileName,
+            receipt: await buildReceiptEmailInfo(issuedReceipt)
           });
         }
 
@@ -586,6 +607,9 @@ router.post('/', async (req, res, next) => {
         }
       } catch (backgroundError) {
         console.error('Background AI/Email processing failed:', backgroundError);
+      } finally {
+        // Issue the receipt even if the AI step failed before reaching it (issueReceipt never throws).
+        if (pendingReceipt && !issuedReceipt) await issueReceipt(pendingReceipt.id);
       }
     })(); // End of Background Promise
 
@@ -698,6 +722,15 @@ router.put('/:id', (req, res, next) => {
 
     const updatedTransaction = get('SELECT * FROM transactions WHERE id = ?', [id]);
 
+    // A legal receipt cannot be edited. If one was already issued and the
+    // amount or payment method changed, tell the user it still shows the old details.
+    const issuedReceipt = getReceiptByTransactionId(id);
+    const receiptWarning = issuedReceipt?.status === 'issued' && !issuedReceipt.is_test &&
+      (existing.amount !== updatedTransaction.amount || existing.payment_method !== updatedTransaction.payment_method ||
+        existing.customer_id !== updatedTransaction.customer_id)
+      ? `שימי לב: קבלה ${issuedReceipt.document_number || ''} כבר הופקה עם הפרטים הקודמים ולא השתנתה. לתיקון יש לבטל אותה בפורטל SmartInvoice.`
+      : null;
+
     // Recompute paid_amount for any order(s) affected by this edit.
     // We need to cover two cases:
     //   1. The transaction was already linked to an order (existing.order_id).
@@ -738,7 +771,7 @@ router.put('/:id', (req, res, next) => {
     res.json({
       success: true,
       message: 'עסקה עודכנה בהצלחה',
-      data: { transaction: updatedTransaction }
+      data: { transaction: updatedTransaction, receiptWarning }
     });
 
     // 🌟 BACKGROUND PROCESSING: Syncing updates to Drive and Sending Emails
@@ -886,15 +919,23 @@ router.delete('/:id', (req, res, next) => {
       throw new ApiError(404, 'עסקה לא נמצאה');
     }
 
+    // The receipts row survives the delete (FK ON DELETE SET NULL). A real
+    // receipt is a legal document and is never cancelled automatically.
+    const issuedReceipt = getReceiptByTransactionId(id);
+
     run('DELETE FROM transactions WHERE id = ?', [id]);
 
     // If this income transaction was linked to an order, recompute the
     // order's paid_amount now that the row no longer exists.
     recomputeOrderPaidAmount(existing.order_id);
 
+    const receiptNotice = issuedReceipt?.status === 'issued' && !issuedReceipt.is_test
+      ? `. שימי לב: קבלה ${issuedReceipt.document_number || ''} שהופקה לתנועה לא בוטלה. יש לבטל אותה בפורטל SmartInvoice אם צריך.`
+      : '';
+
     res.json({
       success: true,
-      message: 'עסקה נמחקה בהצלחה'
+      message: `עסקה נמחקה בהצלחה${receiptNotice}`
     });
 
   } catch (error) {

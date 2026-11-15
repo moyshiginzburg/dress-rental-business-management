@@ -18,7 +18,7 @@
 #   9. Installs cron jobs (auto-update every minute, backup every hour)
 #
 # Prerequisites:
-#   - Fresh Ubuntu 22.04+ with root/sudo
+#   - Fresh Ubuntu 24.04+ with root/sudo (nginx 1.19.4+ for ssl_reject_handshake)
 #   - .env and rclone.conf content ready to paste
 #   - Access to GitHub repo settings (add deploy key)
 #   - Valid email for Let's Encrypt registration
@@ -178,7 +178,7 @@ if rclone listremotes 2>/dev/null | grep -q "^gdrive:"; then
         warn "No backup found. Starting with empty data."
     fi
 else
-    warn "rclone remote 'moyshi' not found. Skip restore."
+    warn "rclone remote 'gdrive' not found. Skip restore."
 fi
 
 # =============================================================================
@@ -199,7 +199,7 @@ bash "$INSTALL_DIR/scripts/start-app.sh"
 
 # Health check
 sleep 5
-if curl -sf http://localhost:3001/api/health > /dev/null 2>&1; then
+if curl -sf http://127.0.0.1:3001/api/health > /dev/null 2>&1; then
     log "Backend: healthy (port 3001)"
 else
     error "Backend not responding! Check: pm2 logs dress-backend"
@@ -275,24 +275,67 @@ else
     PUBLIC_URL="http://${SSLIP_DOMAIN} (SSL pending)"
 fi
 
+# Origin secret: only the Vercel site may use the backend (see scripts/nginx/origin-secret.conf.template).
+# The same value must be set as the ORIGIN_SECRET environment variable of the Vercel project.
+# An empty value counts as missing: an empty secret would let requests without the header through.
+# ensure_secret NAME -> returns 0 when a new value was generated.
+ensure_secret() {
+    if grep -qE "^$1=.+" "$ENV_FILE" 2>/dev/null; then
+        return 1
+    fi
+    sed -i "/^$1=[[:space:]]*$/d" "$ENV_FILE"
+    echo "$1=$(openssl rand -hex 32)" >> "$ENV_FILE"
+    return 0
+}
+if ensure_secret ORIGIN_SECRET; then
+    warn "Generated ORIGIN_SECRET in $ENV_FILE - add the SAME value to the Vercel project env vars, then redeploy."
+fi
+# Google Apps Script log shipping uses its own secret (apps_script/Secrets.js must hold the same value).
+if ensure_secret GAS_LOG_SECRET; then
+    warn "Generated GAS_LOG_SECRET in $ENV_FILE - put the SAME value in apps_script/Secrets.js and clasp push + redeploy the web app."
+fi
+ORIGIN_SECRET=$(grep -E '^ORIGIN_SECRET=.+' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '\r')
+GAS_LOG_SECRET=$(grep -E '^GAS_LOG_SECRET=.+' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '\r')
+sed -e "s/__ORIGIN_SECRET__/${ORIGIN_SECRET}/" -e "s/__GAS_LOG_SECRET__/${GAS_LOG_SECRET}/" \
+    "$INSTALL_DIR/scripts/nginx/origin-secret.conf.template" > /etc/nginx/conf.d/dress-origin.conf
+chmod 640 /etc/nginx/conf.d/dress-origin.conf
+log "nginx: origin-secret map installed (/etc/nginx/conf.d/dress-origin.conf)"
+
 # Harden nginx config: add security headers and bind to specific IP to avoid conflicts
 PUBLIC_IP_ESC=$(echo "$PUBLIC_IP" | sed 's/\./\\./g')
 cat > /tmp/dress-rental-nginx-final.conf << NGINXEOF
 # Dress Rental Business Management - Backend Reverse Proxy
 # nginx + Let's Encrypt SSL on ${SSLIP_DOMAIN}
-# Replaces old Tailscale Funnel setup.
+
+# Default server block: reject direct IP access or unknown host headers with HTTP 444
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    return 444;
+}
 
 server {
-    listen ${PUBLIC_IP}:80;
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    server_name _;
+    ssl_reject_handshake on;
+    return 444;
+}
+
+# Main server block for ${SSLIP_DOMAIN}
+server {
+    listen 80;
+    listen [::]:80;
     server_name ${SSLIP_DOMAIN};
     if (\$host = ${SSLIP_DOMAIN}) {
         return 301 https://\$host\$request_uri;
     }
-    return 404;
+    return 444;
 }
 
 server {
-    listen ${PUBLIC_IP}:443 ssl http2;
+    listen 443 ssl http2;
     server_name ${SSLIP_DOMAIN};
 
     ssl_certificate /etc/letsencrypt/live/${SSLIP_DOMAIN}/fullchain.pem;
@@ -301,20 +344,35 @@ server {
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
     server_tokens off;
+    access_log /var/log/nginx/access.log;
+    access_log /var/log/nginx/dress-origin.log dress_origin;
     add_header X-Frame-Options DENY always;
     add_header X-Content-Type-Options nosniff always;
     add_header X-XSS-Protection "1; mode=block" always;
     add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
+    # Block common bot scanning extensions and paths instantly with HTTP 444
+    location ~* \.(php|asp|aspx|jsp|cgi|env|git|htaccess|config|xml|yml|yaml|sql)$ {
+        return 444;
+    }
+
+    location ~* ^/(wp-login|wp-admin|wp-content|wp-includes|cgi-bin|phpmyadmin|pma|myadmin|admin|setup|owa|dana-na|actuator|metrics)/ {
+        return 444;
+    }
+
     location / {
+        # Only the Vercel site (shared secret header) may use the backend; see conf.d/dress-origin.conf.
+        if (\$origin_deny) {
+            return 444;
+        }
         proxy_pass http://127.0.0.1:${BACKEND_PORT};
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection 'upgrade';
         proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Real-IP \$origin_client_ip;
+        proxy_set_header X-Forwarded-For \$origin_client_ip;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_read_timeout 120s;
         proxy_connect_timeout 10s;

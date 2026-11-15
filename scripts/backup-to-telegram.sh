@@ -24,7 +24,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 ENV_FILE="$PROJECT_DIR/local_data/.env"
-DB_PATH="$PROJECT_DIR/local_data/backend_data/backend_data.db"
+DB_PATH="$PROJECT_DIR/local_data/backend_data/business.db"
 LOG_FILE="$PROJECT_DIR/local_data/logs/telegram-backup.log"
 MARKER_FILE="$PROJECT_DIR/local_data/.last_telegram_db_backup"
 
@@ -91,7 +91,7 @@ fi
 DB_SIZE="$(du -sh "$DB_PATH" 2>/dev/null | cut -f1)"
 DATE_LABEL="$(date '+%Y-%m-%d')"
 CAPTION="DB backup - ${DATE_LABEL} | Size: ${DB_SIZE}"
-FILENAME="backend_data-${DATE_LABEL}.db"
+FILENAME="business-${DATE_LABEL}.db"
 
 log "Sending DB backup to Telegram (size: ${DB_SIZE})..."
 

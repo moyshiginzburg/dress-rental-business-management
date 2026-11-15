@@ -23,6 +23,10 @@ dotenv.config({ path: join(DATA_DIR, '.env') });
 // Server configuration
 export const serverConfig = {
   port: parseInt(process.env.PORT || '3001', 10),
+  // Interface the HTTP server binds to. Loopback only by default: nginx on the same
+  // machine is the only legitimate client, so the API is never reachable directly
+  // from the network even if a firewall rule is opened by mistake.
+  bindHost: process.env.BIND_HOST || '127.0.0.1',
   nodeEnv: process.env.NODE_ENV || 'development',
   frontendUrl: process.env.FRONTEND_URL || 'http://localhost:3000',
   publicFrontendUrl: process.env.PUBLIC_FRONTEND_URL || '',
@@ -57,6 +61,9 @@ export const businessConfig = {
 export const appsScriptConfig = {
   webAppUrl: process.env.APPS_SCRIPT_WEB_APP_URL || '',
   enabled: !!process.env.APPS_SCRIPT_WEB_APP_URL,
+  // Shared secret the Apps Script project sends (header X-Gas-Log-Secret) when it posts log
+  // lines to /api/apps-script-logs. Without it the route refuses everything.
+  logSecret: (process.env.GAS_LOG_SECRET || '').trim(),
 };
 
 // AI Configuration
@@ -66,6 +73,27 @@ export const aiConfig = {
     .split(',')
     .map((m) => m.trim())
     .filter(Boolean),
+};
+
+// SmartInvoice configuration (automatic receipts for income transactions).
+// An sk_live_ key issues real, legally numbered receipts. With an sk_test_ key
+// SmartInvoice only dry-runs, which the app reports as a failed receipt (alert);
+// testMode is used internally only (idempotency-key prefix). No key = feature off.
+const smartInvoiceApiKey = (process.env.SMARTINVOICE_API_KEY || '').trim();
+export const smartInvoiceConfig = {
+  apiKey: smartInvoiceApiKey,
+  baseUrl: (process.env.SMARTINVOICE_BASE_URL || 'https://smartinvoices.co.il/smartinvoice/api/v1').replace(/\/+$/, ''),
+  enabled: /^sk_(live|test)_/.test(smartInvoiceApiKey),
+  testMode: smartInvoiceApiKey.startsWith('sk_test_'),
+  timeoutMs: 30000,
+};
+
+// Web Push Configuration
+export const pushConfig = {
+  publicKey: process.env.VAPID_PUBLIC_KEY || '',
+  privateKey: process.env.VAPID_PRIVATE_KEY || '',
+  // Contact the push services can use (mailto: or https:), required by the Web Push protocol
+  email: process.env.VAPID_EMAIL || 'mailto:admin@example.com',
 };
 
 // Local file storage (synced with Google Drive).
@@ -90,6 +118,7 @@ export const uploadConfig = {
   agreementsDir: join(DATA_DIR, 'uploads', 'agreements'),
   dressesDir: join(DATA_DIR, 'uploads', 'dresses'),
   orderAttachmentsDir: join(DATA_DIR, 'uploads', 'order_attachments'),
+  receiptsDir: join(DATA_DIR, 'uploads', 'receipts'), // receipt PDFs (local copy, served to the app / customers)
   maxFileSize: 5 * 1024 * 1024, // 5MB
   allowedImageTypes: ['image/jpeg', 'image/png', 'image/webp'],
 };
@@ -102,4 +131,5 @@ export default {
   business: businessConfig,
   upload: uploadConfig,
   localStorage: localStorageConfig,
+  push: pushConfig,
 };

@@ -8,6 +8,12 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(self.clients.claim());
 });
 
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
+});
+
 function getCacheRequest(url) {
   return new Request(`${url.origin}${url.pathname}`, { method: 'GET' });
 }
@@ -76,4 +82,66 @@ self.addEventListener('fetch', (event) => {
   if (request.method === 'GET' && url.pathname.startsWith('/share-target/data/')) {
     event.respondWith(handleSharedDataRequest(url));
   }
+});
+
+// Push notification received
+self.addEventListener('push', (event) => {
+  if (!event.data) return;
+
+  try {
+    const payload = event.data.json();
+    const options = {
+      body: payload.body,
+      data: payload.data, // Contains url, whatsappUrl, etc.
+      icon: '/logo.png',
+      actions: payload.actions || [],
+      vibrate: [200, 100, 200],
+      requireInteraction: true
+    };
+
+    event.waitUntil(
+      self.registration.showNotification(payload.title, options)
+    );
+  } catch (error) {
+    console.error('Error processing push event:', error);
+  }
+});
+
+// Push notification clicked: open the order, or (WhatsApp action) open the app window with the
+// WhatsApp link, which the orders page then follows - Android only launches the WhatsApp app
+// from a page. openWindow() is tried first because it also brings a background app to the front.
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+
+  const data = event.notification.data || {};
+  const action = event.action;
+
+  let targetUrl = '/dashboard/orders';
+
+  if (action === 'whatsapp' && data.whatsappUrl) {
+    targetUrl = `/dashboard/orders?id=${data.orderId || ''}&whatsappUrl=${encodeURIComponent(data.whatsappUrl)}`;
+  } else if (data.url) {
+    targetUrl = data.url;
+  }
+
+  const absoluteUrl = new URL(targetUrl, self.location.origin).href;
+
+  event.waitUntil(
+    (async () => {
+      if (self.clients.openWindow) {
+        const newClient = await self.clients.openWindow(absoluteUrl);
+        if (newClient && 'focus' in newClient) {
+          return newClient.focus();
+        }
+      }
+
+      const clientList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      for (const client of clientList) {
+        if ('focus' in client) {
+          await client.navigate(absoluteUrl);
+          return client.focus();
+        }
+      }
+    })()
+  );
 });

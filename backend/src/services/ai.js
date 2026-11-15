@@ -5,7 +5,7 @@
  */
 
 import fetch from 'node-fetch';
-import { aiConfig } from '../config/index.js';
+import { aiConfig, businessConfig } from '../config/index.js';
 import { normalizeMethodCode } from './paymentDetails.js';
 
 const API_KEY = aiConfig.apiKey;
@@ -110,28 +110,31 @@ export async function extractReceiptDetails(fileBuffer, mimeType, expectedPaymen
 
     const methodHint = normalizeMethodCode(expectedPaymentMethod);
 
-    const bankIgnorePrompt = businessConfig.bankNumber && businessConfig.bankBranch && businessConfig.bankAccount
-      ? `CRITICAL: Ignore the target/recipient account details if they match:
-      - Bank: ${businessConfig.bankNumber}
-      - Branch: ${businessConfig.bankBranch}
-      - Account: ${businessConfig.bankAccount}
-      I need the *sender's* details (the payer), not the business owner's details.`
-      : `CRITICAL: If the document contains bank details for BOTH the sender and the recipient, 
-      ignore the recipient (business) details and extract only the sender's details.
-      I need the *sender's* details (the payer), not the business owner's details.`;
+    // Optional extra hint: the business's own (recipient) account, set in .env
+    // (BUSINESS_BANK_NUMBER / BUSINESS_BANK_BRANCH / BUSINESS_BANK_ACCOUNT). It is never the
+    // payer's account, so the model must not return it as the sender's details.
+    const businessAccountPrompt = businessConfig.bankNumber && businessConfig.bankBranch && businessConfig.bankAccount
+      ? `5. The business's own account (the RECIPIENT, never the sender) is: Bank ${businessConfig.bankNumber}, Branch ${businessConfig.bankBranch}, Account ${businessConfig.bankAccount}. Never return these numbers as bankDetails.`
+      : '';
 
     const prompt = `
-      Analyze this image of a payment receipt/confirmation. 
+      Analyze this image of a payment receipt or bank transfer screenshot.
       Payment method hint from system (if provided): ${methodHint || 'none'}.
       Identify payment method code as one of: cash, bit, paybox, credit, transfer, check.
+      
       Extract the following fields if visible:
-      - confirmation_number (אסמכתא / אישור / מספר פעולה) - REMOVE HYPHENS/DASHES if present.
+      - confirmation_number (אסמכתא / אישור / מספר פעולה / מספר אסמכתא) - REMOVE ALL HYPHENS/DASHES if present.
       - last_four_digits (4 ספרות אחרונות של כרטיס אשראי)
       - check_number (מספר צ'ק)
       - installments (מספר תשלומים - default to 1 if not specified or if it's a single payment)
-      - bank_details: Extract bank number, branch number, and account number separately if present.
-      
-      ${bankIgnorePrompt}
+      - bank_details: Extract bank details of the SENDER / PAYER only.
+
+      CRITICAL INSTRUCTIONS FOR BANK DETAILS (פרטי העברה בנקאית):
+      1. Distinguish between SENDER (פרטי המעביר / חשבון מחויב / מקור) and RECIPIENT (פרטי המוטב / מקבל / יעד / חשבון זיכוי).
+      2. IGNORE recipient/beneficiary details completely. Extract bankDetails ONLY from the sender/payer section.
+      3. For bankDetails.bank: Extract the sender's bank number or bank name ONLY if it is explicitly written under the sender's details. If the sender section lists only branch (סניף) and account (חשבון) without explicitly stating a bank code or bank name, set "bank": null.
+      4. ZERO GUESSING & ANTI-HALLUCINATION: ABSOLUTELY NEVER copy, borrow, or infer bank codes from the recipient section, and NEVER fill in missing numbers that are not explicitly written for the sender.
+      ${businessAccountPrompt}
 
       IMPORTANT method-specific behavior:
       - credit: prioritize confirmation_number + last_four_digits + installments

@@ -9,6 +9,7 @@ import { Router } from 'express';
 import { all, get } from '../db/database.js';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
 import { ApiError } from '../middleware/errorHandler.js';
+import { israelTodayIso } from '../utils/israelDate.js';
 
 const router = Router();
 
@@ -651,8 +652,8 @@ router.get('/csv', (req, res, next) => {
     }
 
     const csvContent = rowsToCsv(rows, columns);
-    const datePart = new Date().toISOString().slice(0, 10);
-    const fileName = `eti-${datasetKey}-${datePart}.csv`;
+    const datePart = israelTodayIso();
+    const fileName = `${datasetKey}-${datePart}.csv`;
 
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);

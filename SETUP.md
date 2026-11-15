@@ -60,7 +60,7 @@ The production system runs on a VPS: backend via pm2, frontend on Vercel, nginx 
 ### Architecture
 
 ```
-VPS (Ubuntu 22.04+)
+VPS (Ubuntu 24.04+)
 ├── Backend (pm2)     → port 3001 (internal only)
 ├── nginx             → :80 (redirect) + :443 HTTPS (Let's Encrypt)
 │                       proxies all traffic to :3001
@@ -81,7 +81,7 @@ Vercel (frontend) → NEXT_PUBLIC_API_URL = https://YOUR-VPS-IP-WITH-DASHES.ssli
 | `/root/dress-rental-business-management/` | Project root (Git repo) |
 | `/root/dress-rental-business-management/local_data/` | All persistent data |
 | `/root/dress-rental-business-management/local_data/.env` | Secrets |
-| `/root/dress-rental-business-management/local_data/backend_data/backend_data.db` | Database |
+| `/root/dress-rental-business-management/local_data/backend_data/business.db` | Database |
 | `/root/dress-rental-business-management/local_data/logs/` | Application + sync logs |
 | `/root/.config/rclone/rclone.conf` | Google Drive authentication |
 
@@ -157,6 +157,52 @@ certbot renew
 
 Logs older than 30 days are automatically deleted by the logger. No separate cron needed.
 
+### Automatic Receipts (SmartInvoice) — optional
+
+Receipts (קבלה) for income can be issued automatically through [SmartInvoice](https://smartinvoices.co.il)
+(integration notes: `docs/SMARTINVOICE.md`). The feature is controlled by one variable in `local_data/.env`:
+
+```bash
+SMARTINVOICE_API_KEY=sk_live_...   # real, legally numbered receipts (cannot be deleted)
+# SMARTINVOICE_API_KEY=sk_test_... # sandbox key: every receipt FAILS with a Telegram alert ("מפתח בדיקה"),
+#                                  # nothing is issued or blocked - used to test the failure/alert path
+# (no value)                       # feature hidden in the UI, no receipts issued
+```
+
+The `receipts` table and the `customers.receipt_name` column are created automatically on backend start
+(no manual migration). The app has no "test mode" in the UI.
+
+**Turning it on with a live key:**
+1. Apps Script must run the current code: after `clasp push`, update the Web App deployment to a new version
+   (Deploy → Manage deployments → edit → New version). Otherwise the Drive copy is saved as image/jpeg and the
+   owner email has no receipt.
+2. Create an `sk_live_` key in the SmartInvoice portal with all scopes, or at least `documents:create` and `documents:read`.
+3. Re-check the provider's live docs (`https://smartinvoices.co.il/docs.html`) against `docs/SMARTINVOICE.md`.
+4. On the VPS: back up `.env`, set `SMARTINVOICE_API_KEY`, then `pm2 restart dress-backend`.
+5. Check the backend log after the restart (`pm2 logs dress-backend`): no errors.
+6. Issue one small real receipt (transaction edit page → "שמירה והפקת קבלה") and verify: the number matches
+   your SmartInvoice numbering, the PDF opens (button + WhatsApp link), the Drive copy opens as a PDF, the owner
+   email arrives with the PDF, the customer gets exactly one email (if she has an address), and no
+   "חסרה פרטים" Telegram alert arrived (that alert means the live response shape differs from the expected one).
+
+### Dress Return Reminders (Web Push) — optional
+
+Rental items can be marked as returned in the order view. With VAPID keys configured, every device on which
+the owner is logged in to the app gets a push notification each morning (09:00 Israel time, Sunday–Friday)
+for rental dresses still not returned 2+ business days after the event, with a one-tap WhatsApp reminder.
+
+```bash
+npx web-push generate-vapid-keys        # once, on any machine with Node.js
+# then in local_data/.env on the VPS:
+VAPID_PUBLIC_KEY=...
+VAPID_PRIVATE_KEY=...
+VAPID_EMAIL=mailto:your-email@example.com
+pm2 restart dress-backend
+```
+
+The browser asks for notification permission after login (installed PWA recommended on phones).
+Without the keys the feature is off; marking dresses as returned still works.
+
 ---
 
 ## Migrating to a New Server
@@ -187,8 +233,9 @@ The Vercel deployment serves the frontend for nice customer-facing URLs.
 | Variable | Value | Purpose |
 |----------|-------|---------|
 | `NEXT_PUBLIC_API_URL` | `https://YOUR-VPS-IP-WITH-DASHES.sslip.io/api` | Points to VPS backend via nginx. Used for: (1) API calls from the frontend; (2) rewrites—`next.config.js` derives the backend base URL from this to proxy `/api/*` and `/uploads/*` (images, agreements, signatures) to the VPS. |
+| `ORIGIN_SECRET` | same value as `ORIGIN_SECRET` in the VPS `local_data/.env` | Sent by the middleware as the `x-origin-secret` header; required when the VPS was set up with the origin secret (see "Origin secret" below). Mark it sensitive. |
 
-**This is the only required variable.** Images and files use relative paths (`/uploads/...`); Vercel's rewrites proxy them to the VPS using the URL derived from `NEXT_PUBLIC_API_URL`.
+`NEXT_PUBLIC_API_URL` is always required, `ORIGIN_SECRET` whenever the VPS nginx checks it. Images and files use relative paths (`/uploads/...`); Vercel's rewrites proxy them to the VPS using the URL derived from `NEXT_PUBLIC_API_URL`.
 
 **After changing env vars**: Trigger a new deployment (Deployments → Redeploy). If images still don't load, use "Clear cache and deploy" or set `VERCEL_FORCE_NO_BUILD_CACHE=1` to force a clean build.
 
@@ -228,7 +275,7 @@ The agreement URL is set in `backend/src/routes/agreements.js` (`FORCED_PUBLIC_F
 
 - **Frequency**: Daily at 03:00 (cron job)
 - **Script**: `scripts/backup-to-telegram.sh`
-- **What's sent**: The `backend_data.db` file as a Telegram document
+- **What's sent**: The `business.db` file as a Telegram document
 - **Caption**: Date + file size
 - **Failure alert**: Sends Telegram text alert if upload fails
 
@@ -327,6 +374,27 @@ Apps Script logs are sent to the backend at `/api/apps-script-logs/batch`. View 
 
 ---
 
+
+### Origin secret (only Vercel may use the backend)
+
+- **What:** nginx drops every backend request that does not carry the header `x-origin-secret`, which the Vercel middleware (`frontend/src/middleware.ts`) adds. Exempt: `/api/health`. `/api/apps-script-logs[/batch]` is open only to Google Apps Script, with its own secret `X-Gas-Log-Secret` (see "Apps Script log secret" below). A direct `curl https://YOUR-VPS-IP-WITH-DASHES.sslip.io/api/customers` therefore returns nothing (HTTP 444); `/api/health` still works for checks. nginx also hands the backend the real visitor IP (Vercel's `X-Vercel-Proxied-For`), so IP-based limits and logs cannot be fooled by a forged `X-Forwarded-For`.
+- **Where the secret lives:** Vercel project env var `ORIGIN_SECRET` (sensitive, production + preview), `/etc/nginx/conf.d/dress-origin.conf` (root-only, generated from `scripts/nginx/origin-secret.conf.template`), and `ORIGIN_SECRET=` in `local_data/.env` on the VPS (the copy `scripts/setup-new-server.sh` reads).
+- **New server:** `scripts/setup-new-server.sh` generates the secret (when `.env` has none, or an empty one), installs the nginx file and prints a warning: add the same value to the Vercel env vars and redeploy the frontend, otherwise the site cannot reach the backend.
+- **Existing server (set up before this feature):** nothing changes until you opt in. To enable it: add `ORIGIN_SECRET=<openssl rand -hex 32>` and `GAS_LOG_SECRET=<openssl rand -hex 32>` to `local_data/.env`; set `ORIGIN_SECRET` in Vercel and redeploy; generate `/etc/nginx/conf.d/dress-origin.conf` from the template (replace `__ORIGIN_SECRET__` and `__GAS_LOG_SECRET__`); apply the `location /` changes from the nginx block in `scripts/setup-new-server.sh` (`if ($origin_deny)`, `X-Real-IP` / `X-Forwarded-For` = `$origin_client_ip`, the `dress-origin.log` access log); then `sudo nginx -t && sudo systemctl reload nginx`.
+- **Rotate:** generate a new value (`openssl rand -hex 32`), update the Vercel env var and **redeploy**, update `local_data/.env`, regenerate `/etc/nginx/conf.d/dress-origin.conf` from the template, `sudo nginx -t && sudo systemctl reload nginx`. Between the two updates the site returns errors, so do it in one sitting.
+- **Watch it:** `sudo tail -f /var/log/nginx/dress-origin.log` (`ok=1` = came through Vercel, `deny=1` = refused).
+- **Emergency rollback (site down because of the secret):** in `/etc/nginx/sites-available/dress-backend` remove the `if ($origin_deny) { return 444; }` block, then `sudo nginx -t && sudo systemctl reload nginx`.
+- **New callers:** anything else that must call the backend directly needs its path added to the exemptions in the `$origin_deny` map (or must send the secret).
+- **Requirement:** nginx 1.19.4 or newer (`ssl_reject_handshake`), i.e. Ubuntu 24.04 or Debian 12.
+
+### Apps Script log secret
+
+- **What:** only the Apps Script web app may write to `/api/apps-script-logs[/batch]`: it sends `X-Gas-Log-Secret` (`GAS_LOG_SECRET`). nginx refuses everything else on that path (even via the Vercel site), and the backend route checks it again (when `GAS_LOG_SECRET` is not set, the route refuses everything). Nobody can read those logs through the web.
+- **Where the secret lives:** `apps_script/Secrets.js` (gitignored, pushed with `clasp push`; copy it from `Secrets.js.example`), `GAS_LOG_SECRET=` in `local_data/.env` on the VPS, and `/etc/nginx/conf.d/dress-origin.conf`.
+- **Deploy after changing `apps_script/`:** `cd apps_script && clasp push`, then in the Apps Script editor: Deploy -> Manage deployments -> pencil on the active deployment -> Version: **New version** -> Deploy. Prefer the editor over `clasp deploy -i <id>`, which can leave the web app answering HTTP 403 until the deployment is saved again in the editor.
+- **Rotate:** new value in all three places, `clasp push`, new deployment version, reload nginx, restart the backend (`pm2 restart dress-backend`).
+- **Check it works:** `sudo grep "apps-script-logs" /var/log/nginx/dress-origin.log | tail` should show `gas=1 deny=0`, status 200.
+
 ## Troubleshooting
 
 ### Backend Keeps Restarting
@@ -338,6 +406,29 @@ ssh root@YOUR_VPS_IP "pm2 logs dress-backend --lines 50"
 ```
 
 Common causes: missing `.env`, corrupted database, broken dependency install.
+
+### Receipt Failed ("קבלה נכשלה")
+
+The reason is stored in `receipts.error_message` (shown on the transaction edit page, and sent to Telegram as an ERROR).
+Common causes: cash above the legal limit (`cash_law_blocked`), invalid key (`invalid_token`), monthly quota
+(`api_quota_exceeded`), SmartInvoice unreachable (`network_error`). A bank transfer without details does not fail:
+it is sent with reference "0"; PayBox / other methods are sent as a bank transfer with the method name in the reference.
+The exact technical reason (per attempt: `timeout after 30000ms`, `fetch failed (ECONNRESET ...)`, `HTTP 502`, ...)
+is in the log entry's `details.technicalDetail` and in the `pm2 logs` lines starting with `SmartInvoice POST /documents:`.
+To tell an outage on SmartInvoice's side from a problem on ours, run from the VPS and from another network:
+`curl -m 30 -o /dev/null -w "%{http_code} %{time_total}\n" https://smartinvoices.co.il/smartinvoice/api/v1/documents`.
+A timeout or 502 from both places (while `https://smartinvoices.co.il/` itself loads) means their API is down.
+Every failure also sends a Telegram alert ("🧾❌ קבלה לא הופקה") with a direct link to the edit page; receipts stuck
+in 'pending' (e.g. after a restart) are retried automatically every 5 minutes. A live receipt whose PDF could not be
+saved to Google Drive sends "📁⚠️ קבלה הופקה אבל לא נשמרה בגוגל דרייב".
+When the failure is a SmartInvoice outage (no connection, 5xx, rate limit), the alert adds "כשמערכת הקבלות תחזור
+לפעול תישלח הודעה נוספת": an outage watcher checks SmartInvoice every 5 minutes (read-only) and, once it answers,
+sends ONE message "✅🧾 מערכת הקבלות (SmartInvoice) חזרה לפעול" with the receipts still not issued and their edit
+links. Nothing is issued automatically. The watcher is rebuilt on every backend start from failures of the last
+24 hours, so after a restart the message may come once more. Follow it in `pm2 logs dress-backend` (lines starting
+with `Receipt outage watch:`) and in the activity log (`entityType: receipt_outage_watch`).
+Fix the transaction details and press "שמירה וניסיון חוזר להפקת קבלה" on the edit page. Retries are idempotent:
+they can never create a duplicate receipt.
 
 ### Frontend Not Loading via Vercel
 

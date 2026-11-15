@@ -11,7 +11,7 @@
  * The delete button has been removed entirely in favour of the merge flow.
  */
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { Card, CardContent } from "@/components/ui/card";
@@ -104,17 +104,50 @@ function isDressBookable(status: string) {
   return status === "available";
 }
 
+/**
+ * sessionStorage key for the list state saved before opening the edit page.
+ * When the user returns (save or cancel), the list restores its filters,
+ * view mode and scroll position instead of jumping back to the top.
+ */
+const LIST_STATE_KEY = "dresses-list-state";
+
+interface SavedListState {
+  scrollY: number;
+  search: string;
+  statusFilter: string;
+  intendedUseFilter: string;
+  sortBy: string;
+  sortOrder: string;
+  viewMode: "list" | "grid";
+}
+
+/** Read (and remove) the saved list state, so it is applied only once. */
+function takeSavedListState(): SavedListState | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(LIST_STATE_KEY);
+    if (!raw) return null;
+    sessionStorage.removeItem(LIST_STATE_KEY);
+    return JSON.parse(raw) as SavedListState;
+  } catch {
+    return null;
+  }
+}
+
 export default function DressesPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { toast } = useToast();
-  const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<string>("");
-  const [intendedUseFilter, setIntendedUseFilter] = useState<string>("");
-  const [sortBy, setSortBy] = useState<string>("last_active_date");
-  const [sortOrder, setSortOrder] = useState<string>("desc");
+  // Saved state from before opening the edit page (read once on mount)
+  const [savedState] = useState<SavedListState | null>(() => takeSavedListState());
+  const pendingScrollRef = useRef<number | null>(savedState?.scrollY ?? null);
+  const [search, setSearch] = useState(savedState?.search ?? "");
+  const [statusFilter, setStatusFilter] = useState<string>(savedState?.statusFilter ?? "");
+  const [intendedUseFilter, setIntendedUseFilter] = useState<string>(savedState?.intendedUseFilter ?? "");
+  const [sortBy, setSortBy] = useState<string>(savedState?.sortBy ?? "last_active_date");
+  const [sortOrder, setSortOrder] = useState<string>(savedState?.sortOrder ?? "desc");
   // View mode: "list" (default, compact rows) or "grid" (original card tiles)
-  const [viewMode, setViewMode] = useState<"list" | "grid">("list");
+  const [viewMode, setViewMode] = useState<"list" | "grid">(savedState?.viewMode ?? "list");
 
   const [viewingDress, setViewingDress] = useState<DressDetailData | null>(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
@@ -144,7 +177,7 @@ export default function DressesPage() {
     }
   }, [searchParams, router, toast]);
 
-  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState(savedState?.search ?? "");
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(search), 300);
@@ -160,10 +193,30 @@ export default function DressesPage() {
       sortBy: sortBy,
       sortOrder: sortOrder,
       limit: 1000,
-    })
+    }),
+    { keepPreviousData: true }
   );
 
   const dresses = dressesRes?.success && dressesRes.data ? (dressesRes.data as any).dresses as Dress[] : [];
+
+  /** Save the list state and open the edit page of a dress. */
+  const goToEdit = (id: number) => {
+    try {
+      const state: SavedListState = {
+        scrollY: window.scrollY, search, statusFilter, intendedUseFilter, sortBy, sortOrder, viewMode,
+      };
+      sessionStorage.setItem(LIST_STATE_KEY, JSON.stringify(state));
+    } catch { /* storage unavailable - just navigate */ }
+    router.push(`/dashboard/dresses/${id}/edit`);
+  };
+
+  // After returning from the edit page, scroll back once the list is rendered.
+  useEffect(() => {
+    if (pendingScrollRef.current === null || dresses.length === 0) return;
+    const y = pendingScrollRef.current;
+    pendingScrollRef.current = null;
+    requestAnimationFrame(() => window.scrollTo(0, y));
+  }, [dresses.length]);
 
   const viewDress = async (id: number) => {
     setLoadingDetails(true);
@@ -235,7 +288,7 @@ export default function DressesPage() {
 
   const bookableCount = dresses.filter((dress) => isDressBookable(dress.status)).length;
 
-  if (loading) {
+  if (loading && !dressesRes) {
     return (
       <div className="flex items-center justify-center h-[60vh]">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
@@ -364,7 +417,7 @@ export default function DressesPage() {
               onClick={() => {
                 if (isSelectionMode) { toggleSelection(dress.id); return; }
                 if (searchParams.get("share_context") === "dress_edit") {
-                  router.push(`/dashboard/dresses/${dress.id}/edit`);
+                  goToEdit(dress.id);
                   return;
                 }
                 viewDress(dress.id);
@@ -430,7 +483,7 @@ export default function DressesPage() {
               onClick={() => {
                 if (isSelectionMode) { toggleSelection(dress.id); return; }
                 if (searchParams.get("share_context") === "dress_edit") {
-                  router.push(`/dashboard/dresses/${dress.id}/edit`);
+                  goToEdit(dress.id);
                   return;
                 }
                 viewDress(dress.id);
@@ -476,7 +529,7 @@ export default function DressesPage() {
                   </div>
                   <div className="flex gap-2">
                     {!isSelectionMode && (
-                      <Button variant="secondary" size="icon" onClick={(e) => { e.stopPropagation(); router.push(`/dashboard/dresses/${dress.id}/edit`); }} className="rounded-xl h-10 w-10">
+                      <Button variant="secondary" size="icon" onClick={(e) => { e.stopPropagation(); goToEdit(dress.id); }} className="rounded-xl h-10 w-10">
                         <Edit className="h-4 w-4" />
                       </Button>
                     )}
@@ -765,7 +818,7 @@ export default function DressesPage() {
             </CardContent>
 
             <div className="p-6 border-t bg-muted/10">
-              <Button onClick={(e) => { e.stopPropagation(); router.push(`/dashboard/dresses/${viewingDress.dress.id}/edit`); }} className="w-full h-14 rounded-2xl font-black text-lg shadow-lg">
+              <Button onClick={(e) => { e.stopPropagation(); goToEdit(viewingDress.dress.id); }} className="w-full h-14 rounded-2xl font-black text-lg shadow-lg">
                 <Edit className="h-5 w-5 ml-2" /> עריכת פרטי שמלה
               </Button>
             </div>

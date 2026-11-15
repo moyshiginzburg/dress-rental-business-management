@@ -22,6 +22,9 @@ import { sendAgreementConfirmationToCustomer, sendAgreementNotificationToOwner, 
 import { generateAgreementPdf } from '../services/pdfGenerator.js';
 import { normalizePhoneNumber } from '../services/phone.js';
 import { AGREEMENT_TERMS, AGREEMENT_NON_RENTAL_TERMS, AGREEMENT_CANCELLATION_POLICY, hasRentalItems } from '../constants/agreementTerms.js';
+import { getClientIp } from '../utils/ip.js';
+import { saveCustomerReceiptName } from '../services/receipts.js';
+import { israelTodayIso, israelEndOfDay } from '../utils/israelDate.js';
 
 const router = Router();
 const AGREEMENT_SIGN_TOKEN_EXPIRY = '7d';
@@ -30,7 +33,7 @@ const FORCED_PUBLIC_FRONTEND_URL = 'https://dress-rental.vercel.app';
 function getOrderForAgreement(orderId) {
   const order = get(
     `SELECT o.id, o.customer_id, o.event_date, o.order_summary,
-            c.name as customer_name, c.phone as customer_phone, c.email as customer_email
+            COALESCE(c.receipt_name, c.name) as customer_name, c.phone as customer_phone, c.email as customer_email
      FROM orders o
      LEFT JOIN customers c ON o.customer_id = c.id
      WHERE o.id = ?`,
@@ -52,11 +55,26 @@ function getOrderForAgreement(orderId) {
   return { order, items };
 }
 
-function createAgreementToken(orderId) {
+function createAgreementToken(orderId, eventDateStr) {
+  let expiresIn = AGREEMENT_SIGN_TOKEN_EXPIRY;
+
+  if (eventDateStr) {
+    // Valid until 23:59:59 of the event day in Israel time (the server runs in UTC).
+    const eventDate = israelEndOfDay(eventDateStr);
+    if (eventDate) {
+      const now = new Date();
+      const diffSeconds = Math.floor((eventDate.getTime() - now.getTime()) / 1000);
+      
+      if (diffSeconds > 0) {
+        expiresIn = diffSeconds;
+      }
+    }
+  }
+
   return jwt.sign(
     { scope: 'agreement_sign', orderId: Number(orderId) },
     authConfig.jwtSecret,
-    { expiresIn: AGREEMENT_SIGN_TOKEN_EXPIRY }
+    { expiresIn }
   );
 }
 
@@ -151,7 +169,7 @@ function saveAgreementPdfToLocalUploads(pdfBuffer, customerName, orderId = null)
   }
 
   const cleanName = cleanForFilename(customerName).replace(/\s+/g, '_') || 'customer';
-  const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const dateStr = israelTodayIso().replace(/-/g, '');
   const orderSuffix = orderId ? `_order_${orderId}` : '';
   const filename = `${dateStr}_${cleanName}${orderSuffix}_${uuidv4().slice(0, 8)}.pdf`;
   const pdfPath = join(uploadConfig.agreementsDir, filename);
@@ -199,7 +217,7 @@ router.post('/order/:orderId/sign-link', requireAuth, (req, res, next) => {
       throw new ApiError(409, 'כבר קיים הסכם חתום להזמנה זו');
     }
 
-    const token = createAgreementToken(orderId);
+    const token = createAgreementToken(orderId, orderWithItems.order.event_date);
     const baseUrl = resolvePublicFrontendBaseUrl();
     const link = `${baseUrl}/agreement?token=${encodeURIComponent(token)}`;
     const customerPhone = orderWithItems.order.customer_phone || '';
@@ -211,12 +229,14 @@ router.post('/order/:orderId/sign-link', requireAuth, (req, res, next) => {
       ? `https://wa.me/972${customerPhone.replace(/\D/g, '').replace(/^0/, '')}?text=${whatsappText}`
       : null;
 
+    const decoded = jwt.decode(token);
+    
     res.json({
       success: true,
       data: {
         orderId,
         link,
-        expiresIn: AGREEMENT_SIGN_TOKEN_EXPIRY,
+        expiresIn: decoded?.exp ? new Date(decoded.exp * 1000).toISOString() : AGREEMENT_SIGN_TOKEN_EXPIRY,
         customerPhone,
         whatsappLink,
       },
@@ -239,7 +259,7 @@ router.get('/prefill', (req, res, next) => {
 
     const resolved = resolveAgreementToken(token);
     if (!resolved?.orderId) {
-      throw new ApiError(401, 'קישור חתימה לא תקין או שפג תוקפו');
+      throw new ApiError(400, 'קישור חתימה לא תקין או שפג תוקפו');
     }
 
     const orderWithItems = getOrderForAgreement(resolved.orderId);
@@ -292,7 +312,7 @@ router.post('/sign', async (req, res, next) => {
     if (token) {
       const resolved = resolveAgreementToken(String(token).trim());
       if (!resolved?.orderId) {
-        throw new ApiError(401, 'קישור חתימה לא תקין או שפג תוקפו');
+        throw new ApiError(400, 'קישור חתימה לא תקין או שפג תוקפו');
       }
       resolvedOrderId = resolved.orderId;
     }
@@ -321,12 +341,15 @@ router.post('/sign', async (req, res, next) => {
         throw new ApiError(409, 'מספר הטלפון כבר קיים אצל לקוחה אחרת');
       }
 
+      // The name the customer types is her display name (agreement + receipts);
+      // the owner's app name (which may hold internal notes) is never overwritten.
       run(
         `UPDATE customers
-         SET name = ?, phone = ?, email = ?, updated_at = CURRENT_TIMESTAMP
+         SET phone = ?, email = ?, updated_at = CURRENT_TIMESTAMP
          WHERE id = ?`,
-        [full_name.trim(), normalizedPhone, email || null, customerId]
+        [normalizedPhone, email || null, customerId]
       );
+      saveCustomerReceiptName(customerId, full_name.replace(/\s+/g, ' ').trim());
 
       run(
         'UPDATE orders SET event_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
@@ -341,9 +364,10 @@ router.post('/sign', async (req, res, next) => {
       if (existingCustomer) {
         customerId = existingCustomer.id;
         run(
-          `UPDATE customers SET name = ?, email = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-          [full_name.trim(), email || null, customerId]
+          `UPDATE customers SET email = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+          [email || null, customerId]
         );
+        saveCustomerReceiptName(customerId, full_name.replace(/\s+/g, ' ').trim());
       } else {
         const result = run(
           'INSERT INTO customers (name, phone, email) VALUES (?, ?, ?)',
@@ -366,8 +390,7 @@ router.post('/sign', async (req, res, next) => {
       const buffer = Buffer.from(base64Data, 'base64');
 
       // Generate unique filename
-      const now = new Date();
-      const dateStr = now.toISOString().split('T')[0].replace(/-/g, '');
+      const dateStr = israelTodayIso().replace(/-/g, '');
       const cleanName = full_name.trim().replace(/[^א-תa-zA-Z0-9]/g, '_');
       const filename = `${dateStr}_${cleanName}_${uuidv4().slice(0, 8)}.png`;
       const filepath = join(uploadConfig.signaturesDir, filename);
@@ -394,7 +417,7 @@ router.post('/sign', async (req, res, next) => {
         event_date || null,
         signature_data,
         signatureUrl,
-        req.ip || req.connection?.remoteAddress || null
+        getClientIp(req)
       ]
     );
 

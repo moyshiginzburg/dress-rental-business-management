@@ -1,5 +1,6 @@
 import express from 'express';
 import { logActivity, LogCategory, LogAction } from '../services/logger.js';
+import { getClientIp } from '../utils/ip.js';
 
 const router = express.Router();
 
@@ -46,7 +47,7 @@ setInterval(() => {
  * @access Public (No authentication required, as errors can happen during login)
  */
 router.post('/', (req, res) => {
-  const ip = req.ip || req.connection?.remoteAddress;
+  const ip = getClientIp(req);
   
   if (isRateLimited(ip)) {
     return res.status(429).json({ success: false, message: 'Too many error reports from this IP' });

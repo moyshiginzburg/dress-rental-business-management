@@ -16,9 +16,11 @@ import { requireAuth } from '../middleware/auth.js';
 import { ApiError } from '../middleware/errorHandler.js';
 import { sendNewOrderNotification, isEmailEnabled, sendOrderUpdate } from '../services/email.js';
 import { extractReceiptDetails } from '../services/ai.js';
+import { parseReceiptRequest, saveCustomerReceiptName, requestReceipt, issueReceipt, buildReceiptEmailInfo } from '../services/receipts.js';
 import { sanitizePaymentDetails } from '../services/paymentDetails.js';
 import { normalizePhoneNumber } from '../services/phone.js';
 import { normalizeTextForSave } from '../utils/textUtils.js';
+import { israelTodayIso } from '../utils/israelDate.js';
 
 const router = Router();
 
@@ -155,7 +157,8 @@ router.get('/', (req, res, next) => {
 
     let sql = `
       SELECT o.*, 
-             c.name as customer_name, c.phone as customer_phone, c.email as customer_email,
+             c.name as customer_name, c.receipt_name as customer_display_name,
+             c.phone as customer_phone, c.email as customer_email,
              (SELECT COALESCE(SUM(customer_charge_amount), 0) FROM transactions t WHERE t.order_id = o.id) as total_customer_charge,
              (SELECT COALESCE(MAX(date), '') FROM transactions t WHERE t.order_id = o.id) as last_active_date
       FROM orders o
@@ -184,13 +187,13 @@ router.get('/', (req, res, next) => {
     if (search) {
       const likeTerm = `%${search}%`;
       sql += ` AND (
-        c.name LIKE ? OR
+        c.name LIKE ? OR c.receipt_name LIKE ? OR
         o.order_summary LIKE ? OR
         CAST(o.id AS TEXT) = ? OR
         EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id
                 AND (oi.dress_name LIKE ? OR oi.wearer_name LIKE ?))
       )`;
-      params.push(likeTerm, likeTerm, search, likeTerm, likeTerm);
+      params.push(likeTerm, likeTerm, likeTerm, search, likeTerm, likeTerm);
     }
     if (startDate) {
       sql += ' AND o.event_date >= ?';
@@ -234,13 +237,13 @@ router.get('/', (req, res, next) => {
     if (search) {
       const likeTerm = `%${search}%`;
       countSql += ` AND (
-        c.name LIKE ? OR
+        c.name LIKE ? OR c.receipt_name LIKE ? OR
         o.order_summary LIKE ? OR
         CAST(o.id AS TEXT) = ? OR
         EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.id
                 AND (oi.dress_name LIKE ? OR oi.wearer_name LIKE ?))
       )`;
-      countParams.push(likeTerm, likeTerm, search, likeTerm, likeTerm);
+      countParams.push(likeTerm, likeTerm, likeTerm, search, likeTerm, likeTerm);
     }
     const { total } = get(countSql, countParams);
 
@@ -272,7 +275,8 @@ router.get('/:id', (req, res, next) => {
 
     const order = get(
       `SELECT o.*, 
-              c.name as customer_name, c.phone as customer_phone, c.email as customer_email,
+              c.name as customer_name, c.receipt_name as customer_display_name,
+              c.phone as customer_phone, c.email as customer_email,
               (SELECT COALESCE(SUM(customer_charge_amount), 0) FROM transactions t WHERE t.order_id = o.id) as total_customer_charge
        FROM orders o
        LEFT JOIN customers c ON o.customer_id = c.id
@@ -332,7 +336,8 @@ router.post('/', async (req, res, next) => {
       deposit_amount,
       deposit_payments,
       notes,
-      items
+      items,
+      display_name
     } = req.body;
 
     if (!customer_id && !new_customer) {
@@ -393,6 +398,12 @@ router.post('/', async (req, res, next) => {
         throw new ApiError(404, 'לקוחה לא נמצאה');
       }
     }
+
+    // Display name: the customer's name as shown on the agreement link and on receipts
+    // (e.g. without internal notes kept in the app name). Stored in customers.receipt_name
+    // only when it differs from the app name (NULL = follow the app name).
+    const displayName = String(display_name || '').replace(/\s+/g, ' ').trim().slice(0, 255);
+    if (displayName) saveCustomerReceiptName(finalCustomerId, displayName);
 
     let orderSummary = '';
     if (items && items.length > 0) {
@@ -510,7 +521,7 @@ router.post('/', async (req, res, next) => {
           let installments = parseInt(payment.installments, 10);
           if (Number.isNaN(installments) || installments < 1) installments = 1;
 
-          normalizedDepositPayments.push({
+          const depositPayment = {
             amount: pAmt,
             method: paymentMethod || payment.payment_method || 'לא צוין',
             confirmationNumber: confirmationNumber || null,
@@ -520,14 +531,17 @@ router.post('/', async (req, res, next) => {
             installments: installments,
             hasFile: Boolean(payment.fileBase64),
             fileBase64: payment.fileBase64 || null,
-            fileName: payment.fileName || null
-          });
+            fileName: payment.fileName || null,
+            transactionId: null,
+            pendingReceipt: null
+          };
+          normalizedDepositPayments.push(depositPayment);
 
-          run(
+          const depositResult = run(
             `INSERT INTO transactions (date, type, category, customer_id, customer_name, amount, payment_method, order_id, notes, confirmation_number, last_four_digits, check_number, bank_details, installments)
              VALUES (?, 'income', 'order', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
-              new Date().toISOString().split('T')[0],
+              israelTodayIso(), // Israel date: the UTC date is yesterday's between 00:00 and 02:00/03:00
               finalCustomerId,
               customerData.name,
               pAmt,
@@ -541,6 +555,14 @@ router.post('/', async (req, res, next) => {
               installments
             ]
           );
+          depositPayment.transactionId = depositResult.lastInsertRowid;
+
+          // Receipt requested for this payment: 'pending' now, issued in the background after AI.
+          const receiptOptions = parseReceiptRequest(payment.receipt, 'order');
+          if (receiptOptions) {
+            saveCustomerReceiptName(finalCustomerId, receiptOptions.customerName);
+            depositPayment.pendingReceipt = requestReceipt(depositPayment.transactionId, receiptOptions);
+          }
         }
       }
 
@@ -607,13 +629,13 @@ router.post('/', async (req, res, next) => {
                 payment.bankDetails = sanitizedPayment.bankDetails;
                 payment.installments = sanitizedPayment.installments;
 
-                // Update the matching transaction in DB
+                // Update this payment's own transaction row (matched by id, so two
+                // deposit payments with the same amount can never overwrite each other).
                 run(
                   `UPDATE transactions 
                    SET payment_method = ?, confirmation_number = ?, last_four_digits = ?, 
                        check_number = ?, bank_details = ?, installments = ?, updated_at = CURRENT_TIMESTAMP 
-                   WHERE order_id = ? AND amount = ? AND type = 'income' AND category = 'order' 
-                   LIMIT 1`,
+                   WHERE id = ?`,
                   [
                     payment.method || null,
                     payment.confirmationNumber || null,
@@ -621,8 +643,7 @@ router.post('/', async (req, res, next) => {
                     payment.checkNumber || null,
                     payment.bankDetails || null,
                     payment.installments,
-                    orderId,
-                    payment.amount
+                    payment.transactionId
                   ]
                 );
               }
@@ -630,8 +651,20 @@ router.post('/', async (req, res, next) => {
           }
         }
 
-        // 2. Send Notifications (Only after AI updated DB)
+        // 2. Issue the requested deposit receipts (after AI), before the order email
+        for (const payment of normalizedDepositPayments) {
+          if (payment.pendingReceipt) payment.issuedReceipt = await issueReceipt(payment.pendingReceipt.id);
+        }
+
+        // 3. Send Notifications (Only after AI updated DB)
         if (isEmailEnabled()) {
+          const depositPaymentsForEmail = [];
+          for (const { transactionId, pendingReceipt, issuedReceipt, ...p } of normalizedDepositPayments) {
+            const receipt = await buildReceiptEmailInfo(issuedReceipt);
+            const { pdfBase64: receiptPdfBase64 = null, pdfFileName: receiptPdfFileName = null, ...receiptData } = receipt || {};
+            depositPaymentsForEmail.push({ ...p, receipt: receipt ? receiptData : null, receiptPdfBase64, receiptPdfFileName });
+          }
+
           const dressesForEmail = (items || []).map((item) => {
             const basePrice = parseFloat(item.base_price) || 0;
             const extra = parseFloat(item.additional_payments) || 0;
@@ -653,12 +686,18 @@ router.post('/', async (req, res, next) => {
             dresses: dressesForEmail,
             totalPrice: parseFloat(total_price),
             deposit: depositAmt,
-            depositPayments: normalizedDepositPayments, // Now potentially enriched by AI
+            // Enriched by AI, plus each payment's receipt (internal bookkeeping fields stripped)
+            depositPayments: depositPaymentsForEmail,
             notes
           });
         }
       } catch (backgroundError) {
         console.error('Background Order AI/Email processing failed:', backgroundError);
+      } finally {
+        // Issue the requested receipts even if the AI step failed before reaching them (issueReceipt never throws).
+        for (const payment of normalizedDepositPayments) {
+          if (payment.pendingReceipt && !payment.issuedReceipt) await issueReceipt(payment.pendingReceipt.id);
+        }
       }
     })(); // End of Background Promise
 
@@ -1025,6 +1064,55 @@ router.post('/merge', (req, res, next) => {
     res.json({
       success: true,
       message: 'הזמנות אוחדו בהצלחה'
+    });
+
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * PATCH /api/orders/:id/items/:itemId/return
+ * Toggle the returned status of a rental/sewing_for_rental dress
+ */
+router.patch('/:id/items/:itemId/return', (req, res, next) => {
+  try {
+    const { id, itemId } = req.params;
+    const { returned } = req.body; // 1 or 0
+    
+    if (returned !== 0 && returned !== 1) {
+      throw new ApiError(400, 'ערך חוקי להחזרה הוא 0 או 1');
+    }
+
+    // Verify order and item exists
+    const item = get(`
+      SELECT oi.*, o.status as order_status 
+      FROM order_items oi
+      JOIN orders o ON oi.order_id = o.id
+      WHERE oi.id = ? AND oi.order_id = ?
+    `, [itemId, id]);
+
+    if (!item) {
+      throw new ApiError(404, 'פריט בהזמנה לא נמצא');
+    }
+
+    if (item.item_type !== 'rental' && item.item_type !== 'sewing_for_rental') {
+      throw new ApiError(400, 'ניתן לסמן החזרה רק על שמלות להשכרה');
+    }
+
+    const returnedAt = returned === 1 ? new Date().toISOString() : null;
+
+    run(
+      'UPDATE order_items SET returned = ?, returned_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [returned, returnedAt, itemId]
+    );
+
+    const updatedItem = get('SELECT * FROM order_items WHERE id = ?', [itemId]);
+
+    res.json({
+      success: true,
+      message: returned === 1 ? 'השמלה סומנה כהוחזרה' : 'ביטול סימון החזרה',
+      data: { item: updatedItem }
     });
 
   } catch (error) {

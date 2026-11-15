@@ -38,9 +38,9 @@ router.get('/', (req, res, next) => {
 
     // Add search filter
     if (search) {
-      sql += ' AND (c.name LIKE ? OR c.phone LIKE ? OR c.email LIKE ?)';
+      sql += ' AND (c.name LIKE ? OR c.receipt_name LIKE ? OR c.phone LIKE ? OR c.email LIKE ?)';
       const searchPattern = normalizeTextForSearch(search);
-      params.push(searchPattern, searchPattern, searchPattern);
+      params.push(searchPattern, searchPattern, searchPattern, searchPattern);
     }
 
     // Add sorting
@@ -62,9 +62,9 @@ router.get('/', (req, res, next) => {
     let countSql = 'SELECT COUNT(*) as total FROM customers WHERE 1=1';
     const countParams = [];
     if (search) {
-      countSql += ' AND (name LIKE ? OR phone LIKE ? OR email LIKE ?)';
+      countSql += ' AND (name LIKE ? OR receipt_name LIKE ? OR phone LIKE ? OR email LIKE ?)';
       const searchPattern = normalizeTextForSearch(search);
-      countParams.push(searchPattern, searchPattern, searchPattern);
+      countParams.push(searchPattern, searchPattern, searchPattern, searchPattern);
     }
     const { total } = get(countSql, countParams);
 
@@ -195,7 +195,7 @@ router.post('/', (req, res, next) => {
 router.put('/:id', (req, res, next) => {
   try {
     const { id } = req.params;
-    const { name, phone, email, source, notes } = req.body;
+    const { name, phone, email, source, notes, display_name } = req.body;
     const normalizedName = normalizeTextForSave(name);
     const normalizedPhone = normalizePhoneNumber(phone);
 
@@ -228,6 +228,14 @@ router.put('/:id', (req, res, next) => {
        WHERE id = ?`,
       [normalizedName, normalizedPhone || null, email || null, source || null, notes || null, id]
     );
+
+    // Display name (agreement link + receipts) -> customers.receipt_name.
+    // Only when the field was sent; empty or equal to the app name = NULL (follow the app name).
+    if (display_name !== undefined) {
+      const displayName = String(display_name || '').replace(/\s+/g, ' ').trim().slice(0, 255);
+      const value = displayName && displayName !== String(normalizedName).replace(/\s+/g, ' ').trim() ? displayName : null;
+      run('UPDATE customers SET receipt_name = ? WHERE id = ?', [value, id]);
+    }
 
     const updatedCustomer = get('SELECT * FROM customers WHERE id = ?', [id]);
 
@@ -262,10 +270,10 @@ router.get('/search/quick', (req, res, next) => {
     const customers = all(
       `SELECT id, name, phone, email 
        FROM customers 
-       WHERE (name LIKE ? OR phone LIKE ?)
+       WHERE (name LIKE ? OR receipt_name LIKE ? OR phone LIKE ?)
        ORDER BY name 
        LIMIT 10`,
-      [searchPattern, searchPattern]
+      [searchPattern, searchPattern, searchPattern]
     );
 
     res.json({
@@ -327,6 +335,11 @@ router.post('/merge', (req, res, next) => {
             targetCustomerId
           ]
         );
+      }
+
+      // 2b. Keep a receipt name: the target's own, else the source's
+      if (!target.receipt_name && source.receipt_name) {
+        run('UPDATE customers SET receipt_name = ? WHERE id = ?', [source.receipt_name, targetCustomerId]);
       }
 
       // 3. Move Orders

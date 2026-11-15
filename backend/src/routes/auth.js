@@ -15,6 +15,7 @@ import { requireAuth, generateToken } from '../middleware/auth.js';
 import { ApiError } from '../middleware/errorHandler.js';
 import { logLogin, logUserAction, LogCategory, LogAction } from '../services/logger.js';
 import { serverConfig, authConfig } from '../config/index.js';
+import { getClientIp } from '../utils/ip.js';
 
 const router = Router();
 
@@ -25,12 +26,21 @@ const router = Router();
 router.post('/login', async (req, res, next) => {
   try {
     const { email, password } = req.body;
-    const ipAddress = req.ip || req.connection?.remoteAddress;
+    const ipAddress = getClientIp(req);
     const userAgent = req.headers['user-agent'];
+    const reqContext = {
+      ipAddress,
+      userAgent,
+      requestHost: req.headers.host || null,
+      forwardedHost: req.headers['x-forwarded-host'] || null,
+      referer: req.headers.referer || req.headers.referrer || null,
+      requestMethod: 'POST',
+      requestPath: '/api/auth/login'
+    };
 
     // Validate input
     if (!email || !password) {
-      logLogin(email || 'unknown', false, null, null, ipAddress, userAgent, 'חסרים פרטי התחברות');
+      logLogin(email || 'unknown', false, null, null, ipAddress, userAgent, 'חסרים פרטי התחברות', reqContext);
       throw new ApiError(400, 'נא להזין אימייל וסיסמה');
     }
 
@@ -38,12 +48,12 @@ router.post('/login', async (req, res, next) => {
     const user = get('SELECT * FROM users WHERE email = ?', [email.toLowerCase()]);
 
     if (!user) {
-      logLogin(email, false, null, null, ipAddress, userAgent, 'משתמש לא קיים');
+      logLogin(email, false, null, null, ipAddress, userAgent, 'משתמש לא קיים', reqContext);
       throw new ApiError(401, 'אימייל או סיסמה שגויים');
     }
 
     if (!user.is_active) {
-      logLogin(email, false, user.id, user.name, ipAddress, userAgent, 'חשבון לא פעיל');
+      logLogin(email, false, user.id, user.name, ipAddress, userAgent, 'חשבון לא פעיל', reqContext);
       throw new ApiError(401, 'חשבון לא פעיל');
     }
 
@@ -51,7 +61,7 @@ router.post('/login', async (req, res, next) => {
     const isValid = await bcrypt.compare(password, user.password_hash);
 
     if (!isValid) {
-      logLogin(email, false, user.id, user.name, ipAddress, userAgent, 'סיסמה שגויה');
+      logLogin(email, false, user.id, user.name, ipAddress, userAgent, 'סיסמה שגויה', reqContext);
       throw new ApiError(401, 'אימייל או סיסמה שגויים');
     }
 
@@ -59,7 +69,7 @@ router.post('/login', async (req, res, next) => {
     run('UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?', [user.id]);
 
     // Log successful login
-    logLogin(email, true, user.id, user.name, ipAddress, userAgent);
+    logLogin(email, true, user.id, user.name, ipAddress, userAgent, null, reqContext);
 
     // Generate token
     const token = generateToken(user.id);

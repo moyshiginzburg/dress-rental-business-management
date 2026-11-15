@@ -156,6 +156,115 @@ async function sendEmail(options) {
   }
 }
 
+/** Escape text placed inside HTML (customer names, descriptions). */
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/**
+ * HTML of the receipt email sent to the customer.
+ *
+ * Purpose: a clean, branded, right-to-left email that reads well in Gmail, Outlook and on phones.
+ * Operation: email-safe markup only - nested tables, inline styles, no external images or CSS,
+ * max width 560px (fluid below). All dynamic text is HTML-escaped. No emoji: Apps Script's
+ * GmailApp corrupts 4-byte characters (a 📎 arrived as "������" in a real test email).
+ */
+export function buildReceiptEmailHtml({ customerName, documentNumber, amount, issuedDate, description }) {
+  const gold = '#a9824c';
+  const ink = '#2e2a27';
+  const muted = '#7a716b';
+  const line = '#ece4dc';
+  const amountText = `₪${Number(amount).toLocaleString('he-IL', { maximumFractionDigits: 2 })}`;
+  const row = (label, value, strong = false) => `
+              <tr>
+                <td style="padding:10px 0;border-bottom:1px solid ${line};color:${muted};font-size:14px;">${label}</td>
+                <td style="padding:10px 0;border-bottom:1px solid ${line};color:${ink};font-size:${strong ? '18px' : '15px'};font-weight:${strong ? '700' : '400'};text-align:left;" dir="rtl">${value}</td>
+              </tr>`;
+
+  return `<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>קבלה${documentNumber ? ` מס' ${escapeHtml(documentNumber)}` : ''}</title>
+</head>
+<body style="margin:0;padding:0;background:#f6f2ee;" dir="rtl">
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;">מצורפת הקבלה על סך ${amountText}. תודה רבה!</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f6f2ee;">
+    <tr>
+      <td align="center" style="padding:28px 12px;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+               style="max-width:560px;background:#ffffff;border-radius:14px;overflow:hidden;font-family:Arial,Helvetica,sans-serif;" dir="rtl">
+          <tr>
+            <td style="padding:26px 28px 18px;text-align:center;border-bottom:3px solid ${gold};">
+              <div style="font-size:22px;font-weight:700;color:${ink};letter-spacing:0.3px;">${escapeHtml(businessConfig.name)}</div>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:26px 28px 6px;text-align:right;color:${ink};font-size:16px;line-height:1.7;">
+              <p style="margin:0 0 10px;">שלום ${escapeHtml(customerName || '')},</p>
+              <p style="margin:0;">תודה רבה! מצורפת הקבלה על התשלום שלך.</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:18px 28px 8px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;" dir="rtl">${
+                documentNumber ? row('מספר קבלה', escapeHtml(documentNumber)) : ''}${
+                issuedDate ? row('תאריך', escapeHtml(issuedDate)) : ''}${
+                description ? row('עבור', escapeHtml(description)) : ''}${
+                row('סכום', amountText, true)}
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:14px 28px 4px;text-align:right;">
+              <div style="background:#faf6f1;border-radius:10px;padding:12px 14px;color:${muted};font-size:14px;line-height:1.6;">
+                הקבלה מצורפת למייל זה כקובץ PDF.
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:22px 28px 26px;text-align:right;color:${ink};font-size:15px;line-height:1.7;">
+              בברכה,<br>
+              <strong>${escapeHtml(businessConfig.name)}</strong>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:16px 28px;background:#faf6f1;text-align:center;color:${muted};font-size:13px;line-height:1.8;">
+              ${escapeHtml(businessConfig.phone)} &nbsp;·&nbsp; ${escapeHtml(businessConfig.address)}
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+}
+
+/**
+ * Email an issued receipt to the customer, from the business Gmail (Apps Script send_email),
+ * with the receipt PDF attached.
+ *
+ * Purpose: the customer's receipt email is sent by us, not by SmartInvoice, so SmartInvoice
+ * never receives an email address (it cannot store it or send on its own), exactly one email
+ * goes out, and it appears in the Gmail "Sent" folder of the account running Apps Script.
+ * Operation: one POST to the Web App, no retry (a retry could send a second email).
+ * Returns { success, error? }.
+ */
+export async function sendReceiptToCustomer({ to, customerName, documentNumber, amount, issuedDate, description, pdfBuffer, fileName }) {
+  const numberText = documentNumber ? ` מס' ${documentNumber}` : '';
+  return sendEmail({
+    to,
+    subject: `קבלה${numberText} - ${businessConfig.name}`,
+    html: buildReceiptEmailHtml({ customerName, documentNumber, amount, issuedDate, description }),
+    text: `שלום ${customerName || ''}, תודה רבה! מצורפת הקבלה${numberText} על סך ₪${amount}. בברכה, ${businessConfig.name}, ${businessConfig.phone}`,
+    attachments: [{ filename: fileName, content: pdfBuffer, contentType: 'application/pdf' }],
+  });
+}
+
 /**
  * Format date in Hebrew
  */
@@ -720,7 +829,7 @@ export async function sendTaskToGoogle({ listName = 'לקוחות', title, dueDa
  * @param {string} folder - Folder path (e.g., "2026/הוצאות/הוצאות מוכרות 2026")
  * @param {Buffer} fileBuffer - File content as Buffer
  */
-export async function sendFileToDrive({ fileName, folder, fileBuffer }) {
+export async function sendFileToDrive({ fileName, folder, fileBuffer, mimeType }) {
   const fileBase64 = fileBuffer.toString('base64');
 
   return sendToAppsScript({
@@ -728,6 +837,7 @@ export async function sendFileToDrive({ fileName, folder, fileBuffer }) {
     fileName,
     folder,
     fileBase64,
+    mimeType, // optional; Apps Script defaults to image/jpeg
     timestamp: new Date().toISOString()
   });
 }
@@ -800,11 +910,16 @@ export async function sendDetailedIncomeNotification({
   fileBase64,
   fileName,
   isUpdate = false, // Add this parameter
+  receipt = null, // Receipt summary from buildReceiptEmailInfo() (optional)
+  receiptOnly = false, // true = email sent because a receipt was issued later for an existing income
 }) {
   console.log(`Sending detailed income notification to Apps Script for ${customerName} (isUpdate: ${isUpdate})`);
 
+  const { pdfBase64: receiptPdfBase64 = null, pdfFileName: receiptPdfFileName = null, ...receiptData } = receipt || {};
+
   return sendToAppsScript({
     type: 'income_detailed',
+    ...(receiptOnly ? { subject: `קבלה ${receiptData.number || ''} - ${customerName || 'לקוחה'}` } : {}),
     data: {
       customerName,
       customerPhone,
@@ -817,10 +932,14 @@ export async function sendDetailedIncomeNotification({
       bankDetails,
       installments,
       isUpdate, // Include in payload
+      receipt: receipt ? receiptData : null,
+      receiptOnly,
       timestamp: new Date().toISOString()
     },
     fileBase64,
-    fileName
+    fileName,
+    receiptPdfBase64,
+    receiptPdfFileName
   });
 }
 

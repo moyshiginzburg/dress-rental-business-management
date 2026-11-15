@@ -31,7 +31,7 @@ export RCLONE_CONFIG="${RCLONE_CONFIG:-$HOME/.config/rclone/rclone.conf}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 LOCAL_DATA="$PROJECT_DIR/local_data"
-RCLONE_REMOTE="${RCLONE_REMOTE:-moyshi}"
+RCLONE_REMOTE="${RCLONE_REMOTE:-gdrive}"
 DRIVE_PATH="${DRIVE_PATH:-dress-rental-business-management}"
 
 # --- Helper ---

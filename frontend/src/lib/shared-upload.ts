@@ -14,7 +14,7 @@ export interface SharedUploadPayload {
   source: 'android_share_target';
 }
 
-const STORAGE_KEY = 'eti_shared_upload_payload_v1';
+const STORAGE_KEY = 'shared_upload_payload_v1';
 
 function canUseStorage() {
   return typeof window !== 'undefined' && !!window.sessionStorage;

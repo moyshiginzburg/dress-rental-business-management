@@ -23,7 +23,7 @@ const CONFIG = {
     OWNER_EMAIL: 'admin@example.com',
 
     // Google Drive base folder ID
-    DRIVE_BASE_FOLDER_ID: '1A-WmsCr1T06yp2v_ZBEigFvhuqe6M1I_',
+    DRIVE_BASE_FOLDER_ID: 'YOUR_DRIVE_FOLDER_ID',
 
     // Google Task list name
     TASK_LIST_NAME: 'לקוחות',
@@ -238,7 +238,8 @@ function log(level, action, message, details = null) {
 }
 
 /**
- * Send buffered logs to backend
+ * Send buffered logs to backend.
+ * Authenticates to the backend with the X-Gas-Log-Secret header (see Secrets.js).
  */
 function flushLogs() {
     if (logsBuffer.length === 0) return;
@@ -253,9 +254,14 @@ function flushLogs() {
         }
 
         const url = `${backendUrl}/api/apps-script-logs/batch`;
+        // The VPS accepts log batches only with this shared secret (defined in Secrets.js,
+        // which is not in git; see Secrets.js.example). Without it nginx and the backend
+        // refuse the request (the rest of the script keeps working).
+        const logSecret = typeof GAS_LOG_SECRET !== 'undefined' ? GAS_LOG_SECRET : '';
         const options = {
             method: 'POST',
             contentType: 'application/json',
+            headers: { 'X-Gas-Log-Secret': logSecret },
             payload: JSON.stringify({ logs: logsBuffer }),
             muteHttpExceptions: true
         };
@@ -492,7 +498,7 @@ function handleDriveUpload(payload, message) {
         // Decode base64 file
         const fileBlob = Utilities.newBlob(
             Utilities.base64Decode(payload.fileBase64),
-            'image/jpeg',
+            payload.mimeType || 'image/jpeg', // e.g. application/pdf for receipts
             payload.fileName
         );
 
@@ -614,7 +620,9 @@ function extractReceiptData(fileBlob, paymentMethod) {
                 }
                 if (longestNumber) confirmationNumber = longestNumber;
             }
-        } else if (paymentMethod.includes('העברה') && paymentMethod.includes('הפועלים')) {
+        } else if (paymentMethod.includes('העברה')) {
+            // Bank transfer (any bank): the confirmation number is usually 8-9 digits,
+            // sometimes shown with dashes.
             const withDashesPattern = /\d+(?:-\d+)+/g;
             const withDashesMatches = fullText.match(withDashesPattern);
             if (withDashesMatches) {
@@ -646,13 +654,73 @@ function extractReceiptData(fileBlob, paymentMethod) {
 }
 
 /**
+ * Short Hebrew text describing a receipt issued through SmartInvoice
+ * (number / test / failure), for the owner's notification emails.
+ * Returns '' when no receipt was requested.
+ */
+function getReceiptSummaryText(receipt) {
+    if (!receipt) return '';
+    if (receipt.status === 'failed') return `הפקת הקבלה נכשלה: ${receipt.error || 'שגיאה לא ידועה'}`;
+    if (receipt.status !== 'issued') return 'הקבלה בהפקה';
+    return `קבלה מס' ${receipt.number || ''}`.trim();
+}
+
+/** Table rows (HTML) with the receipt details for handleIncomeDetailed. */
+function buildReceiptRowsHtml(receipt) {
+    if (!receipt) return '';
+    const cell = 'padding: 8px; border-bottom: 1px solid #eee;';
+    const color = receipt.status === 'failed' ? '#dc3545' : '#28a745';
+    let rows = `
+                    <tr>
+                        <td style="${cell} font-weight: bold;">קבלה:</td>
+                        <td style="${cell} font-weight: bold; color: ${color};">${getReceiptSummaryText(receipt)}</td>
+                    </tr>`;
+    if (receipt.status === 'issued') {
+        rows += `
+                    <tr>
+                        <td style="${cell} font-weight: bold;">עבור (בקבלה):</td>
+                        <td style="${cell}">${receipt.description || ''}</td>
+                    </tr>`;
+        if (receipt.reference) rows += `
+                    <tr>
+                        <td style="${cell} font-weight: bold;">אסמכתא בקבלה:</td>
+                        <td style="${cell} background-color: #f9f9f9; font-family: monospace;">${receipt.reference}</td>
+                    </tr>`;
+        if (receipt.notes) rows += `
+                    <tr>
+                        <td style="${cell} font-weight: bold;">הערה בקבלה:</td>
+                        <td style="${cell}">${receipt.notes}</td>
+                    </tr>`;
+        if (receipt.emailSentTo) rows += `
+                    <tr>
+                        <td style="${cell} font-weight: bold;">הקבלה נשלחה ללקוחה:</td>
+                        <td style="${cell}">${receipt.emailSentTo}</td>
+                    </tr>`;
+    }
+    return rows;
+}
+
+/** Decode a receipt PDF (base64) into an email attachment; null if missing or broken. */
+function buildReceiptPdfBlob(pdfBase64, fileName) {
+    if (!pdfBase64) return null;
+    try {
+        return Utilities.newBlob(Utilities.base64Decode(pdfBase64), 'application/pdf', fileName || 'receipt.pdf');
+    } catch (err) {
+        console.error('Error decoding receipt PDF:', err.message);
+        return null;
+    }
+}
+
+/**
  * Handle detailed income notification - sent to business owner
  */
 function handleIncomeDetailed(payload) {
     try {
         const data = payload.data;
         const isUpdate = data.isUpdate === true;
+        const receiptOnly = data.receiptOnly === true; // receipt issued later for an existing income
         const subjectPrefix = isUpdate ? 'עדכון תשלום' : 'תשלום חדש';
+        const headline = receiptOnly ? 'קבלה שהופקה לתשלום' : (isUpdate ? 'עדכון תשלום' : 'תשלום חדש');
         
         const subject = payload.subject ? payload.subject.replace(/💰/g, '').trim() : `${subjectPrefix} - ${data.customerName || 'לקוחה'}`;
         const amount = data.amount || 0;
@@ -719,10 +787,14 @@ function handleIncomeDetailed(payload) {
             }
         }
 
+        // Attach the receipt PDF (live receipts only) next to the payment proof
+        const receiptBlob = buildReceiptPdfBlob(payload.receiptPdfBase64, payload.receiptPdfFileName);
+        if (receiptBlob) attachments.push(receiptBlob);
+
         // Construct HTML body with all new fields
         let htmlBody = `
             <div dir="rtl" style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; text-align: right; border: 1px solid #eee; border-radius: 10px;">
-                <h2 style="color: #28a745; text-align: center; border-bottom: 2px solid #28a745; padding-bottom: 10px;">פרטי ${isUpdate ? 'עדכון תשלום' : 'תשלום חדש'}</h2>
+                <h2 style="color: #28a745; text-align: center; border-bottom: 2px solid #28a745; padding-bottom: 10px;">פרטי ${headline}</h2>
                 
                 <table style="width: 100%; border-collapse: collapse; margin-top: 20px;">
                     <tr>
@@ -775,10 +847,12 @@ function handleIncomeDetailed(payload) {
                         <td style="padding: 8px; border-bottom: 1px solid #eee; background-color: #f9f9f9; font-family: monospace;">${bankDetails}</td>
                     </tr>
                     ` : ''}
+                    ${buildReceiptRowsHtml(data.receipt)}
                 </table>
                 
                 <div style="margin-top: 30px; padding-top: 15px; border-top: 1px solid #eee; text-align: center; color: #666; font-size: 0.9em;">
-                    ${attachments.length > 0 ? '<p>קובץ האסמכתא מצורף למייל זה.</p>' : ''}
+                    ${payload.fileBase64 ? '<p>קובץ האסמכתא מצורף למייל זה.</p>' : ''}
+                    ${receiptBlob ? '<p>הקבלה (PDF) מצורפת למייל זה.</p>' : ''}
                     <p style="font-size: 0.8em;">נשלח אוטומטית ממערכת ניהול העסק של ישראל ישראלי</p>
                 </div>
             </div>
@@ -840,6 +914,12 @@ function handleOrderNotification(payload) {
                 if (payment.lastFourDigits) rowParts.push(`4 ספרות: ${payment.lastFourDigits}`);
                 if (payment.checkNumber) rowParts.push(`מס' צ'ק: ${payment.checkNumber}`);
                 if (payment.installments && Number(payment.installments) > 1) rowParts.push(`תשלומים: ${payment.installments}`);
+                if (payment.receipt) {
+                    rowParts.push(getReceiptSummaryText(payment.receipt));
+                    if (payment.receipt.status === 'issued' && payment.receipt.reference) rowParts.push(`אסמכתא בקבלה: ${payment.receipt.reference}`);
+                }
+                const depositReceiptBlob = buildReceiptPdfBlob(payment.receiptPdfBase64, payment.receiptPdfFileName);
+                if (depositReceiptBlob) attachments.push(depositReceiptBlob);
                 if (payment.bankDetails) {
                     let bankText = '';
                     if (typeof payment.bankDetails === 'string') {

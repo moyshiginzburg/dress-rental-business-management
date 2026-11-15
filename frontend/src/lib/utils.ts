@@ -343,9 +343,9 @@ export function createWhatsAppLink(phone: string, message?: string): string {
   if (cleanPhone.startsWith('05')) {
     cleanPhone = '972' + cleanPhone.slice(1);
   }
-  const url = `https://wa.me/${cleanPhone}`;
+  const url = `whatsapp://send?phone=${cleanPhone}`;
   if (message) {
-    return `${url}?text=${encodeURIComponent(message)}`;
+    return `${url}&text=${encodeURIComponent(message)}`;
   }
   return url;
 }

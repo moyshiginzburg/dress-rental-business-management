@@ -12,6 +12,7 @@ const API_BASE = typeof window !== 'undefined'
   : (process.env.NEXT_PUBLIC_API_URL || '/api');
 
 import { reportClientError } from './error-reporter';
+import { formatDateInput } from './utils';
 
 interface ApiResponse<T = unknown> {
   success: boolean;
@@ -219,7 +220,7 @@ export const customersApi = {
   create: (data: { name: string; phone?: string; email?: string; source?: string; notes?: string }) =>
     api.post('/customers', data),
 
-  update: (id: number, data: { name: string; phone?: string; email?: string; source?: string; notes?: string }) =>
+  update: (id: number, data: { name: string; phone?: string; email?: string; source?: string; notes?: string; display_name?: string }) =>
     api.put(`/customers/${id}`, data),
 
   quickSearch: (q: string) => api.get(`/customers/search/quick?q=${encodeURIComponent(q)}`),
@@ -333,11 +334,88 @@ export const transactionsApi = {
     dress_id?: number;
     order_id?: number;
     customer_charge_amount?: number;
+    receipt?: ReceiptRequest;
   }) => api.post('/transactions', data),
 
   update: (id: number, data: unknown) => api.put(`/transactions/${id}`, data),
 
   delete: (id: number) => api.delete(`/transactions/${id}`),
+};
+
+// Receipts (SmartInvoice)
+// What the user chose in the receipt options of an income form.
+export interface ReceiptRequest {
+  issue: boolean;
+  description?: string;
+  notes?: string;
+  customer_name?: string; // name printed on the receipt (remembered for the customer)
+}
+
+export interface Receipt {
+  id: number;
+  transaction_id: number | null;
+  status: 'pending' | 'issued' | 'failed';
+  description: string;
+  notes: string | null;
+  customer_name: string | null;
+  amount: number | null;
+  payment_method: string | null;
+  payment_reference: string | null;
+  document_number: string | null;
+  email_sent_to: string | null;
+  drive_file_name: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  issued_at: string | null;
+  created_at: string;
+}
+
+export const receiptsApi = {
+  status: () => api.get<{ enabled: boolean }>('/receipts/status'),
+
+  // Default name on the receipt for a customer (her saved receipt name, else her app name).
+  customerName: (customerId: number) => api.get<{ name: string }>(`/receipts/customer-name/${customerId}`),
+
+  // Issue (or retry) a receipt for an existing income transaction.
+  issue: (transactionId: number, description?: string, notes?: string, customerName?: string) =>
+    api.post<{ receipt: Receipt }>('/receipts', { transaction_id: transactionId, description, notes, customer_name: customerName }),
+
+  // Public PDF link + WhatsApp link (to the customer's phone when known).
+  share: (receiptId: number) =>
+    api.get<{ link: string; customerLink: string; whatsappLink: string; customerPhone: string | null }>(`/receipts/${receiptId}/share`),
+
+  // Open WhatsApp with a ready message containing the receipt link.
+  // The tab is opened synchronously so mobile browsers do not block it as a popup.
+  sendWhatsapp: async (receiptId: number) => {
+    const tab = typeof window !== 'undefined' ? window.open('', '_blank') : null;
+    try {
+      const res = await receiptsApi.share(receiptId);
+      const url = res.data?.whatsappLink;
+      if (!url) throw new Error('לא ניתן ליצור קישור לוואטסאפ');
+      if (tab) tab.location.href = url;
+      else window.location.href = url;
+    } catch (error) {
+      tab?.close();
+      throw error;
+    }
+  },
+
+  // Open the receipt PDF in a new tab through its signed https link (a blob URL opened in
+  // another tab does not render on iOS Safari). The tab is opened synchronously so mobile
+  // browsers do not block it as a popup.
+  openPdf: async (receiptId: number) => {
+    const tab = typeof window !== 'undefined' ? window.open('', '_blank') : null;
+    try {
+      const res = await receiptsApi.share(receiptId);
+      const url = res.data?.link;
+      if (!url) throw new Error('לא ניתן לפתוח את הקבלה');
+      if (tab) tab.location.href = url;
+      else window.location.href = url;
+    } catch (error) {
+      tab?.close();
+      throw error;
+    }
+  },
 };
 
 // Dashboard API
@@ -402,6 +480,9 @@ export const ordersApi = {
 
   merge: (targetOrderId: number, sourceOrderId: number, updatedOrderData?: any) =>
     api.post('/orders/merge', { targetOrderId, sourceOrderId, updatedOrderData }),
+
+  toggleReturn: (orderId: number, itemId: number, returned: 0 | 1) =>
+    api.patch(`/orders/${orderId}/items/${itemId}/return`, { returned }),
 
   // --- Attachments ---
   getAttachments: (orderId: number) =>
@@ -510,7 +591,8 @@ function extractFileName(contentDisposition: string | null): string | null {
   return basicMatch?.[1] || null;
 }
 
-async function downloadCsvFile(endpoint: string): Promise<{ blob: Blob; fileName: string }> {
+// Download a file from an authenticated endpoint (CSV export, receipt PDF).
+async function downloadAuthenticatedFile(endpoint: string, fallbackFileName: string): Promise<{ blob: Blob; fileName: string }> {
   const headers: HeadersInit = {};
   const token = api.getToken();
 
@@ -533,7 +615,7 @@ async function downloadCsvFile(endpoint: string): Promise<{ blob: Blob; fileName
   }
 
   if (!response.ok) {
-    let message = 'שגיאה בייצוא נתונים';
+    let message = 'שגיאה בהורדת הקובץ';
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const payload = await response.json() as any;
@@ -547,8 +629,7 @@ async function downloadCsvFile(endpoint: string): Promise<{ blob: Blob; fileName
   }
 
   const blob = await response.blob();
-  const fileName = extractFileName(response.headers.get('content-disposition')) ||
-    `export-${new Date().toISOString().slice(0, 10)}.csv`;
+  const fileName = extractFileName(response.headers.get('content-disposition')) || fallbackFileName;
 
   return { blob, fileName };
 }
@@ -571,8 +652,18 @@ export const exportApi = {
       searchParams.set(key, normalized);
     });
 
-    return downloadCsvFile(`/export/csv?${searchParams.toString()}`);
+    return downloadAuthenticatedFile(
+      `/export/csv?${searchParams.toString()}`,
+      `export-${formatDateInput(new Date())}.csv` // local (Israel) date, not the UTC day
+    );
   },
+};
+
+// Push API
+export const pushApi = {
+  getVapidKey: () => api.get<{ publicKey: string }>('/push/vapid-key'),
+  subscribe: (subscription: PushSubscription) => api.post('/push/subscribe', subscription.toJSON()),
+  unsubscribe: (endpoint: string) => api.post('/push/unsubscribe', { endpoint }),
 };
 
 export default api;

@@ -53,6 +53,8 @@ interface Order {
   id: number;
   customer_id: number;
   customer_name: string;
+  /** customers.receipt_name: display name on agreements/receipts (null = same as customer_name) */
+  customer_display_name?: string | null;
   customer_phone: string;
   customer_email: string | null;
   event_date: string | null;
@@ -158,6 +160,13 @@ export default function OrdersPage() {
     if (orderId && !viewingOrderData) {
       viewOrder(parseInt(orderId));
     }
+
+    // Opened from a push notification's WhatsApp action (see public/sw.js). Only WhatsApp
+    // links are followed, so a crafted link cannot send the user anywhere else.
+    const whatsappUrl = searchParams.get("whatsappUrl");
+    if (whatsappUrl && /^(whatsapp:\/\/|https:\/\/(wa\.me|api\.whatsapp\.com)\/)/.test(whatsappUrl)) {
+      window.location.href = whatsappUrl;
+    }
   }, [searchParams]);
 
   const toggleSelection = (id: number) => {
@@ -222,7 +231,8 @@ export default function OrdersPage() {
       sortOrder: sortOrder,
       page: 1,
       limit: 1000,
-    })
+    }),
+    { keepPreviousData: true }
   );
 
   const orders = ordersRes?.success && ordersRes.data ? (ordersRes.data as any).orders as Order[] : [];
@@ -279,6 +289,27 @@ export default function OrdersPage() {
       toast({ title: "שגיאה", description: "לא ניתן לטעון פרטים", variant: "destructive" });
     } finally {
       setLoadingOrderDetails(false);
+    }
+  };
+
+  const handleToggleReturn = async (itemId: number, currentReturned: number | null) => {
+    if (!viewingOrderData) return;
+    try {
+      const newReturnedStatus = currentReturned === 1 ? 0 : 1;
+      const res = await ordersApi.toggleReturn(viewingOrderData.order.id, itemId, newReturnedStatus);
+      if (res.success) {
+        // Update local state
+        setViewingOrderData(prev => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            items: prev.items.map(it => it.id === itemId ? { ...it, returned: newReturnedStatus, returned_at: newReturnedStatus ? new Date().toISOString() : null } : it)
+          };
+        });
+        toast({ title: "הצלחה", description: "סטטוס החזרה עודכן" });
+      }
+    } catch (error) {
+      toast({ title: "שגיאה", description: "שגיאה בעדכון סטטוס החזרה", variant: "destructive" });
     }
   };
 
@@ -348,7 +379,7 @@ export default function OrdersPage() {
   const handleCreateSignLinkForViewedOrder = async (
     options?: { openWhatsapp?: boolean; copyToClipboard?: boolean }
   ): Promise<string | null> => {
-    if (!viewingOrderData) return;
+    if (!viewingOrderData) return null;
 
     const orderId = viewingOrderData.order.id;
     const shouldOpenWhatsapp = options?.openWhatsapp === true;
@@ -423,7 +454,7 @@ export default function OrdersPage() {
     return acc;
   }, { totalAmount: 0, totalPaid: 0, totalDebt: 0, totalCredit: 0 });
 
-  if (loading) {
+  if (loading && !ordersRes) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
@@ -860,6 +891,9 @@ export default function OrdersPage() {
                   >
                     <h4 className="text-[10px] font-black text-green-600 uppercase tracking-widest mb-3">פרטי לקוחה</h4>
                     <p className="font-black text-xl mb-1">{viewingOrderData.order.customer_name}</p>
+                    {viewingOrderData.order.customer_display_name && viewingOrderData.order.customer_display_name !== viewingOrderData.order.customer_name && (
+                      <p className="text-xs text-muted-foreground mb-1">שם לתצוגה: <span className="font-bold text-foreground">{viewingOrderData.order.customer_display_name}</span></p>
+                    )}
                     <p className="text-sm font-medium mb-1">{formatPhoneNumber(viewingOrderData.order.customer_phone)}</p>
                   </div>
                   <div className="p-5 bg-muted/30 rounded-[1.5rem] border-2 border-muted">
@@ -897,7 +931,8 @@ export default function OrdersPage() {
                         key={idx}
                         className={cn(
                           "p-4 bg-white border-2 rounded-2xl shadow-sm space-y-2",
-                          it.dress_id && "cursor-pointer hover:ring-2 hover:ring-primary/40 transition-all"
+                          it.dress_id && "cursor-pointer hover:ring-2 hover:ring-primary/40 transition-all",
+                          it.returned === 1 && "opacity-80 bg-green-50/30"
                         )}
                         onClick={() => {
                           if (it.dress_id) {
@@ -906,22 +941,83 @@ export default function OrdersPage() {
                           }
                         }}
                       >
-                        <div className="flex justify-between items-center">
-                          <div className="flex items-center gap-3">
-                            <div className="h-10 w-10 bg-muted rounded-xl flex items-center justify-center">
-                              <ShoppingBag className="h-5 w-5 text-muted-foreground" />
+                        <div className="flex justify-between items-start sm:items-center flex-col sm:flex-row gap-3">
+                          <div className="flex justify-between items-center w-full">
+                            <div className="flex items-center gap-3">
+                              <div className="h-10 w-10 bg-muted rounded-xl flex items-center justify-center">
+                                <ShoppingBag className="h-5 w-5 text-muted-foreground" />
+                              </div>
+                              <div>
+                                <p className="font-black text-sm leading-snug break-words whitespace-normal">{it.dress_name}</p>
+                                <p className="text-[10px] font-bold text-muted-foreground uppercase">{getItemTypeLabel(it.item_type)} {it.wearer_name && `• ${it.wearer_name}`}</p>
+                              </div>
                             </div>
-                            <div>
-                              <p className="font-black text-sm leading-snug break-words whitespace-normal">{it.dress_name}</p>
-                              <p className="text-[10px] font-bold text-muted-foreground uppercase">{getItemTypeLabel(it.item_type)} {it.wearer_name && `• ${it.wearer_name}`}</p>
+                            <div className="text-right sm:ml-4">
+                              <p className="font-black text-primary">{formatCurrency(it.final_price || 0)}</p>
+                              {(it.additional_payments > 0) && (
+                                <p className="text-[9px] font-bold text-muted-foreground">בסיס: {formatCurrency(it.base_price || 0)} + {formatCurrency(it.additional_payments || 0)}</p>
+                              )}
                             </div>
                           </div>
-                          <div className="text-right">
-                            <p className="font-black text-primary">{formatCurrency(it.final_price || 0)}</p>
-                            {(it.additional_payments > 0) && (
-                              <p className="text-[9px] font-bold text-muted-foreground">בסיס: {formatCurrency(it.base_price || 0)} + {formatCurrency(it.additional_payments || 0)}</p>
-                            )}
-                          </div>
+                          
+                          {(it.item_type === 'rental' || it.item_type === 'sewing_for_rental') && (
+                            <div className="w-full sm:w-auto mt-2 sm:mt-0 pt-2 sm:pt-0 border-t sm:border-0 border-muted flex items-center gap-2">
+                              {it.returned !== 1 && viewingOrderData.order.customer_phone && (() => {
+                                const unreturnedCount = (viewingOrderData.items || []).filter(item => 
+                                  (item.item_type === 'rental' || item.item_type === 'sewing_for_rental') && !item.returned
+                                ).length || 1;
+                                const dressText = unreturnedCount === 1 ? 'השמלה' : 'השמלות';
+
+                                let actualDays = 0;
+                                if (viewingOrderData.order.event_date) {
+                                  const eventDate = new Date(viewingOrderData.order.event_date);
+                                  const today = new Date();
+                                  eventDate.setHours(0, 0, 0, 0);
+                                  today.setHours(0, 0, 0, 0);
+                                  if (today > eventDate) {
+                                    actualDays = Math.round((today.getTime() - eventDate.getTime()) / (1000 * 60 * 60 * 24));
+                                  }
+                                }
+
+                                const reminderMsg = `שלום ${viewingOrderData.order.customer_display_name || viewingOrderData.order.customer_name} 👋\nזוהי הודעת תזכורת:\n${dressText} שהושכרה לך צריכה לחזור אלינו בתוך יומיים ממועד האירוע, עברו ${actualDays} ימים מאז האירוע.\nמזכירה לך להחזיר עוד היום 🙏`;
+
+                                return (
+                                  <a
+                                    href={createWhatsAppLink(viewingOrderData.order.customer_phone, reminderMsg)}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    onClick={(e) => e.stopPropagation()}
+                                  >
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      className="font-bold h-9 border-[#25D366] text-[#25D366] hover:bg-[#25D366]/10"
+                                    >
+                                      <MessageCircle className="h-4 w-4 ml-1.5" />
+                                      תזכורת ווצאפ
+                                    </Button>
+                                  </a>
+                                );
+                              })()}
+                              <Button
+                                type="button"
+                                variant={it.returned === 1 ? "outline" : "default"}
+                                size="sm"
+                                className={cn(
+                                  "w-full sm:w-auto font-bold h-9",
+                                  it.returned === 1 ? "text-green-700 border-green-300 hover:bg-green-50" : "bg-primary hover:bg-primary/90"
+                                )}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleToggleReturn(it.id, it.returned);
+                                }}
+                              >
+                                <Check className={cn("h-4 w-4 ml-1.5", it.returned === 1 ? "text-green-600" : "")} />
+                                {it.returned === 1 ? "הוחזרה" : "סמני כהוחזרה"}
+                              </Button>
+                            </div>
+                          )}
                         </div>
                         {it.notes && (
                           <p className="text-xs text-muted-foreground border-t pt-2 break-words whitespace-pre-wrap">📝 {it.notes}</p>

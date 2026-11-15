@@ -12,6 +12,7 @@
 import { writeFileSync, mkdirSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { localStorageConfig } from '../config/index.js';
+import { israelDateIso } from '../utils/israelDate.js';
 import { logActivity, LogCategory, LogAction } from './logger.js';
 
 /**
@@ -69,16 +70,6 @@ export function getExpenseCategories(year = new Date().getFullYear()) {
     console.error('Error getting expense categories:', error.message);
     return [];
   }
-}
-
-/**
- * Format date for folder/filename (YYYY-MM-DD)
- */
-function formatDateForFolder(date = new Date()) {
-  const year = date.getFullYear();
-  const month = (date.getMonth() + 1).toString().padStart(2, '0');
-  const day = date.getDate().toString().padStart(2, '0');
-  return `${year}-${month}-${day}`;
 }
 
 /**
@@ -172,7 +163,7 @@ export function saveExpenseReceipt(receiptData, category, description, supplier,
  */
 export function saveAgreementPdf(pdfBuffer, customerName, agreementDate = new Date(), orderId = null) {
   try {
-    const dateStr = formatDateForFolder(agreementDate);
+    const dateStr = israelDateIso(agreementDate); // Israel date of the signing moment (server runs in UTC)
     const cleanName = cleanForFilename(customerName);
 
     // Create folder name: "שם לקוחה - תאריך" or "שם לקוחה - תאריך - מספר הזמנה"

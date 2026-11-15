@@ -12,13 +12,13 @@ const nextConfig = {
   
   // Proxy /api/* and /uploads/* to the backend.
   // On Vercel: BACKEND_URL or NEXT_PUBLIC_API_URL (stripped of /api) must point to the backend.
-  // On Docker/local: defaults to localhost:3001.
+  // On Docker/local: defaults to 127.0.0.1:3001 (the backend listens on loopback only by default).
   async rewrites() {
     const backendUrl = process.env.BACKEND_URL
       || (process.env.NEXT_PUBLIC_API_URL?.match(/^https?:\/\//)
         ? process.env.NEXT_PUBLIC_API_URL.replace(/\/api\/?$/, '')
         : null)
-      || 'http://localhost:3001';
+      || 'http://127.0.0.1:3001';
     return [
       {
         source: '/api/:path*',

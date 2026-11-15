@@ -20,13 +20,23 @@ import {
   Plus,
   Search,
   Check,
-  Upload
+  Upload,
+  FileText,
+  MessageCircle
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { useToast } from "@/components/ui/use-toast";
-import { transactionsApi, customersApi, ordersApi } from "@/lib/api";
+import { transactionsApi, customersApi, ordersApi, receiptsApi, type Receipt } from "@/lib/api";
+import {
+  ReceiptOptions,
+  initialReceiptOptions,
+  withReceiptDefaults,
+  receiptValidationError,
+  useReceiptsStatus,
+  useReceiptCustomerName,
+} from "@/components/dashboard/receipt-options";
 import { cn, getCategoryLabel } from "@/lib/utils";
 import { compressImageForUpload } from "@/lib/shared-upload";
 import { reportClientError } from "@/lib/error-reporter";
@@ -95,6 +105,20 @@ export default function EditTransactionPage() {
   const [lastFourDigits, setLastFourDigits] = useState("");
   const [installments, setInstallments] = useState("1");
 
+  // Receipt (SmartInvoice): the existing receipt row, and options for a late issue / retry
+  const receiptsStatus = useReceiptsStatus();
+  const [receipt, setReceipt] = useState<Receipt | null>(null);
+  const [issuingReceipt, setIssuingReceipt] = useState(false);
+  const receiptCategory = uiCategory === "existing_order" ? "order" : uiCategory;
+  const [receiptOptions, setReceiptOptions] = useState(() => initialReceiptOptions("credit", "order"));
+  // Default name on the receipt: the customer's saved receipt name, else her app name
+  const receiptCustomer = useReceiptCustomerName(customerId, customerSearch);
+
+  useEffect(() => {
+    // On the edit page the receipt is always issued explicitly, so the checkbox state is irrelevant.
+    setReceiptOptions((prev) => withReceiptDefaults({ ...prev, issueTouched: true }, paymentMethod, receiptCategory, receiptCustomer));
+  }, [paymentMethod, receiptCategory, receiptCustomer.key, receiptCustomer.name]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     const loadTransaction = async () => {
       try {
@@ -102,6 +126,16 @@ export default function EditTransactionPage() {
         if (res.success && res.data) {
           const t = (res.data as any).transaction; // Corrected access to .transaction
           if (!t) throw new Error("Transaction not found");
+          const existingReceipt: Receipt | null = (res.data as any).receipt || null;
+          setReceipt(existingReceipt);
+          if (existingReceipt) {
+            setReceiptOptions((prev) => ({
+              ...prev,
+              description: existingReceipt.description,
+              notes: existingReceipt.notes || "",
+              descriptionTouched: true,
+            }));
+          }
 
           setType(t.type);
           setAmount(t.amount.toString());
@@ -231,32 +265,9 @@ export default function EditTransactionPage() {
 
     setSaving(true);
     try {
-      const data: any = {
-        type,
-        amount: parseFloat(amount),
-        category,
-        date,
-        supplier: type === "expense" ? supplier : undefined,
-        product: type === "expense" ? product : undefined,
-        payment_method: paymentMethod || undefined,
-        notes: notes || undefined,
-        confirmation_number: confirmationNumber || undefined,
-        check_number: checkNumber || undefined,
-        last_four_digits: lastFourDigits || undefined,
-        installments: installments ? parseInt(installments) : 1,
-        bank_details: (bankNumber || branchNumber || accountNumber) ?
-          JSON.stringify({ bank: bankNumber, branch: branchNumber, account: accountNumber }) : undefined,
-        customer_id: customerId ? parseInt(customerId) : undefined,
-        order_id: orderId ? parseInt(orderId) : undefined,
-        fileBase64,
-        fileName,
-        customer_charge_amount: type === 'expense' && expenseAllocation !== 'business'
-          ? (expenseAllocation === 'customer' ? parseFloat(amount) : parseFloat(customerChargeAmount || '0'))
-          : 0,
-      };
-
-      await transactionsApi.update(parseInt(transactionId), data);
-      toast({ title: "הצלחה!", description: "העסקה עודכנה בהצלחה" });
+      const res = await transactionsApi.update(parseInt(transactionId), buildUpdateData());
+      const receiptWarning = (res.data as any)?.receiptWarning as string | null | undefined;
+      toast({ title: "הצלחה!", description: receiptWarning || "העסקה עודכנה בהצלחה" });
       router.push("/dashboard/transactions");
     } catch (error) {
       const message = error instanceof Error && error.message
@@ -273,6 +284,66 @@ export default function EditTransactionPage() {
       setSaving(false);
     }
   };
+
+  // Issue (or retry) the receipt: save the current form first, so the receipt
+  // is built from exactly what is on screen, then ask the backend to issue it.
+  const handleIssueReceipt = async () => {
+    const receiptError = receiptValidationError(receiptOptions);
+    if (receiptError) {
+      toast({ title: "חסרים פרטים לקבלה", description: receiptError, variant: "destructive" });
+      return;
+    }
+    if (!customerId) {
+      toast({ title: "חסרה לקוחה", description: "נא לבחור לקוחה לפני הפקת קבלה.", variant: "destructive" });
+      return;
+    }
+    setIssuingReceipt(true);
+    try {
+      await transactionsApi.update(parseInt(transactionId), buildUpdateData());
+      const res = await receiptsApi.issue(
+        parseInt(transactionId),
+        receiptOptions.description.trim(),
+        receiptOptions.notes.trim(),
+        receiptOptions.customerName.trim()
+      );
+      if (res.data?.receipt) setReceipt(res.data.receipt);
+      toast({ title: "הצלחה!", description: res.message || "הקבלה הופקה" });
+    } catch (error) {
+      const message = error instanceof Error && error.message ? error.message : "הפקת הקבלה נכשלה";
+      toast({ title: "הפקת הקבלה נכשלה", description: message, variant: "destructive" });
+      const refreshed = await transactionsApi.get(parseInt(transactionId)).catch(() => null);
+      if (refreshed?.success) setReceipt((refreshed.data as any)?.receipt || null);
+    } finally {
+      setIssuingReceipt(false);
+    }
+  };
+
+  function buildUpdateData() {
+    const data: any = {
+      type,
+      amount: parseFloat(amount),
+      category,
+      date,
+      supplier: type === "expense" ? supplier : undefined,
+      product: type === "expense" ? product : undefined,
+      payment_method: paymentMethod || undefined,
+      notes: notes || undefined,
+      confirmation_number: confirmationNumber || undefined,
+      check_number: checkNumber || undefined,
+      last_four_digits: lastFourDigits || undefined,
+      installments: installments ? parseInt(installments) : 1,
+      bank_details: (bankNumber || branchNumber || accountNumber) ?
+        JSON.stringify({ bank: bankNumber, branch: branchNumber, account: accountNumber }) : undefined,
+      customer_id: customerId ? parseInt(customerId) : undefined,
+      order_id: orderId ? parseInt(orderId) : undefined,
+      fileBase64,
+      fileName,
+      customer_charge_amount: type === 'expense' && expenseAllocation !== 'business'
+        ? (expenseAllocation === 'customer' ? parseFloat(amount) : parseFloat(customerChargeAmount || '0'))
+        : 0,
+    };
+    return data;
+  }
 
   if (loading) return <div className="flex items-center justify-center min-h-screen">טוען...</div>;
 
@@ -658,6 +729,62 @@ export default function EditTransactionPage() {
             </div>
           )}
         </section>
+
+        {type === "income" && receiptsStatus.enabled && (
+          <section className="space-y-2">
+            <label className="text-xs font-bold text-muted-foreground flex items-center gap-1 uppercase tracking-widest">
+              <FileText className="h-3 w-3" /> קבלה
+            </label>
+            {receipt?.status === "issued" ? (
+              <div className="rounded-2xl border-2 p-4 space-y-1 border-green-200 bg-green-50">
+                <p className="font-bold">{`קבלה ${receipt.document_number || ""} הופקה`}</p>
+                <p className="text-xs text-muted-foreground">עבור: {receipt.description}{receipt.notes ? ` · הערה: ${receipt.notes}` : ""}</p>
+                {receipt.payment_reference && <p className="text-xs text-muted-foreground">פרטי תשלום: {receipt.payment_reference}</p>}
+                {receipt.email_sent_to && <p className="text-xs text-muted-foreground">נשלחה במייל אל {receipt.email_sent_to}</p>}
+                {receipt.drive_file_name && <p className="text-xs text-muted-foreground">נשמרה בדרייב: {receipt.drive_file_name}</p>}
+                <p className="text-xs text-amber-700">קבלה שהופקה אינה ניתנת לשינוי. שינוי פרטי התנועה לא ישנה אותה.</p>
+                <div className="flex flex-wrap gap-2 mt-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="rounded-xl"
+                    onClick={() => receiptsApi.openPdf(receipt.id).catch((error) =>
+                      toast({ title: "שגיאה", description: error instanceof Error ? error.message : "לא ניתן לפתוח את הקבלה", variant: "destructive" })
+                    )}
+                  >
+                    <FileText className="h-4 w-4 ml-1" /> הצגת הקבלה
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="rounded-xl border-green-600 text-green-700 hover:bg-green-50"
+                    onClick={() => receiptsApi.sendWhatsapp(receipt.id).catch((error) =>
+                      toast({ title: "שגיאה", description: error instanceof Error ? error.message : "לא ניתן לשלוח בוואטסאפ", variant: "destructive" })
+                    )}
+                  >
+                    <MessageCircle className="h-4 w-4 ml-1" /> שליחה בוואטסאפ
+                  </Button>
+                </div>
+              </div>
+            ) : receipt?.status === "pending" ? (
+              <div className="rounded-2xl border-2 p-4 text-sm text-muted-foreground">הקבלה בהפקה... רענני את הדף בעוד רגע.</div>
+            ) : (
+              <div className="space-y-2">
+                {receipt?.status === "failed" && (
+                  <div className="rounded-2xl border-2 border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                    הפקת הקבלה נכשלה: {receipt.error_message}
+                  </div>
+                )}
+                <ReceiptOptions value={receiptOptions} onChange={setReceiptOptions} hideToggle />
+                <Button type="button" onClick={handleIssueReceipt} disabled={issuingReceipt || saving} className="w-full h-11 rounded-xl font-bold">
+                  {issuingReceipt ? "מפיקה קבלה..." : receipt?.status === "failed" ? "שמירה וניסיון חוזר להפקת קבלה" : "שמירה והפקת קבלה"}
+                </Button>
+              </div>
+            )}
+          </section>
+        )}
 
       </form >
 

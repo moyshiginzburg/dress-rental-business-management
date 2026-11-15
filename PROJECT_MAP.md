@@ -1,6 +1,6 @@
 # 🗺️ PROJECT MAP: dress-rental-business-management
 
-**Generated:** 2026-05-17 17:37:37
+**Generated:** 2026-11-15 14:24:17
 
 > **Note:** This map shows the project structure and code signatures (classes, functions, methods).
 > Run `python3 dev_tools/generate_repo_map.py` to regenerate after significant changes.
@@ -9,18 +9,18 @@
 
 ## 📁 / (root)
 - 📄 .gitignore
-
 - 📄 ARCHITECTURE.md
 - 📄 CHANGELOG.md
+- 📄 CONTRIBUTING.md
+- 📄 LICENSE
 - 📄 PROJECT_MAP.md
 - 📄 README.md
+- 📄 SECURITY.md
 - 📄 SETUP.md
 - 📄 env.example
 - 📄 package.json
-- 📄 requirements.txt
 
 ### 📁 apps_script/
-  - 📄 .clasp.json
   #### 📄 Code.js
   ```
   function doPost(e)
@@ -41,6 +41,9 @@
   function handleDriveUpload(payload, message)
   function findOrCreateFolder(parentFolder, folderName)
   function extractReceiptData(fileBlob, paymentMethod)
+  function getReceiptSummaryText(receipt)
+  function buildReceiptRowsHtml(receipt)
+  function buildReceiptPdfBlob(pdfBase64, fileName)
   function handleIncomeDetailed(payload)
   function handleOrderNotification(payload)
   function getMimeTypeFromFilename(filename)
@@ -52,16 +55,16 @@
   function sendErrorNotification(error)
   function testDoPost()
   ```
+  - 📄 Secrets.js.example
   - 📄 appsscript.json
 
 ### 📁 backend/
   - 📄 package.json
 
-  ### 📁 local_data/
-
   ### 📁 src/
     #### 📄 index.js
     ```
+      const runReceiptRecovery = () =>
     function shutdown()
     ```
 
@@ -98,6 +101,7 @@
       ```
       #### 📄 auth.js
       ```
+      function clearAuthCookie(res)
       export function requireAuth(req, res, next)
       export function optionalAuth(req, res, next)
       export function requireAdmin(req, res, next)
@@ -105,17 +109,20 @@
       ```
       #### 📄 errorHandler.js
       ```
+      function redactSecrets(value, depth = 0)
       export class ApiError extends Error
         constructor(statusCode, message, details = null)()
       export function notFoundHandler(req, res, next)
       export function errorHandler(err, req, res, next)
       ```
+      #### 📄 loginProtection.js
+      *(no signatures found)*
 
     ### 📁 routes/
       #### 📄 agreements.js
       ```
       function getOrderForAgreement(orderId)
-      function createAgreementToken(orderId)
+      function createAgreementToken(orderId, eventDateStr)
       function resolveAgreementToken(token)
       function buildAgreementPrefillPayload(orderWithItems)
       function getLatestAgreementForOrder(orderId)
@@ -127,6 +134,10 @@
       #### 📄 apps-script-logs.js
       ```
       function getDateString()
+      function secretMatches(presented, expected)
+      function requireGasSecret(req, res, next)
+      function oneLine(value, max)
+      function buildLogLine(raw)
       ```
       #### 📄 auth.js
       ```
@@ -173,6 +184,12 @@
       function recomputeDressIncomeAndCount(dressId)
       function removeOrderDressHistory(orderId)
       ```
+      #### 📄 push.js
+      *(no signatures found)*
+      #### 📄 receipts.js
+      ```
+      async function sendReceiptPdf(res, receipt)
+      ```
       #### 📄 transactions.js
       ```
       function recomputeOrderPaidAmount(orderId)
@@ -215,13 +232,17 @@
       export function isEmailEnabled()
       async function postToAppsScriptWebApp(payload)
       async function sendEmail(options)
+      function escapeHtml(value)
+      export function buildReceiptEmailHtml({ customerName, documentNumber, amount, issuedDate, description })
+        const row = (label, value, strong = false) =>
+      export async function sendReceiptToCustomer({ to, customerName, documentNumber, amount, issuedDate, description, pdfBuffer, fileName })
       function formatDateHebrew(date)
       function createWhatsAppLink(phone, message = '')
       export async function testEmailConnection()
       export async function sendToAppsScript(payload)
       export async function sendCalendarEvent({ title, date, allDay = true })
       export async function sendTaskToGoogle({ listName = 'לקוחות', title, dueDate })
-      export async function sendFileToDrive({ fileName, folder, fileBuffer })
+      export async function sendFileToDrive({ fileName, folder, fileBuffer, mimeType })
       export async function sendDriveRename({ oldFolder, oldFileName, newFolder, newFileName })
       export async function sendOrderUpdate({ oldCustomerName, oldEventDate, newCustomerName, newEventDate, newOrderSummary })
       export async function sendToEmailList({ email, name })
@@ -237,7 +258,6 @@
       export function getExpensesFolderPath()
       export function getAgreementsFolderPath()
       export function getExpenseCategories(year = new Date().getFullYear())
-      function formatDateForFolder(date = new Date())
       function cleanForFilename(str)
       function formatDateYYMMDD(date = new Date())
       export function saveExpenseReceipt(receiptData, category, description, supplier, amount, expenseDate = new Date(), extension = 'jpg')
@@ -264,7 +284,7 @@
       function shouldSendTelegramAlert(data)
       export function logUserAction(req, action, category, entityType = null, entityId = null, entityName = null, details = null)
       export function logError(req, error, category = LogCategory.ERROR)
-      export function logLogin(email, success, userId = null, userName = null, ipAddress = null, userAgent = null, errorMessage = null)
+      export function logLogin(email, success, userId = null, userName = null, ipAddress = null, userAgent = null, errorMessage = null, reqContext = {})
       ```
       #### 📄 paymentDetails.js
       ```
@@ -293,9 +313,84 @@
       ```
       export function normalizePhoneNumber(value)
       ```
+      #### 📄 pushNotifications.js
+      ```
+      function createWhatsAppLink(phone, message)
+      export async function sendPushNotification(subscription, payload)
+      function calculateDateDiffs(eventDateStr, todayStr)
+      export async function sendReturnReminders()
+      ```
+      #### 📄 receipts.js
+      ```
+      const driveIncomeFolder = (year) =>
+      export function toSmartInvoiceMethod(appMethod)
+      function fallbackMethodLabel(appMethod)
+      export function waitForReceiptFollowUps(receiptId)
+      export function getReceiptsStatus()
+      export function getDefaultReceiptDescription(category)
+      export function parseReceiptRequest(value, category)
+      export function getCustomerReceiptName(customerId)
+      export function saveCustomerReceiptName(customerId, receiptName)
+      function parseBankDetails(value)
+      export function buildPaymentReference(transaction)
+      export function requestReceipt(transactionId, { description, notes })
+      export function isObsoleteTestReceipt(receipt)
+      export function getVisibleReceiptByTransactionId(transactionId)
+      export function isStuckPending(receipt)
+      export function getReceiptById(id)
+      export function getReceiptByTransactionId(transactionId)
+      function markFailed(receipt, code, message, { consumeKey, technicalDetail = null, outage = false })
+      function alertReceiptNotIssued(receiptId, reason, { outage = false } = {})
+      function alertDriveSaveFailed(receipt, reason)
+      function heMessage(code, fallback)
+      function describeNetworkError(error, timeoutMs = smartInvoiceConfig.timeoutMs)
+      async function callSmartInvoice(method, path, { body, idempotencyKey, raw = false } = {})
+      export async function issueReceipt(receiptId, { waitForFollowUps = true } = {})
+      async function issueReceiptNow(receiptId)
+      function documentNumberOf(document)
+      async function completeIssuedReceipt(receipt, transaction, { documentId, documentNumber, pdfUrl, adopted })
+        const followUps = (async () =>
+      async function emailReceiptToCustomer(receipt, email)
+        const fail = (why) =>
+      const normalizeName = (value) =>
+      function documentTotalOf(document)
+      async function findExistingReceiptDocument(receipt, { amount, names })
+      export async function requestAndIssueReceipt(transactionId, options)
+      async function fetchReceiptPdfFromSmartInvoice(receipt)
+      function buildReceiptLocalFileName(receipt)
+      export async function getReceiptPdf(receipt)
+      function cleanForFileName(value)
+      function israelDateParts(sqliteUtc)
+      export function buildReceiptDriveFileName(receipt)
+      export async function saveReceiptToDrive(receipt)
+      export function createReceiptShareToken(receiptId)
+      export function resolveReceiptShareToken(token)
+      const providerViewUrl = (documentId) =>
+      async function providerViewLinkFor(receipt)
+      export async function buildReceiptShareLinks(receiptId)
+      export async function recoverStuckReceipts()
+      export async function recoverMissingReceiptCopies()
+      export async function sendReceiptOwnerEmail(receipt)
+      export async function buildReceiptEmailInfo(receipt)
+      function isTemporaryProviderFailure(status, code)
+      function watchReceiptForOutage(receiptId, reason = null)
+      function stopOutageWatch(event, details = {})
+      async function probeSmartInvoice()
+      function shortHebrewDate(isoDate)
+      function buildOutageRecoveredMessage(rows, probe)
+      async function checkOutageRecovery()
+      export function resumeReceiptOutageWatch()
+      ```
+      #### 📄 returnCheckCron.js
+      ```
+      export function startReturnCheckCron()
+      ```
       #### 📄 telegram.js
       ```
+      function prepareMessage(message)
+      function postMessage({ token, chatId, text })
       export function sendTelegramAlert(message)
+      export async function sendTelegramAlertConfirmed(message)
       ```
 
     ### 📁 utils/
@@ -304,6 +399,18 @@
       export function getHebrewDate(date, includeYear = false)
       export function getHebrewDateShort(date)
       export function getFullHebrewDate(date)
+      ```
+      #### 📄 ip.js
+      ```
+      export function getClientIp(req)
+      function cleanIp(ip)
+      ```
+      #### 📄 israelDate.js
+      ```
+      export function israelDateIso(date = new Date())
+      export function israelTodayIso()
+      export function israelOffsetMinutes(date = new Date())
+      export function israelEndOfDay(isoDate)
       ```
       #### 📄 textUtils.js
       ```
@@ -327,9 +434,9 @@
 
 ### 📁 docs/
   - 📄 DB-SCHEMA.md
+  - 📄 SMARTINVOICE.md
 
 ### 📁 frontend/
-  - 📄 .eslintrc.json
   #### 📄 next-env.d.ts
   *(no signatures found)*
   #### 📄 next.config.js
@@ -342,7 +449,6 @@
   #### 📄 tailwind.config.js
   *(no signatures found)*
   - 📄 tsconfig.json
-  - 📄 tsconfig.tsbuildinfo
 
   ### 📁 public/
     - 📄 manifest.json
@@ -356,6 +462,7 @@
   ### 📁 src/
     #### 📄 middleware.ts
     ```
+    function withOriginSecret(request: NextRequest)
     export function middleware(request: NextRequest)
     ```
 
@@ -398,7 +505,6 @@
         function getCurrentMonthRange():
         interface DashboardData
         export default function DashboardPage()
-            const fetchData = async () =>
         ```
 
         ### 📁 agreements/
@@ -433,7 +539,10 @@
           function getIntendedUseLabel(intendedUse: "rental" | "sale" | null | undefined)
           function getIntendedUseShortLabel(intendedUse: "rental" | "sale" | null | undefined)
           function isDressBookable(status: string)
+          interface SavedListState
+          function takeSavedListState(): SavedListState | null
           export default function DressesPage()
+            const goToEdit = (id: number) =>
             const viewDress = async (id: number) =>
             const toggleSelection = (id: number) =>
             const handleMergeClick = () =>
@@ -491,6 +600,7 @@
             const handleStatusUpdate = async (orderId: number, status: string) =>
             const handleDelete = async (order: Order) =>
             const viewOrder = async (orderId: number) =>
+            const handleToggleReturn = async (itemId: number, currentReturned: number | null) =>
             const fetchAttachments = async (orderId: number) =>
             const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) =>
             const handleDeleteAttachment = async (attachmentId: number) =>
@@ -533,6 +643,8 @@
             ```
             interface OrderItem
             interface DepositPayment
+            function isPaymentMissingAmount(payment: DepositPayment): boolean
+            function getPaymentReceipt(payment: DepositPayment, customer: ReceiptCustomer): ReceiptOptionsState
             interface Dress
             function normalizeDateOnly(value: string | null | undefined)
             function isDressMatchingItemType(dress: Dress | undefined, itemType: string)
@@ -557,9 +669,13 @@
           #### 📄 page.tsx
           ```
           interface Transaction
+          function hasFreshPendingReceipt(res: any): boolean
           export default function TransactionsPage()
               const handleKey = (e: KeyboardEvent) =>
             const handleDelete = async (transaction: Transaction) =>
+          function ReceiptBadge({ transaction, onFailedClick }: { transaction: Transaction; onFailedClick: () => void })
+          function ReceiptActions({ transaction }: { transaction: Transaction })
+            const onError = (error: unknown) =>
           ```
 
           ### 📁 [id]/
@@ -572,6 +688,8 @@
                   const loadData = async () =>
                 const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) =>
                 const handleSubmit = async (e: React.FormEvent) =>
+                const handleIssueReceipt = async () =>
+                function buildUpdateData()
               ```
 
           ### 📁 new/
@@ -633,6 +751,20 @@
         function getDefaultIntendedUseFilter(itemType: string | undefined): IntendedUseFilter
         function matchesIntendedUseFilter(dress: Dress, filter: IntendedUseFilter)
         ```
+        #### 📄 receipt-options.tsx
+        ```
+        export interface ReceiptOptionsState
+        export interface ReceiptCustomer
+        export function defaultReceiptDescription(category: string): string
+        export function defaultReceiptIssue(paymentMethod: string): boolean
+        export function initialReceiptOptions(paymentMethod: string, category: string, customer?: ReceiptCustomer): ReceiptOptionsState
+        export function toReceiptRequest(state: ReceiptOptionsState, enabled: boolean): ReceiptRequest | undefined
+        export function receiptValidationError(state: ReceiptOptionsState): string | null
+        export function useReceiptCustomerName(customerId: string | number | null | undefined, fallbackName: string): ReceiptCustomer
+        export function useReceiptsStatus()
+        interface ReceiptOptionsProps
+        export function ReceiptOptions({ value, onChange, className, hideToggle }: ReceiptOptionsProps)
+        ```
 
       ### 📁 layout/
         #### 📄 global-search.tsx
@@ -659,7 +791,9 @@
       ### 📁 pwa/
         #### 📄 sw-register.tsx
         ```
+        function urlBase64ToUint8Array(base64String: string)
         export function ServiceWorkerRegister()
+        export async function forceResubscribePush()
         ```
 
       ### 📁 ui/
@@ -721,11 +855,13 @@
         setToken(token: string | null)()
         getToken()()
         isAuthenticated()()
+      export interface ReceiptRequest
+      export interface Receipt
       export interface ExportFilterOption
       export interface ExportFilterDefinition
       export interface ExportDataset
       function extractFileName(contentDisposition: string | null): string | null
-      async function downloadCsvFile(endpoint: string): Promise<
+      async function downloadAuthenticatedFile(endpoint: string, fallbackFileName: string): Promise<
       ```
       #### 📄 error-reporter.ts
       ```
@@ -773,13 +909,6 @@
       export function createWhatsAppLink(phone: string, message?: string): string
       ```
 
-    ### 📁 styles/
-
-### 📁 local_data/
-
-  ### 📁 backend_data/
-    - 📄 backend_data.db
-
 ### 📁 scripts/
   #### 📄 auto-update-direct.sh
   ```
@@ -790,18 +919,20 @@
   ```
   log() {
   ```
+  #### 📄 configure.sh
+  ```
+  header() {
+  log()   {
+  warn()  {
+  ask()   {
+  replace_in_files() {
+  ```
   #### 📄 daily-security-report.sh
   ```
   log() {
   ```
   #### 📄 pm2-ecosystem.config.js
   *(no signatures found)*
-  #### 📄 setup-direct-install.sh
-  ```
-  log()  {
-  warn() {
-  error(){
-  ```
   #### 📄 setup-new-server.sh
   ```
   log()    {
@@ -809,6 +940,7 @@
   error()  {
   header() {
   ask()    {
+  ensure_secret() {
   ```
   #### 📄 start-app.sh
   *(no signatures found)*
@@ -830,3 +962,6 @@
   *(no signatures found)*
   #### 📄 wait-for-port.sh
   *(no signatures found)*
+
+  ### 📁 nginx/
+    - 📄 origin-secret.conf.template

@@ -15,7 +15,7 @@ import { Button } from "@/components/ui/button";
 import { DateRangeFilter } from "@/components/ui/date-range-filter";
 import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
-import { transactionsApi, customersApi } from "@/lib/api";
+import { transactionsApi, customersApi, receiptsApi } from "@/lib/api";
 import {
   formatCurrency,
   formatDateShort,
@@ -35,6 +35,7 @@ import {
   ChevronRight,
   ChevronLeft,
   FileText,
+  MessageCircle,
 } from "lucide-react";
 
 interface Transaction {
@@ -55,6 +56,22 @@ interface Transaction {
   customer_charge_amount: number | null;
   items_breakdown: string | null; // Added: "type:price,type:price"
   order_total_price: number | null; // Added
+  receipt_id: number | null;
+  receipt_status: "pending" | "issued" | "failed" | null;
+  receipt_number: string | null;
+  receipt_error: string | null;
+  receipt_updated_at: string | null;
+}
+
+// A receipt is issued in the background a few seconds after the income is saved.
+// While one is pending (and not stuck for more than 2 minutes) the list keeps refreshing.
+function hasFreshPendingReceipt(res: any): boolean {
+  const rows: Transaction[] = res?.success ? res.data?.transactions || [] : [];
+  return rows.some((t) => {
+    if (t.receipt_status !== "pending" || !t.receipt_updated_at) return false;
+    const updated = new Date(`${t.receipt_updated_at.replace(" ", "T")}Z`).getTime();
+    return Date.now() - updated < 2 * 60 * 1000;
+  });
 }
 
 const INCOME_CATEGORIES = [
@@ -170,7 +187,8 @@ export default function TransactionsPage() {
       endDate: dateTo || undefined,
       customer_id: customerId || undefined,
       limit: 100000,
-    })
+    }),
+    { keepPreviousData: true, refreshInterval: (latest) => (hasFreshPendingReceipt(latest) ? 5000 : 0) }
   );
 
   const rawTransactions = useMemo(() => {
@@ -209,11 +227,15 @@ export default function TransactionsPage() {
   );
 
   const handleDelete = async (transaction: Transaction) => {
-    if (!confirm("האם לבטל את העסקה?")) return;
+    const hasRealReceipt = transaction.receipt_status === "issued";
+    const question = hasRealReceipt
+      ? `לתנועה זו הופקה קבלה ${transaction.receipt_number || ""}. מחיקת התנועה לא מבטלת את הקבלה. האם למחוק את העסקה?`
+      : "האם לבטל את העסקה?";
+    if (!confirm(question)) return;
 
     try {
-      await transactionsApi.delete(transaction.id);
-      toast({ title: "הצלחה", description: "עסקה נמחקה בהצלחה" });
+      const res = await transactionsApi.delete(transaction.id);
+      toast({ title: "הצלחה", description: res.message || "עסקה נמחקה בהצלחה" });
       mutate();
     } catch (error) {
       toast({
@@ -224,7 +246,7 @@ export default function TransactionsPage() {
     }
   };
 
-  if (loading) {
+  if (loading && !txRes) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
@@ -501,12 +523,18 @@ export default function TransactionsPage() {
                         </div>
                       </td>
                       <td className="p-3">
-                        {transaction.payment_method
-                          ? getPaymentMethodLabel(transaction.payment_method)
-                          : "-"}
+                        <div className="flex flex-col items-start gap-1">
+                          <span>
+                            {transaction.payment_method
+                              ? getPaymentMethodLabel(transaction.payment_method)
+                              : "-"}
+                          </span>
+                          <ReceiptBadge transaction={transaction} onFailedClick={() => router.push(`/dashboard/transactions/${transaction.id}/edit`)} />
+                        </div>
                       </td>
                       <td className="p-3">
                         <div className="flex gap-1">
+                          <ReceiptActions transaction={transaction} />
                           <Button
                             variant="ghost"
                             size="icon"
@@ -598,5 +626,73 @@ export default function TransactionsPage() {
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Small receipt status badge for a transaction row: real receipt number (opens
+ * the PDF), test receipt, receipt being issued, or a failure (opens the edit page to retry).
+ */
+function ReceiptBadge({ transaction, onFailedClick }: { transaction: Transaction; onFailedClick: () => void }) {
+  const { toast } = useToast();
+  if (!transaction.receipt_id || !transaction.receipt_status) return null;
+
+  const base = "text-[10px] font-bold px-1.5 py-0.5 rounded-md w-fit whitespace-nowrap";
+
+  if (transaction.receipt_status === "pending") {
+    return <span className={cn(base, "bg-muted text-muted-foreground")}>קבלה בהפקה...</span>;
+  }
+  if (transaction.receipt_status === "failed") {
+    return (
+      <button type="button" onClick={onFailedClick} title={transaction.receipt_error || ""} className={cn(base, "bg-red-50 text-red-700 hover:bg-red-100")}>
+        קבלה נכשלה
+      </button>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={() =>
+        receiptsApi.openPdf(transaction.receipt_id as number).catch((error) =>
+          toast({ title: "שגיאה", description: error instanceof Error ? error.message : "לא ניתן לפתוח את הקבלה", variant: "destructive" })
+        )
+      }
+      className={cn(base, "bg-green-50 text-green-700 hover:bg-green-100 inline-flex items-center gap-1")}
+      title="פתיחת הקבלה"
+    >
+      <FileText className="h-3 w-3" /> קבלה {transaction.receipt_number}
+    </button>
+  );
+}
+
+/** "Show receipt" and "send on WhatsApp" buttons for a row whose receipt was issued. */
+function ReceiptActions({ transaction }: { transaction: Transaction }) {
+  const { toast } = useToast();
+  if (transaction.receipt_status !== "issued" || !transaction.receipt_id) return null;
+
+  const receiptId = transaction.receipt_id;
+  const onError = (error: unknown) =>
+    toast({ title: "שגיאה", description: error instanceof Error ? error.message : "הפעולה נכשלה", variant: "destructive" });
+
+  return (
+    <>
+      <Button
+        variant="ghost"
+        size="icon"
+        onClick={() => receiptsApi.openPdf(receiptId).catch(onError)}
+        title="הצגת הקבלה"
+      >
+        <FileText className="h-4 w-4" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        onClick={() => receiptsApi.sendWhatsapp(receiptId).catch(onError)}
+        className="text-green-600 hover:text-green-700"
+        title="שליחת הקבלה בוואטסאפ ללקוחה"
+      >
+        <MessageCircle className="h-4 w-4" />
+      </Button>
+    </>
   );
 }

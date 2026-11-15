@@ -49,25 +49,27 @@ fi
 # grep -c exits 1 when no matches but still outputs "0"; the || assignment
 # pattern keeps the captured count when grep succeeds (exit 0) and sets 0
 # explicitly when grep finds nothing (exit 1), avoiding a "0\n0" double-output.
-FAILED_LOGINS="$(grep -c 'login_failed' "$DAILY_LOG" 2>/dev/null)" || FAILED_LOGINS="0"
-UNAUTHORIZED="$(grep -c '\[401\]' "$DAILY_LOG" 2>/dev/null)"       || UNAUTHORIZED="0"
-FORBIDDEN="$(grep -c '\[403\]' "$DAILY_LOG" 2>/dev/null)"           || FORBIDDEN="0"
-WARN_COUNT="$(grep -c '\[WARN\]' "$DAILY_LOG" 2>/dev/null)"         || WARN_COUNT="0"
+SUCCESSFUL_LOGINS="$(grep -c '\[auth\] login ' "$DAILY_LOG" 2>/dev/null)" || SUCCESSFUL_LOGINS="0"
+FAILED_LOGINS="$(grep -c 'login_failed' "$DAILY_LOG" 2>/dev/null)"     || FAILED_LOGINS="0"
+UNAUTHORIZED="$(grep -c '\[401\]' "$DAILY_LOG" 2>/dev/null)"           || UNAUTHORIZED="0"
+FORBIDDEN="$(grep -c '\[403\]' "$DAILY_LOG" 2>/dev/null)"               || FORBIDDEN="0"
+WARN_COUNT="$(grep -c '\[WARN\]' "$DAILY_LOG" 2>/dev/null)"             || WARN_COUNT="0"
 
-TOTAL_SUSPICIOUS=$(( FAILED_LOGINS + UNAUTHORIZED + FORBIDDEN ))
+TOTAL_ACTIVITY=$(( SUCCESSFUL_LOGINS + FAILED_LOGINS + UNAUTHORIZED + FORBIDDEN ))
 
-if [ "$TOTAL_SUSPICIOUS" -eq 0 ] && [ "$WARN_COUNT" -eq 0 ]; then
-    log "No suspicious activity found today. No report sent."
+if [ "$TOTAL_ACTIVITY" -eq 0 ] && [ "$WARN_COUNT" -eq 0 ]; then
+    log "No login or suspicious activity found today. No report sent."
     exit 0
 fi
 
 # Build the report message
-REPORT="Security report for ${TODAY}:"
+REPORT="Security & Login report for ${TODAY}:"
 
-[ "$FAILED_LOGINS" -gt 0 ] && REPORT="${REPORT}"$'\n'"- Failed login attempts: ${FAILED_LOGINS}"
-[ "$UNAUTHORIZED"  -gt 0 ] && REPORT="${REPORT}"$'\n'"- Unauthorized (401): ${UNAUTHORIZED}"
-[ "$FORBIDDEN"     -gt 0 ] && REPORT="${REPORT}"$'\n'"- Forbidden (403): ${FORBIDDEN}"
-[ "$WARN_COUNT"    -gt 0 ] && REPORT="${REPORT}"$'\n'"- Other warnings: ${WARN_COUNT}"
+[ "$SUCCESSFUL_LOGINS" -gt 0 ] && REPORT="${REPORT}"$'\n'"- Successful logins: ${SUCCESSFUL_LOGINS}"
+[ "$FAILED_LOGINS"     -gt 0 ] && REPORT="${REPORT}"$'\n'"- Failed login attempts: ${FAILED_LOGINS}"
+[ "$UNAUTHORIZED"      -gt 0 ] && REPORT="${REPORT}"$'\n'"- Unauthorized (401): ${UNAUTHORIZED}"
+[ "$FORBIDDEN"         -gt 0 ] && REPORT="${REPORT}"$'\n'"- Forbidden (403): ${FORBIDDEN}"
+[ "$WARN_COUNT"        -gt 0 ] && REPORT="${REPORT}"$'\n'"- Other warnings: ${WARN_COUNT}"
 
 REPORT="${REPORT}"$'\n'"Check logs: ssh root@YOUR_VPS_IP then: cat local_data/logs/${TODAY}.log"
 

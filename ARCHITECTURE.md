@@ -1,7 +1,7 @@
 # 🏗️ ARCHITECTURE.md - Dress Rental Business Management
 
 > **Purpose:** Complete architectural guide for AI agents and developers.
-> Last Updated: 2026-02-25
+> Last Updated: 2026-11-15
 
 ---
 
@@ -11,12 +11,15 @@
 |------|----------|-------------|
 | Frontend | `frontend/` | Next.js React app |
 | Backend | `backend/` | Express.js REST API |
-| Database | `local_data/backend_data/backend_data.db` | SQLite (Persistent) |
+| Database | `local_data/backend_data/business.db` | SQLite (Persistent) |
 | DB Schema Reference | `docs/DB-SCHEMA.md` | Authoritative live table schema with PK/FK/constraints + short column purposes |
 | Logs | `local_data/logs/` | System & Error logs |
 | Google Integration | `apps_script/` | Via Web App POST (instant) |
 | API Client | `frontend/src/lib/api.ts` | Centralized fetch wrapper |
 | Android Share-In | `frontend/public/sw.js` + `frontend/src/app/share-target/page.tsx` | PWA share target routing into forms |
+| Receipts (SmartInvoice) | `backend/src/services/receipts.js` + `docs/SMARTINVOICE.md` | Optional automatic legal receipts for income |
+| Return reminders (Web Push) | `backend/src/services/pushNotifications.js` + `frontend/public/sw.js` | Daily push notification about rented dresses not returned |
+| Israel dates | `backend/src/utils/israelDate.js` | "Today" / dates in Israel time (DST-aware); the VPS runs in UTC, so never use the UTC day for a business date |
 
 ---
 
@@ -26,13 +29,14 @@
 
 *   **Why?** This directory is externally backed up by the user and is ignored by Git (`.gitignore`).
 *   **What goes here?**
-    *   SQLite Database (`backend_data/backend_data.db`)
+    *   SQLite Database (`backend_data/business.db`)
     *   Logs (`logs/`)
     *   User Uploads (`uploads/`)
         - `uploads/signatures/` — raw signature images from digital agreement signing
         - `uploads/agreements/` — signed agreement PDFs (one sub-folder per customer/date)
         - `uploads/dresses/` — dress images (WebP + thumbnails via `sharp`)
         - `uploads/expenses/` — expense receipt files, organized as `YEAR/CATEGORY/YYMMDD [supplier] [description] [amount]₪.ext`
+        - `uploads/receipts/` — issued receipt PDFs (SmartInvoice), `YEAR/YYMMDD [customer] [amount]₪ - קבלה [number].pdf`
     *   Environment Secrets (`.env`)
     *   CSV Imports (`csv/`) — source data files exported from Google Sheets
 
@@ -61,6 +65,7 @@ graph LR
         GCAL[Google Calendar]
         GTASK[Google Tasks]
         GDRIVE[Google Drive / Tasks API]
+        SMARTINV[SmartInvoice API - receipts]
     end
 
     UI --> API_CLIENT
@@ -68,6 +73,7 @@ graph LR
     ROUTES --> SERVICES
     ROUTES --> DB
     SERVICES -->|HTTPS POST| APPS
+    SERVICES -->|HTTPS REST| SMARTINV
     APPS -->|GmailApp| GMAIL
     APPS -->|API| GCAL
     APPS -->|API| GTASK
@@ -76,7 +82,7 @@ graph LR
 
 ---
 
-## 📊 Database Schema (9 Tables)
+## 📊 Database Schema (main tables)
 
 **Authoritative reference:** `docs/DB-SCHEMA.md`
 - Use that file for exact table/column/PK/FK/constraints/defaults.
@@ -88,7 +94,7 @@ erDiagram
     CUSTOMERS ||--o{ ORDERS : places
     CUSTOMERS ||--o{ TRANSACTIONS : has
     CUSTOMERS ||--o{ AGREEMENTS : signs
-    DRESSES ||--o{ DRESS_RENTALS : history
+    DRESSES ||--o{ DRESS_HISTORY : history
     DRESSES ||--o{ ORDER_ITEMS : included_in
     ORDERS ||--o{ ORDER_ITEMS : contains
     ORDERS ||--o{ TRANSACTIONS : generates
@@ -156,6 +162,7 @@ erDiagram
 - **transactions**: All income/expense records; income categories: `order`, `repair`, `other`
 - **agreements**: Signed digital agreements (rental, sewing, sale)
 - **settings**: System configuration
+- **receipts**: Receipts issued through SmartInvoice, one per income transaction (status, number, what was sent, errors)
 
 ---
 
@@ -174,8 +181,11 @@ erDiagram
     ├── Create deposit transaction(s)
     ├── Update dress rental_count + total_income
     ├── Mark dress as `sold` only when item type is `sale` (rental booking does not make dress unavailable)
-    ├── AI receipt extraction if file attached (Gemini with ordered model fallback)
-    └── sendNewOrderNotification() → Apps Script Web App (order_notification payload)
+    ├── Per deposit payment with receipt.issue: requestReceipt() → receipts row 'pending'
+    ├── AI receipt extraction if file attached (Gemini with ordered model fallback; updates the payment's row by id)
+    ├── issueReceipt() for each requested deposit receipt → SmartInvoice
+    └── sendNewOrderNotification() → Apps Script Web App (order_notification payload),
+        each deposit payment carrying its receipt summary + PDF
 ```
 
 ### 2. Transaction Creation Flow
@@ -189,8 +199,11 @@ erDiagram
     ├── Create transaction record
     ├── Link to order if order_id provided
     ├── recomputeOrderPaidAmount(order_id) — recalculate orders.paid_amount from SUM of income transactions
+    ├── If body.receipt.issue (income): requestReceipt() → receipts row 'pending'
     ├── AI receipt extraction if receipt attached (Gemini with ordered model fallback)
-    └── sendDetailedIncomeNotification() → Apps Script (income_detailed)
+    ├── issueReceipt() → SmartInvoice POST /documents (after AI, so references are filled)
+    └── sendDetailedIncomeNotification() → Apps Script (income_detailed), including the
+        receipt summary + receipt PDF (buildReceiptEmailInfo) in the same email
 
 [Route: PUT /api/transactions/:id]
     ├── Update transaction record
@@ -200,7 +213,108 @@ erDiagram
     └── recomputeOrderPaidAmount(order_id) — removes contribution from order balance
 ```
 
-### 2b. Order Edit / Cancel Flow
+### 2a. Receipt Flow (SmartInvoice)
+```
+[UI: ReceiptOptions component] (new transaction, order deposits, edit page)
+    ├── Checkbox "להפיק קבלה": default ON for every payment method (cash included), can be unchecked
+    ├── "שם הלקוחה בקבלה": default customers.receipt_name, else customers.name; editable,
+    │   remembered in customers.receipt_name (NULL when equal to the app name)
+    │   (in the new-order form it defaults to the order's "שם לתצוגה" field, see 2b)
+    ├── "עבור": default "שמלה" (order / other) or "תיקונים" (repair), editable
+    └── "הערה בקבלה": optional, printed on the receipt
+[Service: receipts.js]
+    ├── requestReceipt(transactionId, {description, notes}) → receipts row 'pending'
+    └── issueReceipt(receiptId)
+            ├── Map method: cash→cash, credit→credit_card, bit→bit, transfer→bank_transfer,
+            │   check→check; paybox / other / unknown → bank_transfer with the real method
+            │   name at the start of the reference ("פייבוקס", "אמצעי תשלום אחר")
+            ├── buildPaymentReference(): confirmation, card last 4, installments,
+            │   check number, bank/branch/account → one `reference` string (≤100 chars);
+            │   a bank transfer with no details at all gets reference "0" (never fails for that)
+            ├── Duplicate guard (when an earlier request's outcome is unknown, last_request_at set):
+            │   GET /documents?type=receipt&from&to → same total, not cancelled, not linked to
+            │   another row. Same name: 1 → adopt it (no new request, no customer email);
+            │   >1, or only other names → fail 'duplicate_ambiguous'; list unreachable →
+            │   fail 'duplicate_check_failed' (both alert). Never sends without verifying.
+            ├── Customer sent = name only (SmartInvoice never gets an email or phone: it cannot
+            │   store them, email the customer on its own, or merge customers by them)
+            ├── sk_test_ key → SmartInvoice dry-run answer → treated as FAILED ('test_key', alert);
+            │   is_test=1 rows (sandbox previews) are hidden and can be re-issued
+            ├── POST /documents {invoice_type:'receipt', customer, items[1], payments[1], notes}
+            │   with Idempotency-Key dress-rental-<env>-<test|live>-receipt-<id>-<attempt>
+            ├── success → 'issued'; if live: GET /documents/{id}/pdf once → local copy in
+            │   local_data/uploads/receipts/ (served from there afterwards) → Drive via Apps Script
+            │   ("<Drive base folder>/<year>/הכנסות <year>/<yymmdd> <customer> <amount>₪.pdf"),
+            │   then, if the customer has an email: ONE send_email via Apps Script (business Gmail,
+            │   PDF attached; no retry) - SmartInvoice /send is never used
+            └── failure → 'failed' + Hebrew error_message + dedicated Telegram alert
+                ("🧾❌ קבלה לא הופקה" with a retry link); Drive save failure also alerts
+                └── temporary SmartInvoice failure (no connection / 5xx / rate_limited, also in the
+                    duplicate check) → outage watcher (in memory): every 5 min a read-only
+                    GET /documents?limit=1; once SmartInvoice answers → ONE Telegram message
+                    ("✅🧾 מערכת הקבלות (SmartInvoice) חזרה לפעול") listing the receipts still 'failed'
+                    with edit links, then the watcher stops. Nothing is issued automatically.
+[index.js] recoverStuckReceipts() 30s after start + every 5 min: retries 'pending' rows older than 10 min
+           (then emails the owner); recoverMissingReceiptCopies() hourly: missing local / Drive copies;
+           resumeReceiptOutageWatch() at start: re-watches outage failures of the last 24 h still 'failed'
+           (the in-memory list is lost on every restart / deploy; no DB column involved)
+[Route: POST /api/receipts]       → issue later / retry for an existing income (edit page); answers as soon as
+                                     SmartInvoice issued it (~1s): server copy, Drive copy and customer email run
+                                     in the background (issueReceipt {waitForFollowUps:false}), then the owner email;
+                                     then income_detailed email with receiptOnly=true (subject "קבלה <num> - <name>")
+[Owner email] Apps Script CONFIG.OWNER_EMAIL: receipt row
+              (number / test / failure reason, "for what", printed reference, note, customer email)
+              + receipt PDF attached next to the payment proof (live receipts only)
+[Route: GET  /api/receipts/:id/pdf] → receipt PDF from the server copy (downloaded once from SmartInvoice)
+[Route: GET  /api/receipts/status]  → { enabled } for the UI
+[Route: GET  /api/receipts/:id/share] → `link` (our signed server-copy link, 90 days; "show receipt" button) +
+                                       wa.me message with `customerLink` = SmartInvoice's public view
+                                       (smartinvoices.co.il/fixmaster/i/<document id>, as in the PDF's QR code),
+                                       verified before use, else our link
+[Route: GET  /api/receipts/public/:token] → public PDF (no login), used by the WhatsApp message
+```
+- No "test mode" in the app: an `sk_test_...` key makes every receipt fail with a Telegram alert (nothing issued, nothing blocked).
+- Issued receipts are legal documents: editing/deleting the transaction never changes or cancels them
+  (the UI warns; cancellation is done in the SmartInvoice portal).
+
+### 2b. Customer Display Name (agreement + receipts)
+```
+customers.receipt_name = the customer's "display name" (NULL = same as customers.name).
+customers.name may hold internal notes (e.g. "(גוגל)"); the display name never does.
+    ├── New order form: field "שם לתצוגה (בהסכם ובקבלה)", shown for every order (with or
+    │   without a deposit/receipt); default = display name, else app name → POST /api/orders
+    │   `display_name` → saveCustomerReceiptName()
+    ├── Receipt options: "שם הלקוחה בקבלה" (also saved to receipt_name)
+    ├── Customer edit dialog: "שם לתצוגה (בהסכם ובקבלה)" → PUT /api/customers/:id `display_name`
+    │   (empty or equal to the name = NULL)
+    ├── Order view: customer box shows "שם לתצוגה" when it differs from the name
+    │   (GET /api/orders/:id → customer_display_name); the return-reminder WhatsApp uses it
+    ├── Agreement link (prefill + WhatsApp text): COALESCE(receipt_name, name)
+    ├── Search: customers (list + quick search), orders, transactions and the global search
+    │   also match receipt_name (transactions via t.customer_id → customers)
+    └── Signing: the name the customer types updates receipt_name only; customers.name is
+        never overwritten by the agreement (phone/email still are)
+```
+
+### 2c. Dress Return Tracking & Reminders (Web Push)
+```
+[UI: orders/page.tsx, order view] each rental / sewing_for_rental item:
+    ├── "סמני כהוחזרה" / "הוחזרה" → PATCH /api/orders/:id/items/:itemId/return {returned: 0|1}
+    │   (order_items.returned, returned_at)
+    └── "תזכורת ווצאפ" (while not returned) → WhatsApp to the customer, greeting her display name
+[UI: components/pwa/sw-register.tsx] after login: GET /api/push/vapid-key → if configured,
+    pushManager.subscribe() → POST /api/push/subscribe (push_subscriptions, endpoint unique)
+[Cron: services/returnCheckCron.js] 09:00 Israel time, Sun–Fri → sendReturnReminders():
+    ├── active orders whose event date passed and have rental items not marked returned
+    ├── 2+ business days (Sun–Thu) after the event → one notification per order to every device
+    │   (actions: "📱 שלחי וואטסאפ" with the reminder text, "📋 צפייה בהזמנה")
+    └── expired subscriptions (HTTP 404/410) are deleted
+[Service worker: public/sw.js] shows the notification; a click opens the order, or the orders page
+    with ?whatsappUrl=..., which the page follows (WhatsApp links only)
+No VAPID keys in .env → the feature is silently off (no subscription, no reminders).
+```
+
+### 2d. Order Edit / Cancel Flow
 ```
 [Route: PUT /api/orders/:id]
     ├── Look up customer name (for dress_history.customer_name snapshot)
@@ -266,6 +380,10 @@ routes/transactions.js
     ├── imports: services/email.js
     └── imports: services/localStorage.js
 
+routes/receipts.js
+    ├── imports: db/database.js, middleware/auth.js
+    └── imports: services/receipts.js
+
 routes/agreements.js
     ├── imports: db/database.js
     ├── imports: services/pdfGenerator.js
@@ -296,6 +414,15 @@ services/email.js
                  sendAgreementNotificationToOwner, sendCalendarEvent, sendTaskToGoogle,
                  sendFileToDrive, sendDriveRename, sendOrderUpdate, sendToEmailList,
                  testEmailConnection
+
+services/receipts.js
+    ├── Uses: SmartInvoice REST API (config/index.js smartInvoiceConfig), services/paymentDetails.js, services/logger.js
+    └── Exports: getReceiptsStatus, getDefaultReceiptDescription, parseReceiptRequest, buildPaymentReference,
+                 requestReceipt, issueReceipt, requestAndIssueReceipt, getReceiptById,
+                 getReceiptByTransactionId, getVisibleReceiptByTransactionId, isStuckPending,
+                 getReceiptPdf, buildReceiptShareLinks, buildReceiptEmailInfo, sendReceiptOwnerEmail,
+                 getCustomerReceiptName, saveCustomerReceiptName, recoverStuckReceipts,
+                 recoverMissingReceiptCopies, resumeReceiptOutageWatch
 
 services/ai.js
     ├── Uses: Gemini Vision API
@@ -329,6 +456,10 @@ services/pdfGenerator.js
 | POST | `/api/auth/login` | Login, returns JWT |
 | GET | `/api/auth/me` | Get current user |
 | POST | `/api/auth/change-password` | Change password |
+
+**Backend is reachable only through the Vercel site (origin secret).** `frontend/src/middleware.ts` adds the header `x-origin-secret` (Vercel env var `ORIGIN_SECRET`, sensitive) to every `/api` and `/uploads` request it proxies. nginx (`/etc/nginx/conf.d/dress-origin.conf`, template `scripts/nginx/origin-secret.conf.template`, installed by `scripts/setup-new-server.sh`) refuses (HTTP 444) any request without it, except `/api/health` (no data) and `/api/apps-script-logs[/batch]`. Google Apps Script posts its logs straight to the VPS, so that path has its **own** secret: `X-Gas-Log-Secret` (`GAS_LOG_SECRET`; in `apps_script/Secrets.js` which is gitignored and pushed with clasp, in `local_data/.env` on the VPS and in the nginx file). Without it the path is refused for everyone, including requests that arrive through the Vercel site. The backend route (`routes/apps-script-logs.js`) checks the same secret again (fail closed when unset), accepts at most 200 entries per request, limits the level to DEBUG/INFO/WARN/ERROR, truncates text and strips line breaks (no forged log lines); there is no endpoint that reads the logs. nginx also replaces `X-Forwarded-For` / `X-Real-IP` with the verified visitor address: Vercel's `X-Vercel-Proxied-For` (tested: a visitor cannot forge it, whereas `X-Forwarded-For`, `X-Real-IP` and `X-Vercel-Forwarded-For` are sometimes passed through exactly as the visitor typed them) or, for exempt direct calls, the TCP peer. So `getClientIp()` / `req.ip` in the backend are trustworthy only behind this nginx. Audit log of the decisions: `/var/log/nginx/dress-origin.log`. Setup and rollback: SETUP.md.
+
+**Login brute-force protection** (`backend/src/middleware/loginProtection.js`, `POST /api/auth/login` only): 30 *failed* attempts / 15 min per visitor address (`req.ip`, IPv6 grouped by /56). Because the address cannot be forged any more (above), a guesser can only limit their own address. There is deliberately **no per-account lockout** (the owner's e-mail is not secret, so a per-account lockout would let anyone lock her out). `errorHandler.js` replaces **password** fields of the request body in its log with `[REDACTED]`; tokens are kept on purpose (they identify the customer an error belongs to).
 
 ### Customers
 | Method | Endpoint | Purpose |
@@ -364,6 +495,7 @@ services/pdfGenerator.js
 | POST | `/api/orders` | Create (triggers integrations) |
 | PUT | `/api/orders/:id` | Update |
 | PATCH | `/api/orders/:id/status` | Update status |
+| PATCH | `/api/orders/:id/items/:itemId/return` | Mark a rental dress as returned / not returned (`{ returned: 0 \| 1 }`) |
 | POST | `/api/orders/:id/payment` | Add payment |
 
 ### Transactions
@@ -373,6 +505,27 @@ services/pdfGenerator.js
 | POST | `/api/transactions` | Create (triggers notifications) |
 | PUT | `/api/transactions/:id` | Update |
 | DELETE | `/api/transactions/:id` | Delete |
+
+### Receipts (SmartInvoice)
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/api/receipts/status` | `{ enabled }` |
+| POST | `/api/receipts` | Issue / retry a receipt for an existing income (`transaction_id`, `description`, `notes`) |
+| GET | `/api/receipts/:id/pdf` | Receipt PDF (proxied from SmartInvoice, live receipts only) |
+| GET | `/api/receipts/:id/share` | Public PDF link + WhatsApp link to the customer |
+| GET | `/api/receipts/customer-name/:customerId` | Default name on a customer's receipt (`receipt_name` else `name`) |
+| GET | `/api/receipts/public/:token` | **Public** (no auth) receipt PDF via signed token (scope `receipt_pdf`, 90 days) |
+
+> `POST /api/transactions` and `POST /api/orders` (per `deposit_payments[]` item) accept an optional
+> `receipt: { issue: true, description, notes, customer_name }` (`POST /api/receipts` takes the same fields). `GET /api/transactions` rows include `receipt_*` columns;
+> `GET /api/transactions/:id` returns `receipt`.
+
+### Push notifications
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/api/push/vapid-key` | Public VAPID key (no auth; `null` when push is not configured) |
+| POST | `/api/push/subscribe` | Save a device's push subscription |
+| POST | `/api/push/unsubscribe` | Remove a subscription (`{ endpoint }`) |
 
 ### Dashboard
 | Method | Endpoint | Purpose |
@@ -455,7 +608,7 @@ extractReceiptDetails(fileBuffer, mimeType)
 
 ### Production Environment
 
-**Deployment:** Backend via pm2 (Direct Install), frontend on Vercel. Port 3001 exposed via nginx reverse proxy with Let's Encrypt SSL on `YOUR-VPS-IP-WITH-DASHES.sslip.io`.
+**Deployment:** Backend via pm2 (Direct Install), frontend on Vercel. Port 3001 listens on 127.0.0.1 only (`BIND_HOST`) and is exposed to the world solely via the nginx reverse proxy with Let's Encrypt SSL on `YOUR-VPS-IP-WITH-DASHES.sslip.io`.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -490,7 +643,7 @@ extractReceiptDetails(fileBuffer, mimeType)
                             │                                         │
                             │  Persistent Data (./local_data):        │
                             │  ├── .env (secrets)                     │
-                            │  ├── backend_data/backend_data.db       │
+                            │  ├── backend_data/business.db           │
                             │  ├── uploads/                           │
                             │  │   ├── signatures/ (PNG files)        │
                             │  │   ├── agreements/ (signed PDFs)      │
@@ -531,7 +684,7 @@ cron (hourly) → sync-to-cloud.sh
 
 cron (daily 03:00) → backup-to-telegram.sh
     ├── sqlite3 PRAGMA wal_checkpoint(TRUNCATE)  (consistency)
-    ├── curl POST Telegram sendDocument → eti-business-YYYY-MM-DD.db
+    ├── curl POST Telegram sendDocument → business-YYYY-MM-DD.db
     └── on failure → send_telegram() alert
 ```
 
@@ -562,7 +715,7 @@ cron (daily 23:55) → daily-security-report.sh
 | `/root/dress-rental-business-management/` | Project root (Git clone) |
 | `/root/dress-rental-business-management/local_data/` | All persistent data |
 | `/root/dress-rental-business-management/local_data/.env` | Secrets |
-| `/root/dress-rental-business-management/local_data/backend_data/backend_data.db` | Database |
+| `/root/dress-rental-business-management/local_data/backend_data/business.db` | Database |
 | `/root/dress-rental-business-management/local_data/uploads/signatures/` | Raw signature PNGs |
 | `/root/dress-rental-business-management/local_data/uploads/agreements/` | Signed agreement PDFs |
 | `/root/dress-rental-business-management/local_data/uploads/dresses/` | Dress images (WebP) |
@@ -586,7 +739,7 @@ cron (daily 23:55) → daily-security-report.sh
 3. **File Uploads**:
    - Signatures: `uploads/signatures/` → raw PNG from signing pad
    - Agreements: `uploads/agreements/[CustomerName - YYYY-MM-DD - OrderId]/הסכם השכרה - Name.pdf`
-   - Dress images: `uploads/dresses/<uuid>.webp` + `<uuid>_thumb.webp` (processed by `sharp`)
+   - Dress images: `uploads/dresses/<uuid>.webp` + `thumb_<uuid>.webp` (processed by `sharp`)
    - Dress image fields (`photo_url`, `thumbnail_url`) store internal app paths (`/uploads/dresses/...`) only
    - Expense receipts: `uploads/expenses/[YEAR]/[CATEGORY]/[YYMMDD] [supplier] [description] [amount]₪.[ext]`
    - Income receipt files are **NOT** saved to disk — they are sent to Gemini for AI extraction and then discarded; only structured data (confirmationNumber, lastFourDigits, etc.) is persisted in the `transactions` table

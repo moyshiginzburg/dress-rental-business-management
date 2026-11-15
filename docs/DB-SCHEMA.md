@@ -1,7 +1,7 @@
-# Database Schema – backend_data.db (SQLite)
+# Database Schema – business.db (SQLite)
 
 > Auto-generated docs — keep in sync with every schema change.
-> Last updated: 2026-03-02
+> Last updated: 2026-11-15
 
 ---
 
@@ -20,6 +20,8 @@
 | agreements | order_id | orders | NO ACTION |
 | agreements | customer_id | customers | NO ACTION |
 | order_attachments | order_id | orders | CASCADE |
+| receipts | transaction_id | transactions | SET NULL |
+| push_subscriptions | user_id | users | CASCADE |
 
 ---
 
@@ -35,6 +37,7 @@
 | email | TEXT | YES | NULL | | |
 | source | TEXT | YES | NULL | | Free text – how the customer found the business |
 | notes | TEXT | YES | NULL | | |
+| receipt_name | TEXT | YES | NULL | | Display name (agreement link + receipts) when it differs from `name` (added to existing databases by ALTER on startup) |
 | created_at | DATETIME | NO | CURRENT_TIMESTAMP | | |
 | updated_at | DATETIME | NO | CURRENT_TIMESTAMP | | |
 
@@ -99,6 +102,8 @@
 | additional_payments | REAL | YES | 0 | | |
 | final_price | REAL | YES | 0 | | |
 | notes | TEXT | YES | NULL | | Item-level notes |
+| returned | INTEGER | YES | 0 | | 1 = rental dress returned (added to existing databases by ALTER on startup) |
+| returned_at | DATETIME | YES | NULL | | When it was marked as returned (ISO, UTC) |
 | created_at | DATETIME | NO | CURRENT_TIMESTAMP | | |
 | updated_at | DATETIME | NO | CURRENT_TIMESTAMP | | |
 
@@ -217,6 +222,7 @@
 - `email` — Email address
 - `source` — Free text: how the customer found the business (Google, Facebook, referral name, etc.)
 - `notes` — Free text notes about the customer
+- `receipt_name` — Display name shown to the customer on the agreement link and on receipts (e.g. without internal notes such as "(גוגל)"). Set from the new-order "שם לתצוגה" field, the customer edit dialog, the receipt options, or the name she types when signing. NULL = use `name`
 - `created_at` — Record creation timestamp
 - `updated_at` — Last update timestamp
 
@@ -260,6 +266,8 @@
 - `additional_payments` — Extra charges (alterations, accessories)
 - `final_price` — Total price (base + additional)
 - `notes` — Notes specific to this item
+- `returned` — 1 when a rental / sewing_for_rental dress came back (toggled in the order view; unreturned dresses trigger the daily reminder)
+- `returned_at` — Time it was marked as returned (NULL when not returned)
 - `created_at` — Record creation timestamp
 - `updated_at` — Last update timestamp
 
@@ -348,6 +356,81 @@
 | created_at | DATETIME | YES | CURRENT_TIMESTAMP | | |
 
 **Index:** `idx_order_attachments_order_id` on `order_id`
+
+---
+
+### 11. receipts
+
+Receipts issued through SmartInvoice (see `docs/SMARTINVOICE.md`). Created by `backend/src/db/schema.js`
+and also on backend startup by `backend/src/services/receipts.js` (`CREATE TABLE IF NOT EXISTS`), so no manual migration is needed.
+
+| Column | Type | Nullable | Default | PK | Notes |
+|---|---|---|---|---|---|
+| id | INTEGER | NO | AUTOINCREMENT | PK | |
+| transaction_id | INTEGER | YES | NULL | | FK → transactions (SET NULL), UNIQUE |
+| status | TEXT | NO | 'pending' | | CHECK: `pending`, `issued`, `failed` |
+| description | TEXT | NO | — | | The "for what" line printed on the receipt |
+| notes | TEXT | YES | NULL | | Optional note printed on the receipt |
+| customer_name | TEXT | YES | NULL | | Snapshot of the name sent |
+| amount | REAL | YES | NULL | | Snapshot of the amount sent |
+| payment_method | TEXT | YES | NULL | | SmartInvoice method sent: cash, credit_card, bit, bank_transfer, check |
+| payment_reference | TEXT | YES | NULL | | Composed reference string sent (≤100 chars) |
+| is_test | INTEGER | YES | 0 | | 1 = sandbox preview, never a real receipt; hidden and re-issuable. Rows issued by the app are always 0 |
+| document_id | TEXT | YES | NULL | | SmartInvoice document id (live only) |
+| document_number | TEXT | YES | NULL | | Receipt number |
+| pdf_url | TEXT | YES | NULL | | PDF URL if SmartInvoice returned one |
+| email_sent_to | TEXT | YES | NULL | | Customer email the receipt was sent to |
+| drive_file_name | TEXT | YES | NULL | | Google Drive path the PDF was saved to |
+| local_pdf_path | TEXT | YES | NULL | | Server copy of the PDF, relative to `local_data/uploads/` |
+| last_request_at | DATETIME | YES | NULL | | Earliest create request whose outcome is still unknown; non-NULL = a retry must run the duplicate check |
+| error_code | TEXT | YES | NULL | | Last failure code (SmartInvoice `code` or internal) |
+| error_message | TEXT | YES | NULL | | Last failure message (Hebrew, shown to the user) |
+| attempt | INTEGER | YES | 1 | | Part of the Idempotency-Key; bumped after a definitive (4xx) rejection |
+| issued_at | DATETIME | YES | NULL | | When the receipt was issued |
+| created_at | DATETIME | YES | CURRENT_TIMESTAMP | | |
+| updated_at | DATETIME | YES | CURRENT_TIMESTAMP | | |
+
+**Index:** `idx_receipts_status` on `status` (plus the implicit UNIQUE index on `transaction_id`)
+
+### receipts — column purpose
+- `id` — Auto-increment primary key
+- `transaction_id` — The income transaction this receipt belongs to (one receipt per transaction; NULL after the transaction is deleted, the receipt record is kept)
+- `status` — pending (waiting to be sent, e.g. while AI extraction runs) / issued / failed
+- `description` — What the payment was for ("שמלה", "תיקונים", or custom text)
+- `notes` — Free-text note printed on the receipt
+- `customer_name`, `amount`, `payment_method`, `payment_reference` — Snapshot of exactly what was sent to SmartInvoice
+- `is_test` — Flag for sandbox previews (treated as "no receipt")
+- `document_id`, `document_number`, `pdf_url` — What SmartInvoice returned
+- `email_sent_to` — Where the receipt was emailed (live receipts, customers with an email)
+- `drive_file_name` — `<year>/הכנסות <year>/<yymmdd> <customer> <amount>₪.pdf` once saved to Google Drive (NULL = not saved; prevents double saves)
+- `local_pdf_path` — `receipts/<year>/<yymmdd> <customer> <amount>₪ - קבלה <number>.pdf`; the app, the owner email and the customer link are served from it
+- `last_request_at` — Set right before a create request; cleared only by a definitive rejection when no earlier request was in doubt. If set, the next attempt first checks SmartInvoice for an existing matching receipt
+- `error_code`, `error_message` — Why the last attempt failed
+- `attempt` — Retry counter used in the Idempotency-Key, so a retry never issues a duplicate receipt
+- `issued_at` — Issue timestamp
+- `created_at`, `updated_at` — Record timestamps
+
+---
+
+### 12. push_subscriptions
+
+Devices registered for web-push notifications (dress return reminders). Created by `backend/src/db/schema.js`,
+and on backend startup for existing databases (`services/pushNotifications.js`).
+
+| Column | Type | Nullable | Default | PK | Notes |
+|---|---|---|---|---|---|
+| id | INTEGER | NO | AUTOINCREMENT | PK | |
+| user_id | INTEGER | YES | NULL | | FK → users (CASCADE) |
+| endpoint | TEXT | NO | — | | UNIQUE; the browser's push service URL |
+| keys_p256dh | TEXT | NO | — | | Subscription public key |
+| keys_auth | TEXT | NO | — | | Subscription auth secret |
+| created_at | DATETIME | YES | CURRENT_TIMESTAMP | | Refreshed on every re-subscribe |
+
+### push_subscriptions — column purpose
+- `id` — Auto-increment primary key
+- `user_id` — The logged-in user whose device subscribed
+- `endpoint`, `keys_p256dh`, `keys_auth` — The browser's PushSubscription; removed automatically when the push service answers 404/410 (expired)
+- `created_at` — Last time the device (re)subscribed
 
 ---
 

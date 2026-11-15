@@ -46,6 +46,17 @@ import { customersApi, dressesApi, ordersApi, agreementsApi } from "@/lib/api";
 import { cn, formatCurrency, formatDateShort, normalizePhoneInput } from "@/lib/utils";
 import { DressSelector } from "@/components/dashboard/dress-selector";
 import { ContactPicker } from "@/components/dashboard/contact-picker";
+import {
+  ReceiptOptions,
+  type ReceiptOptionsState,
+  type ReceiptCustomer,
+  initialReceiptOptions,
+  withReceiptDefaults,
+  toReceiptRequest,
+  receiptValidationError,
+  useReceiptsStatus,
+  useReceiptCustomerName,
+} from "@/components/dashboard/receipt-options";
 import { clearSharedUploadPayload, getSharedUploadPayload, compressImageForUpload, prepareAttachmentsForUpload } from "@/lib/shared-upload";
 import { reportClientError } from "@/lib/error-reporter";
 
@@ -81,6 +92,33 @@ interface DepositPayment {
     branch: string;
     account: string;
   };
+  // Receipt choice for this payment; undefined = untouched (defaults follow the method)
+  receipt?: ReceiptOptionsState;
+}
+
+// A fresh, untouched deposit row (cash with no amount means "no deposit").
+const EMPTY_DEPOSIT_PAYMENT: DepositPayment = {
+  amount: "", method: "cash", notes: "", confirmation_number: "", last_four_digits: "", installments: "1"
+};
+
+// True when a deposit row has no amount but the user already filled something in it
+// (attached proof, chose a non-cash method, or typed payment details). Such a row would be
+// silently dropped on save, so saving is blocked until an amount is entered or the row is cleared.
+function isPaymentMissingAmount(payment: DepositPayment): boolean {
+  if (parseFloat(payment.amount) > 0) return false;
+  return Boolean(
+    payment.fileBase64 ||
+    payment.method !== "cash" ||
+    payment.confirmation_number ||
+    payment.last_four_digits ||
+    payment.check_number ||
+    payment.bank_details
+  );
+}
+
+// Effective receipt options of a deposit payment (defaults applied for untouched fields).
+function getPaymentReceipt(payment: DepositPayment, customer: ReceiptCustomer): ReceiptOptionsState {
+  return withReceiptDefaults(payment.receipt ?? initialReceiptOptions(payment.method, "order", customer), payment.method, "order", customer);
 }
 
 interface Dress {
@@ -146,6 +184,22 @@ export default function NewOrderPage() {
   // immediately after the order is created (when we finally have an orderId).
   const [pendingAttachments, setPendingAttachments] = useState<File[]>([]);
   const [sharedApplied, setSharedApplied] = useState(false);
+  const receiptsStatus = useReceiptsStatus();
+  // Default name on the receipts: the selected customer's receipt name (or app name); for a new customer, the typed name
+  const defaultDisplayCustomer = useReceiptCustomerName(
+    customerMode === "new" ? null : selectedCustomerId,
+    customerMode === "new"
+      ? newCustomer.name
+      : (customers.find((x) => x.id.toString() === selectedCustomerId)?.name || customerSearch)
+  );
+  // Display name (agreement link + receipts). Follows the customer's default until the
+  // owner edits it; an edit is kept only while the same customer stays selected.
+  const [displayNameEdit, setDisplayNameEdit] = useState<{ key: string; value: string } | null>(null);
+  const displayName = displayNameEdit && displayNameEdit.key === defaultDisplayCustomer.key
+    ? displayNameEdit.value
+    : defaultDisplayCustomer.name;
+  // Receipt names default to the display name (the key still resets them when the customer changes)
+  const receiptCustomer: ReceiptCustomer = { key: defaultDisplayCustomer.key, name: displayName };
 
   useEffect(() => {
     const loadInitialData = async () => {
@@ -443,8 +497,26 @@ export default function NewOrderPage() {
       toast({ title: "שגיאה", description: "נא להזין תאריך אירוע", variant: "destructive" });
       return;
     }
+    if (depositPayments.some(isPaymentMissingAmount)) {
+      toast({
+        title: "חסר סכום במקדמה",
+        description: "בתשלום המקדמה נבחר אמצעי תשלום או צורפה אסמכתא אבל לא הוזן סכום. נא להזין סכום, או ללחוץ \"נקה תשלום\" אם אין מקדמה.",
+        variant: "destructive"
+      });
+      return;
+    }
     if (depositPayments.some(p => parseFloat(p.amount) > 0 && !p.method)) {
       toast({ title: "שגיאה", description: "נא לבחור אמצעי תשלום עבור המקדמה", variant: "destructive" });
+      return;
+    }
+    const receiptError = receiptsStatus.enabled
+      ? depositPayments
+        .filter((p) => parseFloat(p.amount) > 0 && getPaymentReceipt(p, receiptCustomer).issue)
+        .map((p) => receiptValidationError(getPaymentReceipt(p, receiptCustomer)))
+        .find(Boolean)
+      : null;
+    if (receiptError) {
+      toast({ title: "חסרים פרטים לקבלה", description: receiptError, variant: "destructive" });
       return;
     }
 
@@ -478,7 +550,8 @@ export default function NewOrderPage() {
           bank_details: p.bank_details || undefined,
           notes: p.notes || undefined,
           fileBase64: p.fileBase64,
-          fileName: p.fileName
+          fileName: p.fileName,
+          receipt: toReceiptRequest(getPaymentReceipt(p, receiptCustomer), receiptsStatus.enabled)
         })),
         notes: notes || undefined,
         items: processedItems,
@@ -489,6 +562,7 @@ export default function NewOrderPage() {
       } else {
         payload.customer_id = parseInt(selectedCustomerId);
       }
+      if (displayName.trim()) payload.display_name = displayName.trim();
 
       const response = await ordersApi.create(payload);
       const newOrderId = Number((response.data as any)?.order?.id);
@@ -783,6 +857,19 @@ export default function NewOrderPage() {
                       />
                     </div>
                   </div>
+                </div>
+              )}
+
+              {(customerMode === "new" || selectedCustomerId) && (
+                <div className="space-y-1.5 mt-4">
+                  <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">שם לתצוגה (בהסכם ובקבלה)</label>
+                  <Input
+                    value={displayName}
+                    onChange={(e) => setDisplayNameEdit({ key: defaultDisplayCustomer.key, value: e.target.value })}
+                    placeholder="השם המלא כפי שיופיע ללקוחה"
+                    maxLength={255}
+                    className="h-12 focus:border-green-600 rounded-xl"
+                  />
                 </div>
               )}
             </div>
@@ -1242,12 +1329,35 @@ export default function NewOrderPage() {
                       )}
                     </div>
                   )}
+                  {depositPayments.length === 1 && isPaymentMissingAmount(payment) && (
+                    <div className="sm:col-span-4 flex justify-end">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setDepositPayments([{ ...EMPTY_DEPOSIT_PAYMENT }])}
+                        className="rounded-xl border-destructive text-destructive"
+                      >
+                        <Trash2 className="h-4 w-4 ml-1" /> נקה תשלום
+                      </Button>
+                    </div>
+                  )}
                   {payment.method === "cash" && depositPayments.length > 1 && (
                     <div className="sm:col-span-4 flex justify-end">
                       <Button type="button" variant="ghost" size="icon" onClick={() => setDepositPayments(depositPayments.filter((_, i) => i !== index))} className="text-destructive">
                         <Trash2 className="h-5 w-5" />
                       </Button>
                     </div>
+                  )}
+                  {receiptsStatus.enabled && (
+                    <ReceiptOptions
+                      className="sm:col-span-4"
+                      value={getPaymentReceipt(payment, receiptCustomer)}
+                      onChange={(nextReceipt) => {
+                        const next = [...depositPayments];
+                        next[index] = { ...next[index], receipt: nextReceipt };
+                        setDepositPayments(next);
+                      }}
+                    />
                   )}
                 </CardContent>
               </Card>

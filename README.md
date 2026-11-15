@@ -12,7 +12,7 @@ A full-stack business management system for a dress rental and sewing business, 
 | **VPS Backend** | `https://YOUR-VPS-IP-WITH-DASHES.sslip.io` | Backend (pm2) via nginx + Let's Encrypt SSL, frontend on Vercel |
 | **Agreement Signing (customers)** | `https://your-app-name.vercel.app/agreement?token=...` | Public page, no auth needed |
 | **VPS SSH** | `ssh root@YOUR_VPS_IP` | Ubuntu 24.04, 2GB RAM, 58GB disk |
-| **Database** | `local_data/backend_data/backend_data.db` | SQLite, backed up hourly to Google Drive |
+| **Database** | `local_data/backend_data/business.db` | SQLite, backed up hourly to Google Drive |
 | **Google Drive Backup** | `gdrive:YOUR_REPO_NAME/` | rclone remote, auto-synced every hour |
 
 ### How the System Runs
@@ -36,8 +36,11 @@ Customer / Business Owner
 
 - **Customers** - Contact info, history, and relationships
 - **Dresses** - Inventory with photos, status tracking, rental/sale history
-- **Orders** - Rentals, sewing, sales (multi-item per order)
+- **Orders** - Rentals, sewing, sales (multi-item per order); rental dresses can be marked as returned
 - **Transactions** - Income and expense tracking with receipt AI extraction
+- **Receipts** - Optional automatic legal receipt (קבלה) for every income, via SmartInvoice
+- **Return reminders** - Optional daily push notification about rented dresses not returned, with a one-tap WhatsApp reminder
+- **Customer display name** - The name shown to the customer (agreement link, receipts) can differ from the internal name in the app
 - **Agreements** - Digital signature via public link (sent via WhatsApp)
 - **Google Integration** - Calendar events, Tasks, email notifications (via Apps Script Web App)
 - **Dashboard** - Business overview, upcoming events, items needing attention
@@ -55,6 +58,7 @@ Customer / Business Owner
 | **`PROJECT_MAP.md`** | File structure and function signatures |
 | **`SETUP.md`** | Local development, VPS deployment, migration guide |
 | **`CHANGELOG.md`** | Version history and change log |
+| **`docs/SMARTINVOICE.md`** | How the optional receipts integration (SmartInvoice) works and what to re-check when the provider changes |
 
 ---
 
@@ -101,7 +105,7 @@ ssh root@YOUR_VPS_IP "cd /root/dress-rental-business-management && ./scripts/syn
 ### Migrating to a New Server
 
 ```bash
-# On the new server (Ubuntu 22.04+):
+# On the new server (Ubuntu 24.04+; the nginx config needs nginx 1.19.4+):
 wget -qO setup.sh https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME/master/scripts/setup-new-server.sh
 bash setup.sh
 ```
@@ -119,6 +123,8 @@ bash setup.sh
 | PDF Generation | Headless Chromium (HTML → PDF with Hebrew support) |
 | Image Processing | sharp (WebP conversion + thumbnails) |
 | AI (receipts) | Google Gemini Vision API (multi-model fallback) |
+| Receipts issuing | SmartInvoice REST API (optional) |
+| Push notifications | Web Push (VAPID, `web-push`) + `node-cron` daily job (optional) |
 | Email | GmailApp via Apps Script Web App (no SMTP / nodemailer in backend) |
 | Google Integration | Apps Script Web App (HTTPS POST `doPost`) |
 | Deployment | pm2 (Direct Install), nginx + Let's Encrypt, Vercel |
@@ -151,28 +157,32 @@ dress-rental-business-management/
 │       └── lib/             # API client, utilities
 │
 ├── apps_script/             # Google Apps Script (calendar, tasks, email)
-│   └── Code.js             # Web App doPost — receives HTTP POST from backend
+│   ├── Code.js             # Web App doPost — receives HTTP POST from backend
+│   └── Secrets.js.example  # Template for Secrets.js (log secret; Secrets.js is not in Git)
 │
 ├── scripts/                 # Deployment and maintenance
 │   ├── setup-new-server.sh  # Full server migration (Direct Install)
 │   ├── auto-update-direct.sh      # Git poll + pm2 restart (cron)
 │   ├── sync-to-cloud.sh     # Backup local_data → Google Drive
 │   ├── sync-from-cloud.sh   # Restore local_data ← Google Drive
-│   └── pm2-ecosystem.config.js    # pm2 config for backend
+│   ├── pm2-ecosystem.config.js    # pm2 config for backend
+│   └── nginx/origin-secret.conf.template # nginx: only the Vercel site may reach the backend
 │
 ├── local_data/              # ⚠️ PERSISTENT DATA (not in Git, backed up to Drive)
 │   ├── .env                 # All secrets and configuration
-│   ├── backend_data/        # SQLite database (backend_data.db)
+│   ├── backend_data/        # SQLite database (business.db)
 │   ├── uploads/             # User uploads
 │   │   ├── signatures/      # Raw PNG signature files
 │   │   ├── agreements/      # Signed agreement PDFs
 │   │   ├── dresses/         # Dress images (WebP + thumbnails)
-│   │   └── expenses/        # Expense receipts (YEAR/CATEGORY/YYMMDD ...₪.ext)
+│   │   ├── expenses/        # Expense receipts (YEAR/CATEGORY/YYMMDD ...₪.ext)
+│   │   └── receipts/        # Issued income receipts (SmartInvoice PDFs, YEAR/...)
 │   ├── logs/                # Daily logs, error logs, cloud sync logs
 │   └── csv/                 # CSV source files exported from Google Sheets
 │
 ├── docs/
-│   └── DB-SCHEMA.md         # Authoritative database schema reference
+│   ├── DB-SCHEMA.md         # Authoritative database schema reference
+│   └── SMARTINVOICE.md      # Receipts integration (SmartInvoice) notes
 │
 └── dev_tools/
     └── generate_repo_map.py # Regenerate PROJECT_MAP.md

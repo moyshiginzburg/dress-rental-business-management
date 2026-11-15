@@ -38,6 +38,7 @@ interface Customer {
   email: string | null;
   source: string | null;
   notes: string | null;
+  receipt_name?: string | null;
   created_at: string;
 }
 
@@ -47,6 +48,8 @@ interface CustomerFormData {
   email: string;
   source: string;
   notes: string;
+  /** Display name for the agreement link and receipts; empty = same as name. */
+  display_name?: string;
 }
 
 export default function CustomersPage() {
@@ -87,7 +90,8 @@ export default function CustomersPage() {
       sortBy: sortBy,
       sortOrder: sortOrder,
       limit: 1000 // Show everything
-    })
+    }),
+    { keepPreviousData: true }
   );
 
   const customers = customersRes?.success && customersRes.data ? (customersRes.data as any).customers as Customer[] : [];
@@ -112,6 +116,7 @@ export default function CustomersPage() {
       email: customer.email || "",
       source: customer.source || "",
       notes: customer.notes || "",
+      display_name: customer.receipt_name || "",
     });
     setShowForm(true);
   };
@@ -246,7 +251,7 @@ export default function CustomersPage() {
 
 
 
-  if (loading) {
+  if (loading && !customersRes) {
     return (
       <div className="flex items-center justify-center h-[60vh]">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
@@ -572,6 +577,18 @@ export default function CustomersPage() {
                     placeholder="שם מלא"
                   />
                 </div>
+
+                {editingCustomer && (
+                  <div className="space-y-2">
+                    <label className="text-sm font-bold text-gray-700">שם לתצוגה (בהסכם ובקבלה)</label>
+                    <Input
+                      value={formData.display_name || ""}
+                      onChange={(e) => setFormData({ ...formData, display_name: e.target.value })}
+                      className="focus:border-primary"
+                      placeholder="ריק = כמו שם הלקוחה"
+                    />
+                  </div>
+                )}
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">

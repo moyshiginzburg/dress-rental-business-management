@@ -14,6 +14,12 @@
  * 4. Public routes (/login, /agreement) and Next.js internals (_next, api,
  *    static assets) are always allowed through without authentication.
  *
+ * 5. For /api and /uploads (the paths Vercel proxies to the VPS backend) it adds the
+ *    secret header `x-origin-secret` (value of the ORIGIN_SECRET env var). nginx on
+ *    the VPS refuses backend requests without it, so the backend can only be reached
+ *    through this site and a caller cannot forge the visitor IP (X-Forwarded-For).
+ *    `set` replaces any value a visitor tries to send themselves.
+ *
  * Note: This middleware only checks for the EXISTENCE of the cookie, not its
  * cryptographic validity. The backend verifies the JWT signature on every API
  * and /uploads request independently. This keeps Edge execution fast and cheap.
@@ -40,8 +46,33 @@ const IGNORED_PREFIXES = [
     '/manifest',   // PWA manifest
 ];
 
+/** Prefixes that Vercel proxies to the VPS backend (see rewrites in next.config.js) */
+const BACKEND_PROXY_PREFIXES = ['/api', '/uploads'];
+
+/** Header the VPS nginx checks to know a request really came through this site */
+const ORIGIN_SECRET_HEADER = 'x-origin-secret';
+
+/**
+ * Continue the request to the backend proxy with the shared origin secret attached.
+ * Without the ORIGIN_SECRET env var the request continues unchanged.
+ */
+function withOriginSecret(request: NextRequest) {
+    const secret = process.env.ORIGIN_SECRET;
+    if (!secret) {
+        return NextResponse.next();
+    }
+    const headers = new Headers(request.headers);
+    headers.set(ORIGIN_SECRET_HEADER, secret);
+    return NextResponse.next({ request: { headers } });
+}
+
 export function middleware(request: NextRequest) {
     const { pathname } = request.nextUrl;
+
+    // 0. Backend proxy paths: authenticate this site to the VPS, nothing else
+    if (BACKEND_PROXY_PREFIXES.some((prefix) => pathname.startsWith(prefix))) {
+        return withOriginSecret(request);
+    }
 
     // 1. Skip middleware for ignored prefixes (static assets, API, uploads)
     if (IGNORED_PREFIXES.some((prefix) => pathname.startsWith(prefix))) {
@@ -83,7 +114,13 @@ export function middleware(request: NextRequest) {
 export const config = {
     matcher: [
         /*
-         * Match all request paths except:
+         * Backend proxy paths, always (uploaded files have extensions such as
+         * .jpg/.pdf and must also receive the origin secret header).
+         */
+        '/api/:path*',
+        '/uploads/:path*',
+        /*
+         * Match all other request paths except:
          * - Static files with known extensions (images, fonts, etc.)
          */
         '/((?!.*\\.).*)',

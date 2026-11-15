@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS customers (
     email TEXT,
     source TEXT,
     notes TEXT,
+    receipt_name TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -160,6 +161,8 @@ CREATE TABLE IF NOT EXISTS order_items (
     additional_payments REAL DEFAULT 0,
     final_price REAL DEFAULT 0,
     notes TEXT,
+    returned INTEGER DEFAULT 0,
+    returned_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
@@ -249,6 +252,52 @@ CREATE INDEX IF NOT EXISTS idx_agreements_order_id ON agreements(order_id);
 CREATE INDEX IF NOT EXISTS idx_agreements_customer_id ON agreements(customer_id);
 `;
 
+// Push Subscriptions table - for web push notifications
+export const createPushSubscriptionsTable = `
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    endpoint TEXT UNIQUE NOT NULL,
+    keys_p256dh TEXT NOT NULL,
+    keys_auth TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+`;
+
+// Receipts table - one row per income transaction for which a receipt was
+// requested from SmartInvoice. Keeps a snapshot of what was sent and what
+// came back, so a receipt stays traceable even if its transaction is deleted.
+export const createReceiptsTable = `
+CREATE TABLE IF NOT EXISTS receipts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    transaction_id INTEGER UNIQUE,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'issued', 'failed')),
+    description TEXT NOT NULL,
+    notes TEXT,
+    customer_name TEXT,
+    amount REAL,
+    payment_method TEXT,
+    payment_reference TEXT,
+    is_test INTEGER DEFAULT 0,
+    document_id TEXT,
+    document_number TEXT,
+    pdf_url TEXT,
+    email_sent_to TEXT,
+    drive_file_name TEXT,
+    local_pdf_path TEXT,
+    last_request_at DATETIME,
+    error_code TEXT,
+    error_message TEXT,
+    attempt INTEGER DEFAULT 1,
+    issued_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_receipts_status ON receipts(status);
+`;
+
 // All schema items in order
 export const allSchemaItems = [
     { name: 'users', sql: createUsersTable },
@@ -269,6 +318,8 @@ export const allSchemaItems = [
     { name: 'order_attachments', sql: createOrderAttachmentsTable },
     { name: 'order_attachments_indexes', sql: createOrderAttachmentsIndex },
     { name: 'settings', sql: createSettingsTable },
+    { name: 'push_subscriptions', sql: createPushSubscriptionsTable },
+    { name: 'receipts', sql: createReceiptsTable },
 ];
 
 export default allSchemaItems;

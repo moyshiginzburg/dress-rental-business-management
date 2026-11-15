@@ -35,6 +35,15 @@ import { cn, getCategoryLabel, normalizePhoneInput, formatDateInput } from "@/li
 import { clearSharedUploadPayload, getSharedUploadPayload, compressImageForUpload } from "@/lib/shared-upload";
 import { reportClientError } from "@/lib/error-reporter";
 import { ContactPicker } from "@/components/dashboard/contact-picker";
+import {
+  ReceiptOptions,
+  initialReceiptOptions,
+  withReceiptDefaults,
+  toReceiptRequest,
+  receiptValidationError,
+  useReceiptsStatus,
+  useReceiptCustomerName,
+} from "@/components/dashboard/receipt-options";
 
 const FORM_INCOME_CATEGORIES = [
   { value: "existing_order", label: "הזמנה" },
@@ -100,6 +109,20 @@ export default function NewTransactionPage() {
   const [lastFourDigits, setLastFourDigits] = useState("");
   const [installments, setInstallments] = useState("1");
   const sharedAppliedRef = useRef(false);
+
+  // Receipt (SmartInvoice) options - defaults follow the payment method and income category
+  const receiptsStatus = useReceiptsStatus();
+  const receiptCategory = uiCategory === "existing_order" ? "order" : uiCategory;
+  const [receiptOptions, setReceiptOptions] = useState(() => initialReceiptOptions("cash", "order"));
+  // Default name on the receipt: the selected customer's receipt name (or app name); for a new customer, the typed name
+  const receiptCustomer = useReceiptCustomerName(
+    isNewCustomer ? null : customerId,
+    isNewCustomer ? newCustomerDetails.name : customerSearch
+  );
+
+  useEffect(() => {
+    setReceiptOptions((prev) => withReceiptDefaults(prev, paymentMethod, receiptCategory, receiptCustomer));
+  }, [paymentMethod, receiptCategory, receiptCustomer.key, receiptCustomer.name]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const typeParam = searchParams.get("type");
@@ -228,6 +251,11 @@ export default function NewTransactionPage() {
       toast({ title: "חסרה לקוחה", description: "נא לחפש ולבחור לקוחה קיימת, או ליצור לקוחה חדשה.", variant: "destructive" });
       return;
     }
+    const receiptError = type === "income" && receiptsStatus.enabled && receiptOptions.issue ? receiptValidationError(receiptOptions) : null;
+    if (receiptError) {
+      toast({ title: "חסרים פרטים לקבלה", description: receiptError, variant: "destructive" });
+      return;
+    }
 
     setSaving(true);
     try {
@@ -253,6 +281,7 @@ export default function NewTransactionPage() {
         customer_charge_amount: type === 'expense' && expenseAllocation !== 'business'
           ? (expenseAllocation === 'customer' ? parseFloat(amount) : parseFloat(customerChargeAmount || '0'))
           : 0,
+        receipt: type === "income" ? toReceiptRequest(receiptOptions, receiptsStatus.enabled) : undefined,
       };
 
       if (isNewCustomer) {
@@ -266,7 +295,10 @@ export default function NewTransactionPage() {
       }
 
       await transactionsApi.create(data);
-      toast({ title: "הצלחה!", description: "הפעולה נרשמה בהצלחה" });
+      toast({
+        title: "הצלחה!",
+        description: data.receipt ? "הפעולה נרשמה בהצלחה, והקבלה בהפקה" : "הפעולה נרשמה בהצלחה",
+      });
       router.push("/dashboard/transactions");
     } catch (error) {
       // Show the server's specific error message when available,
@@ -768,6 +800,10 @@ export default function NewTransactionPage() {
                 <Input value={accountNumber} onChange={(e) => setAccountNumber(e.target.value)} className="h-9 text-center" />
               </div>
             </div>
+          )}
+
+          {type === "income" && receiptsStatus.enabled && (
+            <ReceiptOptions value={receiptOptions} onChange={setReceiptOptions} />
           )}
 
           <div className="space-y-1">

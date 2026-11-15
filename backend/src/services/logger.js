@@ -18,6 +18,7 @@ import { appendFileSync, existsSync, mkdirSync, statSync, renameSync, readdirSyn
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { sendTelegramAlert } from './telegram.js';
+import { getClientIp } from '../utils/ip.js';
 
 /** Log retention in days. Files older than this are deleted during daily cleanup. */
 const LOG_RETENTION_DAYS = 30;
@@ -229,30 +230,55 @@ function writeToFiles(level, category, action, data) {
   // Always write to combined log
   writeToCombinedLog(entry);
 
-  // Write errors to error log and send real-time Telegram alert
-  if (level === LOG_LEVELS.ERROR || data.errorMessage) {
-    writeToErrorLog(entry);
+  // Real-time Telegram alerts for errors, login failures, AND successful logins
+  const isErrorOrLogin = level === LOG_LEVELS.ERROR || data.errorMessage || action === LogAction.LOGIN || action === LogAction.LOGIN_FAILED;
+
+  if (isErrorOrLogin) {
+    if (level === LOG_LEVELS.ERROR || data.errorMessage) {
+      writeToErrorLog(entry);
+    }
 
     if (!shouldSendTelegramAlert(data)) {
       return;
     }
 
-    const pathInfo = data.requestPath
-      ? `${data.requestMethod || ''} ${data.requestPath}`.trim()
-      : '';
-    const hostInfo = data.requestHost || data.forwardedHost
-      ? `Host: ${data.requestHost || data.forwardedHost}`
-      : null;
-    const forwardedHostInfo = data.forwardedHost ? `Forwarded-Host: ${data.forwardedHost}` : null;
-    const alertLines = [
-      `[ERROR] ${category} - ${action}`,
-      `Error: ${data.errorMessage || 'unknown error'}`,
-      pathInfo ? `Path: ${pathInfo}` : null,
-      hostInfo,
-      forwardedHostInfo,
-      `Time: ${getTimestamp()}`,
-    ].filter(Boolean);
-    sendTelegramAlert(alertLines.join('\n'));
+    if (action === LogAction.LOGIN) {
+      const alertLines = [
+        `🔐 [LOGIN SUCCESS] התחברות מוצלחת למערכת`,
+        `משתמש: ${data.userName || 'מנהל'} (${data.userEmail || ''})`,
+        `כתובת IP: ${data.ipAddress || 'לא ידועה'}`,
+        `דפדפן/מכשיר: ${data.userAgent || 'לא ידוע'}`,
+        `זמן: ${getTimestamp()}`,
+      ];
+      sendTelegramAlert(alertLines.join('\n'));
+    } else if (action === LogAction.LOGIN_FAILED) {
+      const alertLines = [
+        `⚠️ [LOGIN FAILED] ניסיון התחברות שנכשל`,
+        `אימייל: ${data.userEmail || 'לא צוין'}`,
+        `סיבה: ${data.errorMessage || 'פרטים שגויים'}`,
+        `כתובת IP: ${data.ipAddress || 'לא ידועה'}`,
+        `דפדפן/מכשיר: ${data.userAgent || 'לא ידוע'}`,
+        `זמן: ${getTimestamp()}`,
+      ];
+      sendTelegramAlert(alertLines.join('\n'));
+    } else {
+      const pathInfo = data.requestPath
+        ? `${data.requestMethod || ''} ${data.requestPath}`.trim()
+        : '';
+      const hostInfo = data.requestHost || data.forwardedHost
+        ? `Host: ${data.requestHost || data.forwardedHost}`
+        : null;
+      const forwardedHostInfo = data.forwardedHost ? `Forwarded-Host: ${data.forwardedHost}` : null;
+      const alertLines = [
+        `[ERROR] ${category} - ${action}`,
+        `Error: ${data.errorMessage || 'unknown error'}`,
+        pathInfo ? `Path: ${pathInfo}` : null,
+        hostInfo,
+        forwardedHostInfo,
+        `Time: ${getTimestamp()}`,
+      ].filter(Boolean);
+      sendTelegramAlert(alertLines.join('\n'));
+    }
   }
 
   // Run log cleanup at most once per day (async, non-blocking)
@@ -320,6 +346,11 @@ function isFromFrontendLink(data) {
 function shouldSendTelegramAlert(data) {
   const status = data.responseStatus;
   const path = data.requestPath || '';
+
+  // Ignore CORS rejection errors — handled with clean HTTP 403 without log noise
+  if (data.errorMessage && data.errorMessage.includes('Not allowed by CORS')) {
+    return false;
+  }
 
   // For 404 errors, only alert if it's a broken link within our own app
   if (status === 404) {
@@ -458,7 +489,7 @@ export function logUserAction(req, action, category, entityType = null, entityId
     entityId,
     entityName,
     details,
-    ipAddress: req.ip || req.connection?.remoteAddress,
+    ipAddress: getClientIp(req),
     userAgent: req.headers['user-agent'],
     requestHost: req.headers.host || null,
     forwardedHost: req.headers['x-forwarded-host'] || null,
@@ -481,7 +512,7 @@ export function logError(req, error, category = LogCategory.ERROR) {
     category,
     errorMessage: error.message,
     errorStack: error.stack,
-    ipAddress: req?.ip || req?.connection?.remoteAddress,
+    ipAddress: getClientIp(req),
     userAgent: req?.headers?.['user-agent'],
     requestHost: req?.headers?.host || null,
     forwardedHost: req?.headers?.['x-forwarded-host'] || null,
@@ -495,7 +526,7 @@ export function logError(req, error, category = LogCategory.ERROR) {
 /**
  * Log a login attempt
  */
-export function logLogin(email, success, userId = null, userName = null, ipAddress = null, userAgent = null, errorMessage = null) {
+export function logLogin(email, success, userId = null, userName = null, ipAddress = null, userAgent = null, errorMessage = null, reqContext = {}) {
   logActivity({
     userId,
     userEmail: email,
@@ -503,8 +534,13 @@ export function logLogin(email, success, userId = null, userName = null, ipAddre
     action: success ? LogAction.LOGIN : LogAction.LOGIN_FAILED,
     category: LogCategory.AUTH,
     details: success ? { message: 'התחברות מוצלחת' } : { message: 'התחברות נכשלה', reason: errorMessage },
-    ipAddress,
-    userAgent,
+    ipAddress: reqContext.ipAddress || ipAddress,
+    userAgent: reqContext.userAgent || userAgent,
+    requestHost: reqContext.requestHost || null,
+    forwardedHost: reqContext.forwardedHost || null,
+    referer: reqContext.referer || null,
+    requestMethod: reqContext.requestMethod || 'POST',
+    requestPath: reqContext.requestPath || '/api/auth/login',
     responseStatus: success ? 200 : 401,
     errorMessage: success ? null : errorMessage,
   });

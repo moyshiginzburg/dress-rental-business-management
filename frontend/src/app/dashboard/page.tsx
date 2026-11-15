@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Dashboard Main Page - Enhanced for Eti
+ * Dashboard Main Page
  * 
  * Purpose: Display business overview with extreme clarity and beauty.
  * Focuses on quick actions and key metrics.

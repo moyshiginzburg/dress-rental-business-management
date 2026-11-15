@@ -11,7 +11,6 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import rateLimit from 'express-rate-limit';
 import cookieParser from 'cookie-parser';
 import jwt from 'jsonwebtoken';
 import { serverConfig, uploadConfig, localStorageConfig, authConfig } from './config/index.js';
@@ -34,6 +33,11 @@ import dashboardRoutes from './routes/dashboard.js';
 import exportRoutes from './routes/export.js';
 import appsScriptLogsRoutes from './routes/apps-script-logs.js';
 import clientErrorsRoutes from './routes/client-errors.js';
+import pushRoutes from './routes/push.js';
+import receiptsRoutes from './routes/receipts.js';
+import { startReturnCheckCron } from './services/returnCheckCron.js';
+import { recoverStuckReceipts, recoverMissingReceiptCopies, resumeReceiptOutageWatch } from './services/receipts.js';
+import { loginPeerLimiter } from './middleware/loginProtection.js';
 
 // Ensure upload directories exist
 const uploadDirs = [
@@ -82,7 +86,9 @@ app.use(cors({
     if (isAllowed) {
       callback(null, true);
     } else {
-      callback(new Error('Not allowed by CORS'));
+      // Reject disallowed origin cleanly without throwing an Error object,
+      // avoiding 500 server error logs and Telegram noise.
+      callback(null, false);
     }
   },
   credentials: true,
@@ -191,22 +197,11 @@ app.get(frontendRoutes, (req, res) => {
   res.redirect(302, `${frontendUrl}${req.path}`);
 });
 
-// Rate limiter for login endpoint only.
-// Allows 15 login attempts per 15-minute window per IP.
-// Does NOT affect any other API endpoints or authenticated requests.
-const loginRateLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,  // 15 minutes
-  max: 15,                    // max 15 attempts per window
-  standardHeaders: true,      // return rate limit info in RateLimit-* headers
-  legacyHeaders: false,       // disable X-RateLimit-* headers
-  message: {
-    success: false,
-    message: 'יותר מדי ניסיונות התחברות. נסה שוב בעוד 15 דקות.',
-  },
-});
-
 // Mount route modules
-app.use('/api/auth', loginRateLimiter, authRoutes);
+// Login brute-force protection: failed attempts are limited per visitor address, on the
+// login path only (no per-account lockout). See middleware/loginProtection.js.
+app.use('/api/auth/login', loginPeerLimiter);
+app.use('/api/auth', authRoutes);
 app.use('/api/customers', customersRoutes);
 app.use('/api/dresses', dressesRoutes);
 app.use('/api/transactions', transactionsRoutes);
@@ -217,6 +212,8 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/export', exportRoutes);
 app.use('/api/apps-script-logs', appsScriptLogsRoutes);
 app.use('/api/client-errors', clientErrorsRoutes);
+app.use('/api/push', pushRoutes);
+app.use('/api/receipts', receiptsRoutes);
 
 // ===================
 // Error Handling
@@ -237,7 +234,7 @@ app.use(errorHandler);
 
 const PORT = serverConfig.port;
 
-const server = app.listen(PORT, async () => {
+const server = app.listen(PORT, serverConfig.bindHost, async () => {
   console.log('');
   console.log('╔════════════════════════════════════════════════════════════╗');
   console.log('║         Dress Rental Business Management - Backend            ║');
@@ -272,6 +269,27 @@ const server = app.listen(PORT, async () => {
 
   console.log('╚════════════════════════════════════════════════════════════╝');
   console.log('');
+
+  // Start background jobs
+  startReturnCheckCron();
+
+  // Receipts left 'pending' (e.g. by a restart mid-issue) are retried every 5 minutes;
+  // a retry that fails sends the usual "receipt not issued" Telegram alert.
+  // Issued receipts missing their server / Drive copy are completed (at most once an hour).
+  const runReceiptRecovery = () => recoverStuckReceipts()
+    .then(() => recoverMissingReceiptCopies())
+    .catch((err) => console.error('Receipt recovery failed:', err));
+  setTimeout(runReceiptRecovery, 30 * 1000);
+  setInterval(runReceiptRecovery, 5 * 60 * 1000);
+
+  // Receipts that failed because SmartInvoice was down: the in-memory outage watch was lost
+  // by this restart, so rebuild it; the owner gets a Telegram message once SmartInvoice is back.
+  try {
+    const resumed = resumeReceiptOutageWatch();
+    if (resumed) console.log(`Receipt outage watch resumed for ${resumed} receipt(s)`);
+  } catch (err) {
+    console.error('Receipt outage watch resume failed:', err);
+  }
 });
 
 // Graceful shutdown: close server (releases port) before exit

@@ -10,6 +10,7 @@
 import { Router } from 'express';
 import { get, all } from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
+import { israelTodayIso } from '../utils/israelDate.js';
 
 const router = Router();
 
@@ -206,10 +207,10 @@ router.get('/monthly-chart', (req, res, next) => {
         SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END) as income,
         SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END) as expenses
        FROM transactions
-       WHERE date >= date('now', '-' || ? || ' months')
+       WHERE date >= date(?, '-' || ? || ' months')
        GROUP BY strftime('%Y-%m', date)
        ORDER BY month ASC`,
-      [parseInt(months, 10)]
+      [israelTodayIso(), parseInt(months, 10)]
     );
 
     res.json({

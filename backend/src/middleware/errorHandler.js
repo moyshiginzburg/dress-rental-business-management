@@ -11,6 +11,26 @@
 import { serverConfig } from '../config/index.js';
 
 /**
+ * Return a copy of a request body that is safe to write to logs.
+ * Only password fields are replaced with a placeholder (recursively), so a failed login
+ * never leaves the attempted password in the server log. Tokens (for example the agreement
+ * token that identifies a customer) are deliberately kept: they help find who an error belongs to.
+ *
+ * @param {unknown} value - Request body (or a nested part of it)
+ * @param {number} [depth] - Recursion guard
+ * @returns {unknown} Redacted copy
+ */
+function redactSecrets(value, depth = 0) {
+  if (value === null || typeof value !== 'object' || depth > 5) return value;
+  if (Array.isArray(value)) return value.map((item) => redactSecrets(item, depth + 1));
+  const copy = {};
+  for (const [key, val] of Object.entries(value)) {
+    copy[key] = /password|passwd|^pass$/i.test(key) ? '[REDACTED]' : redactSecrets(val, depth + 1);
+  }
+  return copy;
+}
+
+/**
  * Custom error class for API errors
  */
 export class ApiError extends Error {
@@ -40,7 +60,7 @@ export function errorHandler(err, req, res, next) {
     stack: err.stack,
     path: req.path,
     method: req.method,
-    body: req.body,
+    body: redactSecrets(req.body),
     timestamp: new Date().toISOString()
   });
   

@@ -82,7 +82,7 @@ export function GlobalSearch() {
             const [customersRes, dressesRes, ordersRes] = await Promise.all([
                 customersApi.list({ search: query, limit: 5 }),
                 dressesApi.list({ search: query, limit: 5 }),
-                ordersApi.list({ page: 1 }),
+                ordersApi.list({ page: 1, search: query }),
             ]);
 
             const newResults: SearchResult[] = [];
@@ -117,9 +117,9 @@ export function GlobalSearch() {
 
             // Process orders - filter client-side by customer name
             if (ordersRes.success && ordersRes.data) {
-                const data = ordersRes.data as { orders: { id: number; customer_name: string; total_price: number; status: string }[] };
+                const data = ordersRes.data as { orders: { id: number; customer_name: string; customer_display_name?: string | null; total_price: number; status: string }[] };
                 data.orders
-                    .filter((o) => o.customer_name?.toLowerCase().includes(query.toLowerCase()))
+                    .filter((o) => [o.customer_name, o.customer_display_name].some((n) => n?.toLowerCase().includes(query.toLowerCase())))
                     .slice(0, 5)
                     .forEach((o) => {
                         newResults.push({

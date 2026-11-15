@@ -37,3 +37,6 @@ out/
 temp_cache/
 .vercel
 venv/
+
+# Apps Script secrets (pushed with clasp, never committed)
+apps_script/Secrets.js

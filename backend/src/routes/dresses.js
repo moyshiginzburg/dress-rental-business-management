@@ -26,6 +26,7 @@ import { ApiError } from '../middleware/errorHandler.js';
 import multer from 'multer';
 import { processDressImage } from '../services/image.js';
 import { normalizeTextForSave, normalizeTextForSearch } from '../utils/textUtils.js';
+import { israelTodayIso } from '../utils/israelDate.js';
 
 const router = Router();
 
@@ -100,7 +101,8 @@ router.post('/upload', upload.single('image'), async (req, res, next) => {
  * No is_active filter — all dresses in the table are visible.
  *
  * Supports sorting by last_active_date — the most recent event_date recorded
- * in dress_history for each dress (falls back to dresses.updated_at).
+ * in dress_history for each dress (falls back to the history record date;
+ * dresses without any history are listed last). Editing a dress never moves it.
  */
 router.get('/', (req, res, next) => {
   try {
@@ -114,11 +116,18 @@ router.get('/', (req, res, next) => {
       sortOrder = 'desc'
     } = req.query;
 
-    // last_active_date: latest event_date in dress_history, falling back to updated_at
+    // last_active_date must not change when a dress is merely edited, otherwise
+    // the dress jumps in the list after saving. It is taken from dress_history only:
+    //   1. latest event_date (real rentals/sales);
+    //   2. else the date the undated history was recorded (rows imported from the
+    //      old system have no event_date, only created_at = import date);
+    //   3. else NULL (no history at all) -> those dresses go to the end of the list.
+    // d.updated_at is deliberately NOT used, because every edit refreshes it.
     let sql = `SELECT d.*,
              COALESCE(
-               (SELECT MAX(dh.event_date) FROM dress_history dh WHERE dh.dress_id = d.id),
-               d.updated_at
+               (SELECT MAX(dh.event_date) FROM dress_history dh
+                  WHERE dh.dress_id = d.id AND dh.event_date IS NOT NULL AND dh.event_date <> ''),
+               (SELECT MAX(date(dh.created_at)) FROM dress_history dh WHERE dh.dress_id = d.id)
              ) AS last_active_date
       FROM dresses d WHERE 1=1`;
     const params = [];
@@ -161,7 +170,8 @@ router.get('/', (req, res, next) => {
     const sortColumn = validSortColumns.includes(sortBy) ? sortBy : 'last_active_date';
     const order = sortOrder.toLowerCase() === 'desc' ? 'DESC' : 'ASC';
     const orderByClause = sortColumn === 'last_active_date' ? sortColumn : `d.${sortColumn}`;
-    sql += ` ORDER BY ${orderByClause} ${order}`;
+    // NULLs (no history) always last; d.id DESC as a stable tie-breaker (newer dresses first).
+    sql += ` ORDER BY ${orderByClause} IS NULL, ${orderByClause} ${order}, d.id DESC`;
 
     // Add pagination
     const pageNum = parseInt(page, 10);
@@ -244,8 +254,9 @@ router.get('/available', (req, res, next) => {
        WHERE oi.dress_id IS NOT NULL
          AND o.status != 'cancelled'
          AND o.event_date IS NOT NULL
-         AND date(o.event_date) >= date('now')
-       ORDER BY date(o.event_date) ASC, o.id ASC`
+         AND date(o.event_date) >= date(?)
+       ORDER BY date(o.event_date) ASC, o.id ASC`,
+      [israelTodayIso()] // Israel "today"; SQLite date('now') is the UTC day
     );
 
     const bookingsByDress = new Map();
@@ -330,9 +341,9 @@ router.get('/:id', (req, res, next) => {
        WHERE oi.dress_id = ?
          AND o.status != 'cancelled'
          AND o.event_date IS NOT NULL
-         AND date(o.event_date) >= date('now')
+         AND date(o.event_date) >= date(?)
        ORDER BY date(o.event_date) ASC, o.id ASC`,
-      [id]
+      [id, israelTodayIso()] // Israel "today"; SQLite date('now') is the UTC day
     );
 
     // Calculate statistics

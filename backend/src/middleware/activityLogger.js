@@ -6,6 +6,7 @@
  */
 
 import { logActivity, LogCategory, LogAction } from '../services/logger.js';
+import { getClientIp } from '../utils/ip.js';
 
 /**
  * Middleware to log all requests
@@ -81,7 +82,7 @@ export function requestLogger(req, res, next) {
       category,
       entityType,
       entityId,
-      ipAddress: req.ip || req.connection?.remoteAddress,
+      ipAddress: getClientIp(req),
       userAgent: req.headers['user-agent'],
       requestMethod: req.method,
       requestPath: req.path,
@@ -105,15 +106,19 @@ export function errorLogger(err, req, res, next) {
     userId: user?.id || null,
     userEmail: user?.email || null,
     userName: user?.name || null,
-    action: LogAction.ERROR,
+    // ERROR level (and its generic Telegram alert) unless the error already sent its own alert.
+    action: err.alreadyAlerted ? LogAction.VALIDATION_ERROR : LogAction.ERROR,
     category: LogCategory.ERROR,
-    ipAddress: req.ip || req.connection?.remoteAddress,
+    ipAddress: getClientIp(req),
     userAgent: req.headers['user-agent'],
     requestMethod: req.method,
     requestPath: req.path,
     responseStatus: err.statusCode || 500,
-    errorMessage: err.message,
-    errorStack: err.stack,
+    // An error that already sent its own dedicated Telegram alert (e.g. a failed receipt) is
+    // logged without errorMessage, so the logger does not send a second, generic alert.
+    errorMessage: err.alreadyAlerted ? null : err.message,
+    errorStack: err.alreadyAlerted ? null : err.stack,
+    details: err.alreadyAlerted ? { error: err.message } : null,
   });
   
   next(err);

@@ -37,6 +37,8 @@ When deploying this system, make sure to:
 - ✅ Set a **strong, random `JWT_SECRET`** (the `configure.sh` script does this automatically)
 - ✅ Use a **strong admin password** (at least 12 characters, mixed case + numbers)
 - ✅ Keep your **`APPS_SCRIPT_WEB_APP_URL` private** — it acts as an API key
+- ✅ Set the same **`ORIGIN_SECRET`** on the VPS and in Vercel, so only your site can reach the backend (`setup-new-server.sh` generates it)
+- ✅ Set **`GAS_LOG_SECRET`** (and `apps_script/Secrets.js`) so only your Apps Script can write log lines
 - ✅ **Backup your database** regularly (the built-in cron job does this hourly)
 - ✅ Keep dependencies up to date — run `npm audit` periodically
 - ✅ The `local_data/` directory is excluded from Git — never commit it
