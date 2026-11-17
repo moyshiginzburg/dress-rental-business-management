@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-11-17
+### Security
+- **Agreement signing requires the link token:** `POST /api/agreements/sign` now refuses requests without a valid `agreement_sign` token (HTTP 400). The order is taken from the token only; an `order_id` in the request body is ignored, and the old "no order → find or create a customer by phone" path is removed. The duplicate-phone check is unchanged.
+- **Signature is re-encoded:** the signature must be a `data:image/png;base64,...` string; `sharp` verifies that the bytes are a PNG and re-encodes them. Only the re-encoded image is saved, stored in `agreements.signature_data` and printed in the PDF. Anything else is refused with HTTP 400.
+- **Agreement PDF rendering has no network:** the PDF generator accepts only a pure base64 PNG data URL for the signature, and headless Chrome runs with `--host-resolver-rules="MAP * ~NOTFOUND"` (the agreement page needs no network).
+- **Uploaded files need a login token:** `/uploads/...` accepts only a login token of an existing, active user. The public link tokens (`agreement_sign`, `receipt_pdf`) no longer open uploaded files; customers still get their receipt through `GET /api/receipts/public/:token`.
+- **Apps Script shared secret:** the backend adds `APPS_SCRIPT_SHARED_SECRET` (JSON field `secret`) to every request to the Apps Script Web App, and `doPost` refuses requests without the same value (also when the secret is missing from `apps_script/Secrets.js`). The Web App URL is public, so without this anyone who learned it could send e-mails from the business account.
+
+### Fixed
+- **Request log:** the activity log recorded the path relative to the router (`GET /604`, category always "system"); it now records the full path and the real category.
+- **Return reminders:** correct Hebrew singular / plural in the WhatsApp reminder text (push notification and order view) and "שמלה אחת" in the notification body.
+- **Push subscription** was sent to the server again on every page navigation; it is now saved once per app load (a failed attempt, for example before login, is retried on the next page).
+- **Setup script:** a secret line with only spaces or a Windows line ending in `local_data/.env` counted as present, which could produce an nginx map with an empty secret. Such values are now replaced by a generated one. The script also generates `APPS_SCRIPT_SHARED_SECRET`.
+- **Agreement text:** a broken Hebrew word in the terms checkbox of the signing page and in the declaration printed in the agreement PDF ("קראתי").
+
+### Upgrade notes
+- **Before** deploying the new Apps Script code: add `APPS_SCRIPT_SHARED_SECRET=<openssl rand -hex 32>` to `local_data/.env` and the same value to `apps_script/Secrets.js` (see `Secrets.js.example`), restart the backend, then `clasp push` and deploy a new Web App version. Until the new Web App version is deployed the old script simply ignores the extra field; once it is deployed, a missing or different secret stops all e-mails, calendar events, tasks and Drive uploads. See SETUP.md → "Apps Script shared secret".
+- The `/agreement` page without a token can no longer sign; always send the link created from the order.
+
 ## [1.5.0] - 2026-11-15
 ### Added
 - **Automatic receipts (optional, SmartInvoice):** every income (new transaction, each deposit payment of a new order, or later from the transaction edit page) can issue a legal receipt (קבלה) through the SmartInvoice API. Per payment: "issue a receipt" checkbox (checked by default for every payment method, can be unchecked), customer name on the receipt, "for what" and an optional note. The PDF is stored on the server, copied to Google Drive and emailed to the customer by the app (SmartInvoice only receives the customer's name). Idempotency keys and a duplicate guard make sure a retry never issues a second receipt; failures send a Telegram alert, and a SmartInvoice outage sends one message when the service is back. The transactions list shows a receipt badge with "show" and "send on WhatsApp" buttons. Enabled only when `SMARTINVOICE_API_KEY` is set. See `docs/SMARTINVOICE.md`.

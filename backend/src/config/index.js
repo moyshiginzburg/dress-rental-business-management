@@ -64,6 +64,9 @@ export const appsScriptConfig = {
   // Shared secret the Apps Script project sends (header X-Gas-Log-Secret) when it posts log
   // lines to /api/apps-script-logs. Without it the route refuses everything.
   logSecret: (process.env.GAS_LOG_SECRET || '').trim(),
+  // Shared secret the backend adds to every request it sends to the Web App (JSON field
+  // `secret`); doPost refuses requests without it. Same value as in apps_script/Secrets.js.
+  sharedSecret: (process.env.APPS_SCRIPT_SHARED_SECRET || '').trim(),
 };
 
 // AI Configuration

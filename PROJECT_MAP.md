@@ -1,6 +1,6 @@
 # 🗺️ PROJECT MAP: dress-rental-business-management
 
-**Generated:** 2026-11-15 14:24:17
+**Generated:** 2026-11-17 13:10:55
 
 > **Note:** This map shows the project structure and code signatures (classes, functions, methods).
 > Run `python3 dev_tools/generate_repo_map.py` to regenerate after significant changes.
@@ -124,6 +124,7 @@
       function getOrderForAgreement(orderId)
       function createAgreementToken(orderId, eventDateStr)
       function resolveAgreementToken(token)
+      async function reencodeSignaturePng(signatureData)
       function buildAgreementPrefillPayload(orderWithItems)
       function getLatestAgreementForOrder(orderId)
       function hasSignedAgreementForCurrentOrderVersion(orderId)
@@ -756,7 +757,7 @@
         export interface ReceiptOptionsState
         export interface ReceiptCustomer
         export function defaultReceiptDescription(category: string): string
-        export function defaultReceiptIssue(paymentMethod: string): boolean
+        export function defaultReceiptIssue(): boolean
         export function initialReceiptOptions(paymentMethod: string, category: string, customer?: ReceiptCustomer): ReceiptOptionsState
         export function toReceiptRequest(state: ReceiptOptionsState, enabled: boolean): ReceiptRequest | undefined
         export function receiptValidationError(state: ReceiptOptionsState): string | null

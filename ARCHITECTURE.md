@@ -1,7 +1,7 @@
 # 🏗️ ARCHITECTURE.md - Dress Rental Business Management
 
 > **Purpose:** Complete architectural guide for AI agents and developers.
-> Last Updated: 2026-11-15
+> Last Updated: 2026-11-17
 
 ---
 
@@ -296,6 +296,26 @@ customers.name may hold internal notes (e.g. "(גוגל)"); the display name nev
         never overwritten by the agreement (phone/email still are)
 ```
 
+### 2b-1. Agreement Signing (public endpoint, security rules)
+```
+[Owner] POST /api/agreements/order/:orderId/sign-link → JWT {scope:'agreement_sign', orderId},
+        valid until the end of the event day (else 7 days) → link /agreement?token=...
+[Customer] GET /api/agreements/prefill?token= → form prefill
+[Customer] POST /api/agreements/sign {token, full_name, phone, email, event_date, signature_data}
+    ├── token is REQUIRED; the order comes only from the token (order_id in the body is ignored);
+    │   no / invalid / wrong-scope token → 400, nothing is written
+    ├── signature_data must be data:image/png;base64,...; reencodeSignaturePng() verifies it with
+    │   sharp and re-encodes it to a new PNG; only that image is saved (uploads/signatures/),
+    │   stored (agreements.signature_data) and printed. Anything else → 400
+    ├── update the order's customer (phone, email, display name), order event_date
+    ├── INSERT agreements, orders.agreement_signed = 1
+    ├── generateAgreementPdf() → headless Chrome renders a local HTML file to PDF with
+    │   --host-resolver-rules="MAP * ~NOTFOUND" (no network during rendering)
+    └── emails to the customer and the owner (Apps Script, in the background)
+```
+The signature is the only customer-supplied value that reaches the PDF page as raw HTML (`<img src>`); every
+other value goes through `escapeHtml()`. Never print a request value into that page without one of the two.
+
 ### 2c. Dress Return Tracking & Reminders (Web Push)
 ```
 [UI: orders/page.tsx, order view] each rental / sewing_for_rental item:
@@ -303,7 +323,8 @@ customers.name may hold internal notes (e.g. "(גוגל)"); the display name nev
     │   (order_items.returned, returned_at)
     └── "תזכורת ווצאפ" (while not returned) → WhatsApp to the customer, greeting her display name
 [UI: components/pwa/sw-register.tsx] after login: GET /api/push/vapid-key → if configured,
-    pushManager.subscribe() → POST /api/push/subscribe (push_subscriptions, endpoint unique)
+    pushManager.subscribe() → POST /api/push/subscribe (push_subscriptions, endpoint unique);
+    done once per app load (a failed attempt, e.g. before login, is retried on the next page)
 [Cron: services/returnCheckCron.js] 09:00 Israel time, Sun–Fri → sendReturnReminders():
     ├── active orders whose event date passed and have rental items not marked returned
     ├── 2+ business days (Sun–Thu) after the event → one notification per order to every device
@@ -342,12 +363,14 @@ No VAPID keys in .env → the feature is silently off (no subscription, no remin
 [Backend Service: email.js]
     │
     └── sendToAppsScript(payload)
-            ↓ HTTP POST to Apps Script Web App URL
+            ↓ HTTP POST to Apps Script Web App URL, JSON field `secret` =
+              APPS_SCRIPT_SHARED_SECRET (local_data/.env) added to every request
             (No email fallback — VPS has no SMTP; email trigger removed)
     │
 [Apps Script: Code.js]
     │
-    └── doPost() → processPayload() / handleSendEmail()
+    └── doPost() → refuses the request unless `secret` equals APPS_SCRIPT_SHARED_SECRET
+                   (apps_script/Secrets.js) → processPayload() / handleSendEmail()
             ↓ Sends logs to backend `/api/apps-script-logs/batch`
             │
             └── Handler by type:
@@ -458,6 +481,8 @@ services/pdfGenerator.js
 | POST | `/api/auth/change-password` | Change password |
 
 **Backend is reachable only through the Vercel site (origin secret).** `frontend/src/middleware.ts` adds the header `x-origin-secret` (Vercel env var `ORIGIN_SECRET`, sensitive) to every `/api` and `/uploads` request it proxies. nginx (`/etc/nginx/conf.d/dress-origin.conf`, template `scripts/nginx/origin-secret.conf.template`, installed by `scripts/setup-new-server.sh`) refuses (HTTP 444) any request without it, except `/api/health` (no data) and `/api/apps-script-logs[/batch]`. Google Apps Script posts its logs straight to the VPS, so that path has its **own** secret: `X-Gas-Log-Secret` (`GAS_LOG_SECRET`; in `apps_script/Secrets.js` which is gitignored and pushed with clasp, in `local_data/.env` on the VPS and in the nginx file). Without it the path is refused for everyone, including requests that arrive through the Vercel site. The backend route (`routes/apps-script-logs.js`) checks the same secret again (fail closed when unset), accepts at most 200 entries per request, limits the level to DEBUG/INFO/WARN/ERROR, truncates text and strips line breaks (no forged log lines); there is no endpoint that reads the logs. nginx also replaces `X-Forwarded-For` / `X-Real-IP` with the verified visitor address: Vercel's `X-Vercel-Proxied-For` (tested: a visitor cannot forge it, whereas `X-Forwarded-For`, `X-Real-IP` and `X-Vercel-Forwarded-For` are sometimes passed through exactly as the visitor typed them) or, for exempt direct calls, the TCP peer. So `getClientIp()` / `req.ip` in the backend are trustworthy only behind this nginx. Audit log of the decisions: `/var/log/nginx/dress-origin.log`. Setup and rollback: SETUP.md.
+
+**Uploaded files (`/uploads/...`, `index.js`)** are served only with a **login** token (cookie `auth_token` or `Authorization` header): the JWT must have no `scope` and its user must exist with `is_active = 1`. The public link tokens signed with the same secret (`agreement_sign`, `receipt_pdf`) are refused there; customers get their receipt only through `GET /api/receipts/public/:token`.
 
 **Login brute-force protection** (`backend/src/middleware/loginProtection.js`, `POST /api/auth/login` only): 30 *failed* attempts / 15 min per visitor address (`req.ip`, IPv6 grouped by /56). Because the address cannot be forged any more (above), a guesser can only limit their own address. There is deliberately **no per-account lockout** (the owner's e-mail is not secret, so a per-account lockout would let anyone lock her out). `errorHandler.js` replaces **password** fields of the request body in its log with `[REDACTED]`; tokens are kept on purpose (they identify the customer an error belongs to).
 
@@ -737,7 +762,7 @@ cron (daily 23:55) → daily-security-report.sh
    - `requireAuth` middleware on all protected routes
 
 3. **File Uploads**:
-   - Signatures: `uploads/signatures/` → raw PNG from signing pad
+   - Signatures: `uploads/signatures/` → PNG from the signing pad, re-encoded by the server (`sharp`) before saving
    - Agreements: `uploads/agreements/[CustomerName - YYYY-MM-DD - OrderId]/הסכם השכרה - Name.pdf`
    - Dress images: `uploads/dresses/<uuid>.webp` + `thumb_<uuid>.webp` (processed by `sharp`)
    - Dress image fields (`photo_url`, `thumbnail_url`) store internal app paths (`/uploads/dresses/...`) only
@@ -747,6 +772,7 @@ cron (daily 23:55) → daily-security-report.sh
 
 4. **Google Integration**:
    - SOLE TRANSPORT: HTTPS POST to the Apps Script Web App (set `APPS_SCRIPT_WEB_APP_URL` in `.env`)
+   - Every request carries `APPS_SCRIPT_SHARED_SECRET` (JSON field `secret`); `doPost` refuses requests without it (SETUP.md → Apps Script shared secret)
    - If `APPS_SCRIPT_WEB_APP_URL` is missing, the call returns `{ success: false }` and the error is logged — there is no fallback (email-polling was removed in v0.9.0)
    - Email sending also routes through the same Web App (`type: 'send_email'` handled by `handleSendEmail` → `GmailApp.sendEmail`); the backend itself has no SMTP/nodemailer code
 

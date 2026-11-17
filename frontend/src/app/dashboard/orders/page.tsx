@@ -966,7 +966,7 @@ export default function OrdersPage() {
                                 const unreturnedCount = (viewingOrderData.items || []).filter(item => 
                                   (item.item_type === 'rental' || item.item_type === 'sewing_for_rental') && !item.returned
                                 ).length || 1;
-                                const dressText = unreturnedCount === 1 ? 'השמלה' : 'השמלות';
+                                const dressText = unreturnedCount === 1 ? 'השמלה שהושכרה לך צריכה' : 'השמלות שהושכרו לך צריכות';
 
                                 let actualDays = 0;
                                 if (viewingOrderData.order.event_date) {
@@ -979,7 +979,7 @@ export default function OrdersPage() {
                                   }
                                 }
 
-                                const reminderMsg = `שלום ${viewingOrderData.order.customer_display_name || viewingOrderData.order.customer_name} 👋\nזוהי הודעת תזכורת:\n${dressText} שהושכרה לך צריכה לחזור אלינו בתוך יומיים ממועד האירוע, עברו ${actualDays} ימים מאז האירוע.\nמזכירה לך להחזיר עוד היום 🙏`;
+                                const reminderMsg = `שלום ${viewingOrderData.order.customer_display_name || viewingOrderData.order.customer_name} 👋\nזוהי הודעת תזכורת:\n${dressText} לחזור אלינו בתוך יומיים ממועד האירוע, עברו ${actualDays} ימים מאז האירוע.\nמזכירה לך להחזיר עוד היום 🙏`;
 
                                 return (
                                   <a

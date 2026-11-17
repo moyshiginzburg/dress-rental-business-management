@@ -406,7 +406,7 @@ export default function AgreementPage() {
                       className="mt-1"
                     />
                     <span className="text-sm">
-                      קרמנהל את התנאים לעיל ואני מסכימה להם
+                      קראתי את התנאים לעיל ואני מסכימה להם
                     </span>
                   </label>
                 </div>

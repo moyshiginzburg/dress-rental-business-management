@@ -126,7 +126,9 @@ function buildAgreementHtml(agreementData) {
     `;
   }).join('');
 
-  const safeSignature = agreementData.signatureData && String(agreementData.signatureData).startsWith('data:image')
+  // The signature goes into the page as raw HTML (<img src>), so only a pure base64 PNG
+  // data URL is accepted here; the signing route already re-encodes it with sharp.
+  const safeSignature = /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(String(agreementData.signatureData || ''))
     ? agreementData.signatureData
     : '';
   const logoDataUrl = loadLogoDataUrl();
@@ -372,7 +374,7 @@ function buildAgreementHtml(agreementData) {
       </section>
 
       <div class="signature-wrap">
-        <div class="declaration">אני מאשרת שקרמנהל את תנאי ההסכם ומסכימה להם.</div>
+        <div class="declaration">אני מאשרת שקראתי את תנאי ההסכם ומסכימה להם.</div>
         <div class="signature-box">
           <div class="signature-label">חתימה דיגיטלית</div>
           <div class="signature-image">
@@ -416,6 +418,9 @@ async function generateWithChrome(htmlContent) {
       '--disable-dev-shm-usage',
       '--run-all-compositor-stages-before-draw',
       '--virtual-time-budget=5000',
+      // Defense in depth: no host name resolves while the PDF is rendered, so the page can
+      // never talk to the network. The agreement needs none (logo embedded, fonts installed).
+      '--host-resolver-rules=MAP * ~NOTFOUND',
       '--no-pdf-header-footer',
       '--print-to-pdf-no-header',
       `--print-to-pdf=${pdfPath}`,

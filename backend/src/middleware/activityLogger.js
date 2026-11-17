@@ -21,8 +21,11 @@ export function requestLogger(req, res, next) {
   res.end = function(chunk, encoding) {
     const duration = Date.now() - startTime;
     
+    // Full request path without the query string (req.path is relative to the router mount point here)
+    const fullPath = (req.originalUrl || req.url || '').split('?')[0];
+
     // Don't log health checks or static files
-    if (req.path === '/api/health' || req.path.startsWith('/uploads')) {
+    if (fullPath === '/api/health' || fullPath.startsWith('/uploads')) {
       return originalEnd.call(this, chunk, encoding);
     }
     
@@ -30,21 +33,21 @@ export function requestLogger(req, res, next) {
     let category = LogCategory.SYSTEM;
     let entityType = null;
     
-    if (req.path.includes('/auth')) {
+    if (fullPath.includes('/auth')) {
       category = LogCategory.AUTH;
-    } else if (req.path.includes('/customers')) {
+    } else if (fullPath.includes('/customers')) {
       category = LogCategory.CUSTOMER;
       entityType = 'customer';
-    } else if (req.path.includes('/dresses')) {
+    } else if (fullPath.includes('/dresses')) {
       category = LogCategory.DRESS;
       entityType = 'dress';
-    } else if (req.path.includes('/orders')) {
+    } else if (fullPath.includes('/orders')) {
       category = LogCategory.ORDER;
       entityType = 'order';
-    } else if (req.path.includes('/transactions')) {
+    } else if (fullPath.includes('/transactions')) {
       category = LogCategory.TRANSACTION;
       entityType = 'transaction';
-    } else if (req.path.includes('/agreements')) {
+    } else if (fullPath.includes('/agreements')) {
       category = LogCategory.AGREEMENT;
       entityType = 'agreement';
     }
@@ -63,13 +66,13 @@ export function requestLogger(req, res, next) {
         action = LogAction.DELETE;
         break;
       case 'GET':
-        action = req.path.includes('search') ? LogAction.SEARCH : 
+        action = fullPath.includes('search') ? LogAction.SEARCH : 
                  req.params.id ? LogAction.READ : LogAction.LIST;
         break;
     }
     
     // Extract entity ID from path if present
-    const idMatch = req.path.match(/\/(\d+)/);
+    const idMatch = fullPath.match(/\/(\d+)/);
     const entityId = idMatch ? parseInt(idMatch[1], 10) : null;
     
     // Log the activity
@@ -85,7 +88,7 @@ export function requestLogger(req, res, next) {
       ipAddress: getClientIp(req),
       userAgent: req.headers['user-agent'],
       requestMethod: req.method,
-      requestPath: req.path,
+      requestPath: fullPath,
       responseStatus: res.statusCode,
       durationMs: duration,
     });

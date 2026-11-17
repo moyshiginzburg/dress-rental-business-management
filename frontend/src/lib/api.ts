@@ -446,7 +446,6 @@ export const agreementsApi = {
     email?: string;
     event_date?: string;
     signature_data: string;
-    order_id?: number;
     token?: string;
   }) => api.post('/agreements/sign', data),
   list: (page?: number, limit?: number) =>

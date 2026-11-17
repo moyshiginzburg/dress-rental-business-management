@@ -17,6 +17,7 @@ import { writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import jwt from 'jsonwebtoken';
+import sharp from 'sharp';
 import { saveAgreementPdf, isAgreementsFolderAccessible } from '../services/localStorage.js';
 import { sendAgreementConfirmationToCustomer, sendAgreementNotificationToOwner, isEmailEnabled } from '../services/email.js';
 import { generateAgreementPdf } from '../services/pdfGenerator.js';
@@ -87,6 +88,37 @@ function resolveAgreementToken(token) {
     return { orderId: Number(payload.orderId) };
   } catch {
     return null;
+  }
+}
+
+/**
+ * Turn the signature sent by the public signing form into a PNG we produced ourselves.
+ *
+ * Purpose: the signature is the only free-form value that reaches the agreement PDF as raw
+ * HTML (an <img src>), so it must never contain anything but image bytes.
+ * Operation: accepts only a `data:image/png;base64,...` string, decodes it, lets sharp
+ * verify that the bytes really are a PNG image and re-encodes them to a new PNG. Only that
+ * re-encoded image is stored and printed; whatever else the request carried is dropped.
+ *
+ * @param {unknown} signatureData - value of `signature_data` from the request body
+ * @returns {Promise<{buffer: Buffer, dataUrl: string}>} the re-encoded PNG
+ * @throws {ApiError} 400 when the value is not a valid PNG image
+ */
+async function reencodeSignaturePng(signatureData) {
+  const invalid = new ApiError(400, 'החתימה אינה תקינה. נא לחתום שוב');
+  const match = typeof signatureData === 'string'
+    ? signatureData.match(/^data:image\/png;base64,([A-Za-z0-9+/]+={0,2})$/)
+    : null;
+  if (!match) throw invalid;
+
+  try {
+    const image = sharp(Buffer.from(match[1], 'base64'));
+    const { format } = await image.metadata();
+    if (format !== 'png') throw invalid;
+    const buffer = await image.png().toBuffer();
+    return { buffer, dataUrl: `data:image/png;base64,${buffer.toString('base64')}` };
+  } catch {
+    throw invalid;
   }
 }
 
@@ -281,8 +313,11 @@ router.get('/prefill', (req, res, next) => {
 
 /**
  * POST /api/agreements/sign
- * Sign a new rental agreement (public)
- * Creates Google Calendar events and Tasks for follow-up
+ * Sign the agreement of one order (public, no login).
+ *
+ * The request must carry the signed link token (scope `agreement_sign`); the order is taken
+ * from that token only, never from the request body. Without a valid token nothing is signed.
+ * The signature must be a real PNG image and is re-encoded before it is stored or printed.
  */
 router.post('/sign', async (req, res, next) => {
   try {
@@ -292,7 +327,6 @@ router.post('/sign', async (req, res, next) => {
       email,
       event_date,
       signature_data,
-      order_id,
       token,
     } = req.body;
     const normalizedPhone = normalizePhoneNumber(phone);
@@ -308,97 +342,60 @@ router.post('/sign', async (req, res, next) => {
       throw new ApiError(400, 'נא לחתום על ההסכם');
     }
 
-    let resolvedOrderId = order_id ? Number.parseInt(String(order_id), 10) : null;
-    if (token) {
-      const resolved = resolveAgreementToken(String(token).trim());
-      if (!resolved?.orderId) {
-        throw new ApiError(400, 'קישור חתימה לא תקין או שפג תוקפו');
-      }
-      resolvedOrderId = resolved.orderId;
+    // The order comes only from the signed link token. A request without a valid token
+    // is refused, and any order id in the request body is ignored.
+    const resolved = token ? resolveAgreementToken(String(token).trim()) : null;
+    if (!resolved?.orderId) {
+      throw new ApiError(400, 'קישור חתימה לא תקין או שפג תוקפו');
+    }
+    const resolvedOrderId = resolved.orderId;
+
+    const orderWithItems = getOrderForAgreement(resolvedOrderId);
+    if (!orderWithItems) {
+      throw new ApiError(404, 'הזמנה לא נמצאה');
+    }
+    if (hasSignedAgreementForCurrentOrderVersion(resolvedOrderId)) {
+      throw new ApiError(410, 'ההסכם כבר נחתם והקישור כבר לא זמין');
     }
 
-    let orderWithItems = null;
-    if (resolvedOrderId) {
-      orderWithItems = getOrderForAgreement(resolvedOrderId);
-      if (!orderWithItems) {
-        throw new ApiError(404, 'הזמנה לא נמצאה');
-      }
-      if (hasSignedAgreementForCurrentOrderVersion(resolvedOrderId)) {
-        throw new ApiError(410, 'ההסכם כבר נחתם והקישור כבר לא זמין');
-      }
+    // Checked before anything is written: from here on only our own re-encoded PNG is used.
+    const signature = await reencodeSignaturePng(signature_data);
+
+    // The signer is always the customer of the token's order.
+    const customerId = orderWithItems.order.customer_id;
+
+    const duplicatePhone = get(
+      'SELECT id FROM customers WHERE phone = ? AND id != ?',
+      [normalizedPhone, customerId]
+    );
+    if (duplicatePhone) {
+      throw new ApiError(409, 'מספר הטלפון כבר קיים אצל לקוחה אחרת');
     }
 
-    // Find or create customer. If signing with order token, update that exact order customer.
-    let customerId = null;
-    if (orderWithItems?.order?.customer_id) {
-      customerId = orderWithItems.order.customer_id;
+    // The name the customer types is her display name (agreement + receipts);
+    // the owner's app name (which may hold internal notes) is never overwritten.
+    run(
+      `UPDATE customers
+       SET phone = ?, email = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [normalizedPhone, email || null, customerId]
+    );
+    saveCustomerReceiptName(customerId, full_name.replace(/\s+/g, ' ').trim());
 
-      const duplicatePhone = get(
-        'SELECT id FROM customers WHERE phone = ? AND id != ?',
-        [normalizedPhone, customerId]
-      );
-      if (duplicatePhone) {
-        throw new ApiError(409, 'מספר הטלפון כבר קיים אצל לקוחה אחרת');
-      }
+    run(
+      'UPDATE orders SET event_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [event_date || null, resolvedOrderId]
+    );
 
-      // The name the customer types is her display name (agreement + receipts);
-      // the owner's app name (which may hold internal notes) is never overwritten.
-      run(
-        `UPDATE customers
-         SET phone = ?, email = ?, updated_at = CURRENT_TIMESTAMP
-         WHERE id = ?`,
-        [normalizedPhone, email || null, customerId]
-      );
-      saveCustomerReceiptName(customerId, full_name.replace(/\s+/g, ' ').trim());
-
-      run(
-        'UPDATE orders SET event_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-        [event_date || null, resolvedOrderId]
-      );
-    } else {
-      const existingCustomer = get(
-        'SELECT id FROM customers WHERE phone = ?',
-        [normalizedPhone]
-      );
-
-      if (existingCustomer) {
-        customerId = existingCustomer.id;
-        run(
-          `UPDATE customers SET email = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-          [email || null, customerId]
-        );
-        saveCustomerReceiptName(customerId, full_name.replace(/\s+/g, ' ').trim());
-      } else {
-        const result = run(
-          'INSERT INTO customers (name, phone, email) VALUES (?, ?, ?)',
-          [full_name.trim(), normalizedPhone, email || null]
-        );
-        customerId = result.lastInsertRowid;
-      }
+    // Save the re-encoded signature image to local uploads
+    if (!existsSync(uploadConfig.signaturesDir)) {
+      mkdirSync(uploadConfig.signaturesDir, { recursive: true });
     }
-
-    // Save signature image to local uploads
-    let signatureUrl = null;
-    if (signature_data && signature_data.startsWith('data:image')) {
-      // Ensure signature directory exists
-      if (!existsSync(uploadConfig.signaturesDir)) {
-        mkdirSync(uploadConfig.signaturesDir, { recursive: true });
-      }
-
-      // Extract base64 data
-      const base64Data = signature_data.replace(/^data:image\/\w+;base64,/, '');
-      const buffer = Buffer.from(base64Data, 'base64');
-
-      // Generate unique filename
-      const dateStr = israelTodayIso().replace(/-/g, '');
-      const cleanName = full_name.trim().replace(/[^א-תa-zA-Z0-9]/g, '_');
-      const filename = `${dateStr}_${cleanName}_${uuidv4().slice(0, 8)}.png`;
-      const filepath = join(uploadConfig.signaturesDir, filename);
-
-      // Save file to local uploads
-      writeFileSync(filepath, buffer);
-      signatureUrl = `/uploads/signatures/${filename}`;
-    }
+    const signatureDateStr = israelTodayIso().replace(/-/g, '');
+    const signatureCleanName = full_name.trim().replace(/[^א-תa-zA-Z0-9]/g, '_');
+    const signatureFilename = `${signatureDateStr}_${signatureCleanName}_${uuidv4().slice(0, 8)}.png`;
+    writeFileSync(join(uploadConfig.signaturesDir, signatureFilename), signature.buffer);
+    const signatureUrl = `/uploads/signatures/${signatureFilename}`;
 
     // Note: Signature is embedded in the PDF which is saved to synced folder later
 
@@ -409,25 +406,22 @@ router.post('/sign', async (req, res, next) => {
         event_date, signature_data, signature_url, ip_address)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        resolvedOrderId || null,
+        resolvedOrderId,
         customerId,
         full_name.trim(),
         normalizedPhone,
         email || null,
         event_date || null,
-        signature_data,
+        signature.dataUrl,
         signatureUrl,
         getClientIp(req)
       ]
     );
 
-    // Update order if provided
-    if (resolvedOrderId) {
-      run(
-        'UPDATE orders SET agreement_signed = 1, local_signature_path = ? WHERE id = ?',
-        [signatureUrl, resolvedOrderId]
-      );
-    }
+    run(
+      'UPDATE orders SET agreement_signed = 1, local_signature_path = ? WHERE id = ?',
+      [signatureUrl, resolvedOrderId]
+    );
 
     const agreement = get('SELECT * FROM agreements WHERE id = ?', [result.lastInsertRowid]);
 
@@ -445,9 +439,9 @@ router.post('/sign', async (req, res, next) => {
         customerEmail: email || '',
         customerAddress: '',
         eventDate: event_date,
-        orderSummary: orderWithItems?.order?.order_summary || '',
-        orderItems: orderWithItems?.items || [],
-        signatureData: signature_data,
+        orderSummary: orderWithItems.order.order_summary || '',
+        orderItems: orderWithItems.items,
+        signatureData: signature.dataUrl,
         signedAt: agreement.agreed_at,
       });
 
@@ -485,7 +479,7 @@ router.post('/sign', async (req, res, next) => {
         );
       }
 
-      if (resolvedOrderId && (localUploadsPdfPath || savedPdfPath)) {
+      if (localUploadsPdfPath || savedPdfPath) {
         run(
           'UPDATE orders SET local_agreement_path = ? WHERE id = ?',
           [localUploadsPdfPath || savedPdfPath, resolvedOrderId]

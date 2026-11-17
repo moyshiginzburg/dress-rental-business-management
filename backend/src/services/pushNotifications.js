@@ -175,16 +175,19 @@ export async function sendReturnReminders() {
     
     // Only remind if 2 or more business days have passed
     if (diffs.businessDays >= 2) {
-      const dressText = orderData.itemsCount === 1 ? 'השמלה' : 'השמלות';
+      // Hebrew singular / plural agreement for the whole phrase (dress, rented, must)
+      const dressText = orderData.itemsCount === 1
+        ? 'השמלה שהושכרה לך צריכה'
+        : 'השמלות שהושכרו לך צריכות';
       
       // The customer is greeted by her display name (never the app name, which may hold internal notes)
-      const whatsappMessage = `שלום ${orderData.customerDisplayName} 👋\nזוהי הודעת תזכורת אוטומטית מ${businessConfig.name}:\n${dressText} שהושכרה לך צריכה לחזור אלינו בתוך יומיים ממועד האירוע, עברו ${diffs.actualDays} ימים מאז האירוע.\nמזכירה לך להחזיר עוד היום 🙏`;
+      const whatsappMessage = `שלום ${orderData.customerDisplayName} 👋\nזוהי הודעת תזכורת אוטומטית מ${businessConfig.name}:\n${dressText} לחזור אלינו בתוך יומיים ממועד האירוע, עברו ${diffs.actualDays} ימים מאז האירוע.\nמזכירה לך להחזיר עוד היום 🙏`;
       
       const whatsappUrl = createWhatsAppLink(orderData.customerPhone || '', whatsappMessage);
       
       const payload = {
         title: '⚠️ תזכורת החזרת שמלות',
-        body: `${orderData.customerName} לא החזירה ${orderData.itemsCount} שמלות (עברו ${diffs.actualDays} ימים מהאירוע)`,
+        body: `${orderData.customerName} לא החזירה ${orderData.itemsCount === 1 ? 'שמלה אחת' : `${orderData.itemsCount} שמלות`} (עברו ${diffs.actualDays} ימים מהאירוע)`,
         data: {
           orderId: orderData.orderId,
           whatsappUrl: whatsappUrl,

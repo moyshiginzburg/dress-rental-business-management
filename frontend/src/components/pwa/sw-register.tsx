@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { usePathname } from 'next/navigation';
 import { pushApi } from '@/lib/api';
 
@@ -19,6 +19,10 @@ function urlBase64ToUint8Array(base64String: string) {
 
 export function ServiceWorkerRegister() {
   const pathname = usePathname();
+  // True once this browser's push subscription was saved on the server (or notifications are blocked).
+  // The effect still runs on every navigation (the /agreement check needs it), but a finished
+  // registration is not repeated; a failed one (for example before login) is retried on the next page.
+  const pushDoneRef = useRef(false);
 
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return;
@@ -35,6 +39,8 @@ export function ServiceWorkerRegister() {
         .catch(() => {});
       return;
     }
+
+    if (pushDoneRef.current) return;
 
     navigator.serviceWorker.register('/sw.js')
       .then(async (registration) => {
@@ -55,6 +61,9 @@ export function ServiceWorkerRegister() {
           
           if (subscription) {
             await pushApi.subscribe(subscription);
+            pushDoneRef.current = true;
+          } else if (Notification.permission === 'denied') {
+            pushDoneRef.current = true;
           }
         } catch (pushError) {
           console.error('Push registration failed:', pushError);

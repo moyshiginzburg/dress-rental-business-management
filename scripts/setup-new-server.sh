@@ -277,13 +277,14 @@ fi
 
 # Origin secret: only the Vercel site may use the backend (see scripts/nginx/origin-secret.conf.template).
 # The same value must be set as the ORIGIN_SECRET environment variable of the Vercel project.
-# An empty value counts as missing: an empty secret would let requests without the header through.
+# An empty value (also only spaces or a Windows line ending) counts as missing: an empty secret
+# would let requests without the header through. Such a line is replaced by a generated value.
 # ensure_secret NAME -> returns 0 when a new value was generated.
 ensure_secret() {
-    if grep -qE "^$1=.+" "$ENV_FILE" 2>/dev/null; then
+    if grep -qE "^$1=[^[:space:]]" "$ENV_FILE" 2>/dev/null; then
         return 1
     fi
-    sed -i "/^$1=[[:space:]]*$/d" "$ENV_FILE"
+    sed -i "/^$1=/d" "$ENV_FILE" 2>/dev/null || true
     echo "$1=$(openssl rand -hex 32)" >> "$ENV_FILE"
     return 0
 }
@@ -294,8 +295,13 @@ fi
 if ensure_secret GAS_LOG_SECRET; then
     warn "Generated GAS_LOG_SECRET in $ENV_FILE - put the SAME value in apps_script/Secrets.js and clasp push + redeploy the web app."
 fi
-ORIGIN_SECRET=$(grep -E '^ORIGIN_SECRET=.+' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '\r')
-GAS_LOG_SECRET=$(grep -E '^GAS_LOG_SECRET=.+' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '\r')
+# The backend proves itself to the Apps Script Web App with another secret (apps_script/Secrets.js
+# must hold the same value; doPost refuses every request without it).
+if ensure_secret APPS_SCRIPT_SHARED_SECRET; then
+    warn "Generated APPS_SCRIPT_SHARED_SECRET in $ENV_FILE - put the SAME value in apps_script/Secrets.js and clasp push + redeploy the web app."
+fi
+ORIGIN_SECRET=$(grep -E '^ORIGIN_SECRET=[^[:space:]]' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '\r')
+GAS_LOG_SECRET=$(grep -E '^GAS_LOG_SECRET=[^[:space:]]' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '\r')
 sed -e "s/__ORIGIN_SECRET__/${ORIGIN_SECRET}/" -e "s/__GAS_LOG_SECRET__/${GAS_LOG_SECRET}/" \
     "$INSTALL_DIR/scripts/nginx/origin-secret.conf.template" > /etc/nginx/conf.d/dress-origin.conf
 chmod 640 /etc/nginx/conf.d/dress-origin.conf

@@ -1,7 +1,7 @@
 # Database Schema – business.db (SQLite)
 
 > Auto-generated docs — keep in sync with every schema change.
-> Last updated: 2026-11-15
+> Last updated: 2026-11-17
 
 ---
 
@@ -172,7 +172,7 @@
 | customer_phone | TEXT | YES | NULL | | |
 | customer_email | TEXT | YES | NULL | | |
 | event_date | DATE | YES | NULL | | |
-| signature_data | TEXT | YES | NULL | | Base64 encoded signature image |
+| signature_data | TEXT | YES | NULL | | Signature as a `data:image/png;base64,...` URL (re-encoded by the server) |
 | signature_url | TEXT | YES | NULL | | Path to saved signature file |
 | pdf_url | TEXT | YES | NULL | | Path to saved PDF |
 | agreed_at | DATETIME | NO | CURRENT_TIMESTAMP | | |
@@ -315,7 +315,7 @@
 - `customer_phone` — Phone at time of signing
 - `customer_email` — Email at time of signing
 - `event_date` — Event date at time of signing
-- `signature_data` — Base64 encoded signature image data
+- `signature_data` — Signature image as a PNG data URL, re-encoded by the server before it is stored
 - `signature_url` — Path to saved signature image file
 - `pdf_url` — Path to saved agreement PDF
 - `agreed_at` — Signing timestamp

@@ -214,13 +214,16 @@ bash setup.sh
 
 This installs deps, clones repo, restores from Drive, starts pm2 backend, and sets up cron. Frontend stays on Vercel.
 
-**Note:** The setup script was written before the nginx migration. After running it on a new server, manually:
-1. Install nginx + certbot (see nginx section below)
-2. Configure nginx for the new server's sslip.io domain (e.g. `<IP-with-dashes>.sslip.io`)
-3. Update `NEXT_PUBLIC_API_URL` in Vercel to `https://<new-sslip-domain>/api`
-4. Redeploy on Vercel
-5. Verify `https://your-app-name.vercel.app` works
-6. Decommission the old server
+The script also installs nginx + certbot, configures the new server's sslip.io domain
+(`<IP-with-dashes>.sslip.io`), obtains the Let's Encrypt certificate and installs the origin-secret map
+(`/etc/nginx/conf.d/dress-origin.conf`). The secrets `ORIGIN_SECRET`, `GAS_LOG_SECRET` and
+`APPS_SCRIPT_SHARED_SECRET` are generated into `local_data/.env` when they are missing or empty.
+After running it, manually:
+1. Put the printed `ORIGIN_SECRET` into the Vercel project env vars and set `NEXT_PUBLIC_API_URL` to `https://<new-sslip-domain>/api`
+2. Put the printed `GAS_LOG_SECRET` and `APPS_SCRIPT_SHARED_SECRET` into `apps_script/Secrets.js`, `clasp push`, and create a new web-app deployment version (see "Apps Script log secret" and "Apps Script shared secret")
+3. Redeploy on Vercel
+4. Verify `https://your-app-name.vercel.app` works
+5. Decommission the old server
 
 ---
 
@@ -254,6 +257,9 @@ The Vercel deployment serves the frontend for nice customer-facing URLs.
 2. Link is created: `https://your-app-name.vercel.app/agreement?token=<JWT>`
 3. Business owner sends link to customer via WhatsApp
 4. Customer opens link → signs digitally → backend saves agreement + PDF
+
+Signing works only with the token from the link (the order is taken from it), and the signature must be a
+real PNG image, which the server re-encodes before saving it or printing it in the PDF.
 
 The agreement URL is set in `backend/src/routes/agreements.js` (`FORCED_PUBLIC_FRONTEND_URL`).
 
@@ -394,6 +400,14 @@ Apps Script logs are sent to the backend at `/api/apps-script-logs/batch`. View 
 - **Deploy after changing `apps_script/`:** `cd apps_script && clasp push`, then in the Apps Script editor: Deploy -> Manage deployments -> pencil on the active deployment -> Version: **New version** -> Deploy. Prefer the editor over `clasp deploy -i <id>`, which can leave the web app answering HTTP 403 until the deployment is saved again in the editor.
 - **Rotate:** new value in all three places, `clasp push`, new deployment version, reload nginx, restart the backend (`pm2 restart dress-backend`).
 - **Check it works:** `sudo grep "apps-script-logs" /var/log/nginx/dress-origin.log | tail` should show `gas=1 deny=0`, status 200.
+
+### Apps Script shared secret
+
+- **What:** the Web App URL is public (Access "Anyone"), so the backend proves itself with a shared secret: it adds the JSON field `secret` (`APPS_SCRIPT_SHARED_SECRET`) to every request, and `doPost` refuses anything without the same value (answer `{"success":false,"error":"Unauthorized"}`). Without it, anyone who learns the URL could send e-mails from the business account or create calendar events.
+- **Where the secret lives:** `APPS_SCRIPT_SHARED_SECRET=` in `local_data/.env` on the VPS, and `apps_script/Secrets.js` (gitignored, pushed with `clasp push`; template `Secrets.js.example`). `scripts/setup-new-server.sh` generates it on a new server; otherwise create one with `openssl rand -hex 32`.
+- **If the two sides differ (or the secret is missing from `Secrets.js`), every e-mail, calendar event, task and Drive save fails** (`Apps Script Web App failed ...: Unauthorized` in `pm2 logs dress-backend`). The backend reads `.env` only when it starts.
+- **Enable / rotate (order matters, do it in one sitting):** the value in the VPS `.env` and in `Secrets.js`, `clasp push`, new web-app version in the editor (see "Apps Script log secret" above for the exact clicks), then `pm2 restart dress-backend`. Between the new version and the restart, requests are refused.
+- **Check it works:** create or edit something that sends an e-mail and look for `Apps Script Web App response: {"success":true...}` in `pm2 logs dress-backend`.
 
 ## Troubleshooting
 

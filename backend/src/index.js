@@ -17,6 +17,7 @@ import { serverConfig, uploadConfig, localStorageConfig, authConfig } from './co
 import { notFoundHandler, errorHandler } from './middleware/errorHandler.js';
 import { requestLogger, errorLogger } from './middleware/activityLogger.js';
 import { mkdirSync, existsSync } from 'fs';
+import { get } from './db/database.js';
 // Google services removed - using Apps Script via Email
 import { isExpensesFolderAccessible, isAgreementsFolderAccessible } from './services/localStorage.js';
 import { isEmailEnabled } from './services/email.js';
@@ -113,9 +114,11 @@ app.use(cookieParser());
 
 // Protected static files for uploads.
 // Verifies the JWT token from the `auth_token` cookie (or fallback
-// Authorization header) before serving any file. Returns 401 if the
-// token is missing/invalid, preventing unauthenticated access to dress
-// images, signed agreements, expense receipts, and order attachments.
+// Authorization header) before serving any file. Only a LOGIN token of an
+// active user is accepted: the public link tokens signed with the same secret
+// (scope `agreement_sign` / `receipt_pdf`, held by customers) are refused.
+// Returns 401 otherwise, preventing access to dress images, signed
+// agreements, expense receipts, and order attachments.
 app.use('/uploads', (req, res, next) => {
   // 1. Try to get the token from the auth_token cookie
   let token = req.cookies?.auth_token;
@@ -136,10 +139,19 @@ app.use('/uploads', (req, res, next) => {
     });
   }
 
-  // 4. Verify the token signature and expiry
+  // 4. Verify the token signature and expiry, and that it is a login token
+  //    (no `scope`) of a user who still exists and is active
   try {
-    jwt.verify(token, authConfig.jwtSecret);
-    // Token is valid — proceed to serve the static file
+    const decoded = jwt.verify(token, authConfig.jwtSecret);
+    const user = !decoded.scope && decoded.userId
+      ? get('SELECT is_active FROM users WHERE id = ?', [decoded.userId])
+      : null;
+    if (!user || !user.is_active) {
+      return res.status(401).json({
+        success: false,
+        message: 'נדרשת התחברות לצפייה בקבצים'
+      });
+    }
     next();
   } catch (err) {
     return res.status(401).json({

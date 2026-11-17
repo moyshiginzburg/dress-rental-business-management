@@ -1,6 +1,6 @@
 {
   "name": "dress-rental-backend",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "private": true,
   "description": "Backend API for Dress Rental Business Management",
   "main": "src/index.js",

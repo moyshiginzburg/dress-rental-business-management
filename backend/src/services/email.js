@@ -67,6 +67,10 @@ export function isEmailEnabled() {
  * communication with Apps Script. It sends data over HTTPS (port 443)
  * which is never blocked by cloud providers.
  * 
+ * Every request carries the shared secret (`APPS_SCRIPT_SHARED_SECRET`) in the JSON field
+ * `secret`, because the Web App URL is public and Apps Script cannot read HTTP headers;
+ * doPost refuses requests without the right value.
+ *
  * @param {Object} payload - The JSON body to send
  * @returns {Object} { success, ... } response from Apps Script
  */
@@ -79,7 +83,7 @@ async function postToAppsScriptWebApp(payload) {
     const response = await fetch(appsScriptConfig.webAppUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ ...payload, secret: appsScriptConfig.sharedSecret }),
       signal: AbortSignal.timeout(120000), // 120s timeout for heavy Drive operations
     });
 

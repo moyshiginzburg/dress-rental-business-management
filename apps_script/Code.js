@@ -7,8 +7,9 @@
  * confirmations, etc.) since the VPS cannot use SMTP directly.
  * 
  * Operation: Web App (doPost) — Receives HTTP POST from the backend instantly.
- * Deploy as Web App: Execute as "Me", Access "Anyone" (no auth needed since
- * the payload is not sensitive and the URL is secret).
+ * Deploy as Web App: Execute as "Me", Access "Anyone". The URL is public, so every
+ * request must carry the shared secret APPS_SCRIPT_SHARED_SECRET (see Secrets.js) in the
+ * JSON field `secret`; doPost refuses anything else.
  * 
  * Created: 2026-02-03
  * Updated: 2026-02-17 - Removed email-polling; Web App is the sole integration method
@@ -50,9 +51,10 @@ let cachedBackendUrl = null;
  * requiring SMTP access (which is blocked on cloud providers like DigitalOcean).
  * 
  * How it works:
- *   1. Backend calls this Web App URL with a JSON body containing { type, data, ... }
- *   2. This function routes to the appropriate handler (same ones used by email)
- *   3. Returns a JSON response with the result
+ *   1. Backend calls this Web App URL with a JSON body containing { type, data, secret, ... }
+ *   2. The request is refused unless `secret` equals APPS_SCRIPT_SHARED_SECRET (Secrets.js)
+ *   3. This function routes to the appropriate handler (same ones used by email)
+ *   4. Returns a JSON response with the result
  * 
  * Deploy: Publish > Deploy as web app > Execute as: Me, Access: Anyone
  * 
@@ -70,6 +72,17 @@ function doPost(e) {
                 JSON.stringify({ success: false, error: 'No payload received' })
             ).setMimeType(ContentService.MimeType.JSON);
         }
+
+        // Only the backend knows the shared secret. Refuse everything else (also when the
+        // secret is missing from Secrets.js), before any handler runs.
+        if (typeof APPS_SCRIPT_SHARED_SECRET !== 'string' || !APPS_SCRIPT_SHARED_SECRET ||
+            !payload || payload.secret !== APPS_SCRIPT_SHARED_SECRET) {
+            console.warn('doPost: request refused (missing or wrong shared secret)');
+            return ContentService.createTextOutput(
+                JSON.stringify({ success: false, error: 'Unauthorized' })
+            ).setMimeType(ContentService.MimeType.JSON);
+        }
+        delete payload.secret;
 
         log('INFO', 'doPost', `Received POST: type=${payload.type}`);
 

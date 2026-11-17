@@ -41,7 +41,7 @@ Customer / Business Owner
 - **Receipts** - Optional automatic legal receipt (קבלה) for every income, via SmartInvoice
 - **Return reminders** - Optional daily push notification about rented dresses not returned, with a one-tap WhatsApp reminder
 - **Customer display name** - The name shown to the customer (agreement link, receipts) can differ from the internal name in the app
-- **Agreements** - Digital signature via public link (sent via WhatsApp)
+- **Agreements** - Digital signature via public link (sent via WhatsApp); signing works only with the link's token
 - **Google Integration** - Calendar events, Tasks, email notifications (via Apps Script Web App)
 - **Dashboard** - Business overview, upcoming events, items needing attention
 - **CSV Export** - Filtered data export for bookkeeping
